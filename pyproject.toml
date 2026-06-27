@@ -1,0 +1,18 @@
+# Development tooling configuration ONLY.
+#
+# This repository is delivered to Nautobot as a Git Repository ("jobs" provided
+# contents), NOT as a pip-installable package. Git-delivered jobs CANNOT install
+# their own dependencies — every import must already exist in the Nautobot
+# web/worker environment. This job depends only on Nautobot core + `requests`,
+# both always present, so there are no runtime dependencies to declare here.
+#
+# These settings just configure ruff (linter + formatter) for local development
+# and CI. We standardise on ruff alone to avoid two formatters diverging.
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = []
