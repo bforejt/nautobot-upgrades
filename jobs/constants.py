@@ -89,3 +89,47 @@ SPACE_FALLBACK_MIN_BYTES = 2_000_000_000
 #: Tolerance (bytes) when comparing the on-device file size to the expected size.
 #: The device reports sizes in KB, so allow one KB of rounding.
 SIZE_MATCH_TOLERANCE_BYTES = 1024
+
+# --- Image repository / Register Image job ----------------------------------
+
+#: Default for the Register job's worker-side HTTPS validation. The firmware
+#: server's device-facing cert is self-signed by default, so verification is OFF;
+#: turn it on (per run, or here) when the server presents a CA-trusted cert. (The
+#: preferred internal HTTP validation route ignores this entirely.)
+REPO_VERIFY_TLS = False
+
+#: Timeout (seconds) for the reachability/size HEAD request to the repository.
+REPO_HEAD_TIMEOUT = 30
+
+#: Timeout (seconds) for downloading the full image when hash verification is
+#: requested (the worker streams the whole file to compute its digest).
+REPO_DOWNLOAD_TIMEOUT = 3600
+
+#: Streaming read size (bytes) when hashing a downloaded image.
+REPO_CHUNK_SIZE = 1 << 20
+
+#: Hashing algorithms the Register Image job can compute locally (a subset of
+#: core SoftwareImageFileHashingAlgorithmChoices that Python's hashlib supports
+#: directly). Others can still be recorded, just not verified in-job.
+HASHLIB_SUPPORTED = ("md5", "sha1", "sha224", "sha256", "sha384", "sha512")
+
+# --- Firmware server integration (companion "nautobot-composer" stack) -------
+#
+# Firmware images are hosted by the companion stack's opt-in `firmware` profile:
+# a Filebrowser UI (engineers upload) + a read-only nginx "firmware-download"
+# service serving the same volume to devices. See docs/image-storage.md.
+
+#: DEVICE-FACING base URL stored in SoftwareImageFile.download_url as
+#: "<base>/<filename>". Must be reachable from the device management network AND
+#: the Nautobot worker. Override per run, or set the FIRMWARE_BASE_URL env var on
+#: the worker. (Matches the firmware server's FIRMWARE_SERVER_NAME + HTTPS port.)
+FIRMWARE_BASE_URL_ENV = "FIRMWARE_BASE_URL"
+FIRMWARE_BASE_URL_DEFAULT = "https://firmware.example.com:9443/images/"
+
+#: INTERNAL URL the Celery worker uses to VALIDATE an image — it reaches the nginx
+#: "firmware-download" service directly on the Docker network (plain HTTP, no cert
+#: hassles). The stored device URL still uses FIRMWARE_BASE_URL. Set the
+#: FIRMWARE_INTERNAL_URL env var to change it, or to "" to disable internal
+#: validation (then the device URL is validated directly).
+FIRMWARE_INTERNAL_URL_ENV = "FIRMWARE_INTERNAL_URL"
+FIRMWARE_INTERNAL_URL_DEFAULT = "http://firmware-download/images/"

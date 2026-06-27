@@ -134,6 +134,30 @@ actionable: **HTTP 401** → bad/missing credentials; **HTTP 403** → authentic
 but under-privileged (needs privilege 15); otherwise → connectivity / RESTCONF
 not enabled.
 
+## Image storage
+
+The `.bin` images are **not** stored in Nautobot — Nautobot holds only the
+metadata (`SoftwareImageFile`: name, checksum, size, `download_url`, device-type
+map). The binaries are hosted by the companion **`nautobot-composer` stack's
+`firmware` profile**: a **Filebrowser** UI (`:8088`, authenticated) for engineers
+to upload, and a read-only **nginx `firmware-download`** service (`:9443` HTTPS /
+`:9080` HTTP, network/ACL-restricted) that the **devices pull from** via the
+RESTCONF `copy` RPC.
+
+The **Register IOS-XE Image** job builds the device `download_url` from a
+configurable base + the uploaded filename, validates the image is reachable
+(preferring the worker's internal route to `firmware-download`, falling back to
+the device URL), optionally downloads + hash-verifies it, and records the
+`SoftwareImageFile` mapped to the compatible device types. It does not upload
+files — publish via Filebrowser first.
+
+Configure on the Nautobot worker: `FIRMWARE_BASE_URL` (device-facing base, e.g.
+`https://<host>:9443/images/`) and `FIRMWARE_INTERNAL_URL` (worker validation,
+default `http://firmware-download/images/`). Both are overridable per run.
+
+See **[docs/image-storage.md](docs/image-storage.md)** for the full design: URL
+formats, the acquire → upload → register workflow, TLS notes, and retention.
+
 ## Installing into Nautobot
 
 1. Ensure `requests` and Nautobot core are present (they always are). **No extra
@@ -141,8 +165,8 @@ not enabled.
 2. In Nautobot: **Extensibility → Git Repositories → Add**, set the repository
    URL to this public repo, choose a branch, and select **Provides: Jobs**, then
    **Sync**.
-3. **Jobs → Jobs**: find **“Cisco IOS-XE Upgrade (RESTCONF)”** under the
-   **IOS-XE Upgrades** group, edit it, and check **Enabled**.
+3. **Jobs → Jobs**: under the **IOS-XE Upgrades** group, edit and **Enable**
+   both **“Cisco IOS-XE Upgrade (RESTCONF)”** and **“Register IOS-XE Image”**.
 4. After changing job code, re-sync the repo and (for non-container installs)
    restart the Celery worker.
 

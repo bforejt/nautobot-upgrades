@@ -9,5 +9,6 @@ submodules are not discovered unless registration is wired through
 from nautobot.apps.jobs import register_jobs
 
 from .iosxe_upgrade import IOSXEUpgrade
+from .register_image import RegisterImage
 
-register_jobs(IOSXEUpgrade)
+register_jobs(IOSXEUpgrade, RegisterImage)
