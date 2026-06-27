@@ -17,10 +17,11 @@ devices — **Catalyst 9300** primarily — driven entirely over **RESTCONF**.
 
 ## What it does
 
-From the Nautobot **Jobs** page you select one or more target devices and a
-target software version, and the job performs an **install-mode** upgrade the way
-a conservative engineer would — as a series of PASS/FAIL gates, stopping on the
-first failure for a device:
+From the Nautobot **Jobs** page you scope a set of target devices — with optional
+filters for **location, role, status, platform, device type, current version, and
+tags** — pick a target software version, and the job performs an **install-mode**
+upgrade the way a conservative engineer would — as a series of PASS/FAIL gates,
+stopping on the first failure for a device:
 
 1. **Connect** — resolve the device's primary IP and credentials (from core
    Secrets), confirm RESTCONF is reachable.
@@ -150,18 +151,21 @@ not enabled.
 1. Populate the target **Software Version** + **Software Image File** in Nautobot
    (download URL, image file name, and ideally checksum + size), and map the
    image to the relevant **device type(s)**.
-2. Open the job, select **devices** and the **target version**, leave
-   **Dry-run** checked (the default), and run it. Dry-run executes every
-   read-only gate and reports exactly what *would* happen.
+2. Open the job, optionally narrow the list with the **location / role / status /
+   platform / device type / current version / tags** filters, select **devices**
+   and the **target version**, leave **Dry-run** checked (the default), and run
+   it. Dry-run executes every read-only gate and reports exactly what *would*
+   happen.
 3. When the dry-run is clean, run it again with Dry-run unchecked.
 
 ### Job inputs
 
 | Input | Required | Purpose |
 | --- | --- | --- |
-| Devices | yes | One or more devices to upgrade. |
+| Location / Role / Status / Platform / Device type / Current version / Tags | no | Optional filters that narrow the **Devices** picker for field operations. |
+| Devices | yes | Target devices to upgrade (narrowed by the filters above). |
 | Target version | yes | Core `SoftwareVersion` to upgrade to. |
-| Secrets group | no | Credential override (defaults to the device's group). |
+| Secrets group override | no | Force one Secrets Group for the whole run; by default each device uses its own assigned group. |
 | Remove inactive | no | After commit, reclaim space (default **off** — keeps the rollback image for a soak period). |
 | Debug | no | Verbose RESTCONF request/response logging. |
 | Dry-run | — | Read-only pre-flight only (default **on**). |

@@ -37,12 +37,19 @@ import uuid as uuid_lib
 
 from django.db import transaction
 from nautobot.apps.jobs import BooleanVar, DryRunVar, Job, MultiObjectVar, ObjectVar
-from nautobot.dcim.models import Device, SoftwareImageFile, SoftwareVersion
+from nautobot.dcim.models import (
+    Device,
+    DeviceType,
+    Location,
+    Platform,
+    SoftwareImageFile,
+    SoftwareVersion,
+)
 from nautobot.extras.choices import (
     SecretsGroupAccessTypeChoices,
     SecretsGroupSecretTypeChoices,
 )
-from nautobot.extras.models import SecretsGroup
+from nautobot.extras.models import Role, SecretsGroup, Status, Tag
 
 from . import constants as C
 from .restconf import RestconfClient, RestconfError
@@ -71,10 +78,62 @@ def _version_tuple(text):
 class IOSXEUpgrade(Job):
     """Upgrade Cisco IOS-XE Catalyst 9300 devices over RESTCONF (install mode)."""
 
+    # --- Optional filters: narrow the device picker for field operations ------
+    location = MultiObjectVar(
+        model=Location,
+        required=False,
+        description="Limit the device list to these locations.",
+    )
+    role = MultiObjectVar(
+        model=Role,
+        required=False,
+        query_params={"content_types": "dcim.device"},
+        description="Limit the device list to these device roles.",
+    )
+    status = MultiObjectVar(
+        model=Status,
+        required=False,
+        query_params={"content_types": "dcim.device"},
+        description="Limit the device list to these statuses.",
+    )
+    platform = MultiObjectVar(
+        model=Platform,
+        required=False,
+        description="Limit the device list to these platforms.",
+    )
+    device_type = MultiObjectVar(
+        model=DeviceType,
+        required=False,
+        description="Limit the device list to these device types.",
+    )
+    current_version = MultiObjectVar(
+        model=SoftwareVersion,
+        required=False,
+        description="Limit the device list to devices currently on these versions.",
+    )
+    tags = MultiObjectVar(
+        model=Tag,
+        required=False,
+        query_params={"content_types": "dcim.device"},
+        description="Limit the device list to devices with these tags.",
+    )
+
     devices = MultiObjectVar(
         model=Device,
         required=True,
-        description="One or more target devices to upgrade.",
+        query_params={
+            "location": "$location",
+            "role": "$role",
+            "status": "$status",
+            "platform": "$platform",
+            "device_type": "$device_type",
+            "software_version": "$current_version",
+            "tags": "$tags",
+        },
+        description=(
+            "Target devices to upgrade. Use the filters above to narrow this list, "
+            "then select the specific devices to act on (or select all)."
+        ),
     )
     target_version = ObjectVar(
         model=SoftwareVersion,
@@ -84,12 +143,13 @@ class IOSXEUpgrade(Job):
             "Software Image File must have a download URL and, ideally, a file size."
         ),
     )
-    secrets_group = ObjectVar(
+    secrets_group_override = ObjectVar(
         model=SecretsGroup,
         required=False,
         description=(
-            "Optional override for device credentials. Defaults to the device's "
-            "assigned Secrets Group."
+            "Optional override applied to ALL selected devices. By default each "
+            "device uses its own assigned Secrets Group (Device > Secrets group); "
+            "set this only to force a single group for this run."
         ),
     )
     remove_inactive = BooleanVar(
@@ -121,23 +181,70 @@ class IOSXEUpgrade(Job):
         dryrun_default = True
         soft_time_limit = 5400
         time_limit = 7200
+        field_order = [
+            "location",
+            "role",
+            "status",
+            "platform",
+            "device_type",
+            "current_version",
+            "tags",
+            "devices",
+            "target_version",
+            "secrets_group_override",
+            "remove_inactive",
+            "debug",
+            "dryrun",
+        ]
 
     # ------------------------------------------------------------------ run --
 
-    def run(self, *, devices, target_version, secrets_group, remove_inactive, debug, dryrun):
+    def run(
+        self,
+        *,
+        location,
+        role,
+        status,
+        platform,
+        device_type,
+        current_version,
+        tags,
+        devices,
+        target_version,
+        secrets_group_override,
+        remove_inactive,
+        debug,
+        dryrun,
+    ):
         # self.logger.success() exists only on Nautobot >= 2.4; fall back to info.
         log_success = getattr(self.logger, "success", self.logger.info)
         results = {}
         self.logger.info(
-            "Starting IOS-XE upgrade to **%s** for %d device(s)%s.",
+            "Starting IOS-XE upgrade to **%s** for %d selected device(s)%s.",
             target_version,
             len(devices),
             " (DRY-RUN)" if dryrun else "",
         )
+        # The filters scope the device picker in the form; record any that were
+        # applied for the audit trail.
+        applied = {
+            "location": location,
+            "role": role,
+            "status": status,
+            "platform": platform,
+            "device_type": device_type,
+            "current_version": current_version,
+            "tags": tags,
+        }
+        filter_summary = ", ".join(
+            f"{key}={[str(v) for v in value]}" for key, value in applied.items() if value
+        )
+        if filter_summary:
+            self.logger.info("Filters applied: %s.", filter_summary)
         for device in devices:
             try:
                 summary = self._upgrade_device(
-                    device, target_version, secrets_group, remove_inactive, debug, dryrun
+                    device, target_version, secrets_group_override, remove_inactive, debug, dryrun
                 )
                 results[device.name] = summary
                 log_success(summary, extra={"object": device})
@@ -162,7 +269,7 @@ class IOSXEUpgrade(Job):
 
         # -- 0. Credentials + reachability -----------------------------------
         host = self._device_host(device)
-        username, password = self._credentials(device, override_group)
+        username, password = self._credentials(device, override_group, log)
         client = RestconfClient(
             host, username, password, logger=self.logger, log_object=device, debug=debug
         )
@@ -230,13 +337,19 @@ class IOSXEUpgrade(Job):
             raise UpgradeAbort("Device has no primary IP address.")
         return str(primary.host)
 
-    def _credentials(self, device, override_group):
+    def _credentials(self, device, override_group, log):
+        # The device's own Secrets Group is the default; the job-level override
+        # (if provided) takes precedence and applies to every selected device.
         group = override_group or device.secrets_group
         if not group:
             raise UpgradeAbort(
-                "No Secrets Group on the device and no override provided; cannot "
-                "obtain RESTCONF credentials."
+                "No Secrets Group assigned to the device and no override provided; "
+                "cannot obtain RESTCONF credentials."
             )
+        source = "job override" if override_group else "device"
+        self.logger.info(
+            "Using credentials from %s Secrets Group '%s'.", source, group, extra=log
+        )
         username = self._secret(group, device, SecretsGroupSecretTypeChoices.TYPE_USERNAME)
         password = self._secret(group, device, SecretsGroupSecretTypeChoices.TYPE_PASSWORD)
         return username, password
