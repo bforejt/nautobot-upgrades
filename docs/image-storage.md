@@ -79,19 +79,22 @@ Both are also overridable per run on the **Register IOS-XE Image** job
    preferred). **Verify** it locally.
 2. **Upload** to the firmware server via the **Filebrowser UI** (`:8088`), keeping
    the canonical filename.
-3. **Create the Software Version** in Nautobot if needed (Devices → Software
-   Versions): version + platform + status.
-4. **Register the image** — run **Register IOS-XE Image**:
+3. **Register the image** — run **Register IOS-XE Image**:
    - `image_file_name` = the uploaded filename
-   - `software_version`, `device_types` (the C9300 models)
-   - `expected_checksum` + `hashing_algorithm` (Cisco's published values)
-   - optionally **Verify download** (worker downloads + hashes the file)
+   - `software_version` = the existing version, **or** leave it blank and set
+     `new_version` + `platform` + `version_status` to create the version inline
+   - `device_types` = the compatible models (e.g. the C9300 types); optional
+     `default_image`
+   - `image_status`
+   - `expected_checksum` + `hashing_algorithm` (Cisco's published values);
+     optionally tick **Verify download** (worker downloads + hashes the file)
    - run **Dry-run** first, then for real.
 
    The job builds the device `download_url` from `FIRMWARE_BASE_URL` + filename,
    validates the file is reachable (trying `FIRMWARE_INTERNAL_URL` first, then the
-   device URL), records size + checksum, creates/updates the `SoftwareImageFile`,
-   and maps it to the device types. The upgrade job then consumes `download_url`.
+   device URL), records size + checksum, creates the `SoftwareVersion` if one
+   wasn't selected, creates/updates the `SoftwareImageFile`, and maps it to the
+   device types. The upgrade job then consumes `download_url`.
 
 ## TLS
 

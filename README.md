@@ -148,7 +148,8 @@ The **Register IOS-XE Image** job builds the device `download_url` from a
 configurable base + the uploaded filename, validates the image is reachable
 (preferring the worker's internal route to `firmware-download`, falling back to
 the device URL), optionally downloads + hash-verifies it, and records the
-`SoftwareImageFile` mapped to the compatible device types. It does not upload
+`SoftwareImageFile` mapped to the compatible device types — creating the
+`SoftwareVersion` too if you don't pick an existing one. It does not upload
 files — publish via Filebrowser first.
 
 Configure on the Nautobot worker: `FIRMWARE_BASE_URL` (device-facing base, e.g.

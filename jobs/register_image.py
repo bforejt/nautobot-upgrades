@@ -5,11 +5,12 @@ Companion to the upgrade job. The actual .bin files are hosted by the companion
 Filebrowser UI, and a read-only nginx "firmware-download" service serves the same
 files to devices. Nautobot is only the index.
 
-This Job takes the uploaded file name, builds the DEVICE-FACING download URL from
+Given the uploaded file name, this Job builds the DEVICE-FACING download URL from
 a configurable base, validates the image is reachable (preferring the worker's
-internal route to the firmware-download service), and records it as a core
-``dcim.SoftwareImageFile`` mapped to the compatible device types — so the upgrade
-job can consume it. It does NOT upload the file; publish it via Filebrowser first.
+internal route to the firmware-download service), optionally downloads +
+hash-verifies it, and records it as a core ``dcim.SoftwareImageFile`` mapped to
+the compatible device types — creating the ``dcim.SoftwareVersion`` too if one
+isn't selected. It does NOT upload the file; publish it via Filebrowser first.
 
 NOTE: brand new, not yet validated end-to-end. Run with Dry-run first.
 """
@@ -20,6 +21,7 @@ import hashlib
 import os
 
 import requests
+from django.contrib.contenttypes.models import ContentType
 from django.db import transaction
 from nautobot.apps.jobs import (
     BooleanVar,
@@ -31,7 +33,7 @@ from nautobot.apps.jobs import (
     StringVar,
 )
 from nautobot.dcim.choices import SoftwareImageFileHashingAlgorithmChoices
-from nautobot.dcim.models import DeviceType, SoftwareImageFile, SoftwareVersion
+from nautobot.dcim.models import DeviceType, Platform, SoftwareImageFile, SoftwareVersion
 from nautobot.extras.models import Status
 
 from . import constants as C
@@ -54,8 +56,29 @@ class RegisterImage(Job):
     )
     software_version = ObjectVar(
         model=SoftwareVersion,
-        required=True,
-        description="The Software Version this image provides.",
+        required=False,
+        description=(
+            "Existing Software Version this image provides. Leave blank to create "
+            "one from the fields below."
+        ),
+    )
+    new_version = StringVar(
+        required=False,
+        description=(
+            "Create a new Software Version with this version string (e.g. 17.09.04) "
+            "when none is selected above."
+        ),
+    )
+    platform = ObjectVar(
+        model=Platform,
+        required=False,
+        description="Platform for the new Software Version (required when creating one).",
+    )
+    version_status = ObjectVar(
+        model=Status,
+        required=False,
+        query_params={"content_types": "dcim.softwareversion"},
+        description="Status for the new Software Version (required when creating one).",
     )
     device_types = MultiObjectVar(
         model=DeviceType,
@@ -111,15 +134,15 @@ class RegisterImage(Job):
         ),
     )
     dryrun = DryRunVar(
-        description="Validate only; do not create or modify the record.",
+        description="Validate only; do not create or modify anything.",
     )
 
     class Meta:
         name = "Register IOS-XE Image"
         description = (
             "Validate a firmware image on the companion firmware server and record "
-            "it as a core Software Image File (no upload — publish via Filebrowser "
-            "first)."
+            "it as a core Software Image File (creating the Software Version if "
+            "needed). No upload — publish via Filebrowser first."
         )
         has_sensitive_variables = False
         dryrun_default = True
@@ -128,6 +151,9 @@ class RegisterImage(Job):
         field_order = [
             "image_file_name",
             "software_version",
+            "new_version",
+            "platform",
+            "version_status",
             "device_types",
             "image_status",
             "default_image",
@@ -145,6 +171,9 @@ class RegisterImage(Job):
         *,
         image_file_name,
         software_version,
+        new_version,
+        platform,
+        version_status,
         device_types,
         image_status,
         default_image,
@@ -158,14 +187,39 @@ class RegisterImage(Job):
     ):
         file_name = (image_file_name or "").strip()
         expected_checksum = (expected_checksum or "").strip()
+        new_version = (new_version or "").strip()
         if not file_name:
             raise RegisterAbort("An image file name is required.")
         if expected_checksum and not hashing_algorithm:
             raise RegisterAbort("A hashing algorithm is required when a checksum is given.")
 
+        # Resolve the target version: an existing selection wins; otherwise we
+        # create one from new_version + platform + status (validated up front so a
+        # dry-run reports the same errors a real run would).
+        if not software_version:
+            if not new_version:
+                raise RegisterAbort(
+                    "Select an existing Software Version, or provide a new version "
+                    "string (with platform and status) to create one."
+                )
+            if not platform:
+                raise RegisterAbort(f"A platform is required to create version '{new_version}'.")
+            if not version_status:
+                raise RegisterAbort(f"A status is required to create version '{new_version}'.")
+            self._check_status(version_status, SoftwareVersion, "Software Versions")
+        elif new_version or platform or version_status:
+            self.logger.warning(
+                "An existing Software Version is selected; ignoring the new-version / "
+                "platform / status fields."
+            )
+        self._check_status(image_status, SoftwareImageFile, "Software Image Files")
+
         device_url = self._device_url(file_name, firmware_base_url, download_url_override)
         candidates = self._validation_candidates(file_name, device_url, download_url_override)
-        self.logger.info("Registering '%s' (device URL: %s).", file_name, device_url)
+        version_label = software_version or f"new version '{new_version}' on {platform}"
+        self.logger.info(
+            "Registering '%s' for %s (device URL: %s).", file_name, version_label, device_url
+        )
 
         size, used_url = self._head_first(candidates, verify_repo_tls)
         checksum = self._maybe_verify(
@@ -175,12 +229,15 @@ class RegisterImage(Job):
         if dryrun:
             return (
                 f"DRY-RUN ok: '{file_name}' reachable via {used_url} (size={size}). "
-                f"Would store download_url={device_url} for {software_version} and "
-                f"map {len(device_types or [])} device type(s)."
+                f"Would store download_url={device_url} for {version_label} and map "
+                f"{len(device_types or [])} device type(s)."
             )
 
-        image = self._upsert(
+        image = self._write(
             software_version=software_version,
+            new_version=new_version,
+            platform=platform,
+            version_status=version_status,
             file_name=file_name,
             download_url=device_url,
             size=size,
@@ -191,11 +248,11 @@ class RegisterImage(Job):
             device_types=device_types,
         )
         getattr(self.logger, "success", self.logger.info)(
-            f"Registered '{image.image_file_name}' for {software_version} "
+            f"Registered '{image.image_file_name}' for {image.software_version} "
             f"(download_url: {device_url}).",
             extra={"object": image},
         )
-        return f"Registered '{image.image_file_name}' for {software_version}."
+        return f"Registered '{image.image_file_name}' for {image.software_version}."
 
     # ------------------------------------------------------------------- URLs --
 
@@ -293,10 +350,37 @@ class RegisterImage(Job):
 
     # ----------------------------------------------------------------- write --
 
-    def _upsert(
+    @staticmethod
+    def _check_status(status, model, label):
+        """Confirm a Status is associated with the given model's content type."""
+        content_type = ContentType.objects.get_for_model(model)
+        if not status.content_types.filter(pk=content_type.pk).exists():
+            raise RegisterAbort(f"Status '{status}' is not valid for {label}.")
+
+    def _resolve_version(self, existing, new_version, platform, version_status):
+        """Return the SoftwareVersion to use, creating it if one wasn't selected.
+
+        Uses get_or_create so two concurrent runs creating the same (version,
+        platform) don't race on the unique constraint. The status content type was
+        already validated up front in run().
+        """
+        if existing:
+            return existing
+        version, created = SoftwareVersion.objects.get_or_create(
+            version=new_version, platform=platform, defaults={"status": version_status}
+        )
+        self.logger.info(
+            "%s Software Version '%s'.", "Created" if created else "Reusing existing", version
+        )
+        return version
+
+    def _write(
         self,
         *,
         software_version,
+        new_version,
+        platform,
+        version_status,
         file_name,
         download_url,
         size,
@@ -307,16 +391,18 @@ class RegisterImage(Job):
         device_types,
     ):
         with transaction.atomic():
+            version = self._resolve_version(software_version, new_version, platform, version_status)
             image, _created = SoftwareImageFile.objects.get_or_create(
-                software_version=software_version,
+                software_version=version,
                 image_file_name=file_name,
                 defaults={"status": status, "download_url": download_url},
             )
-            # Clear any existing default for this version BEFORE saving the new
-            # one as default (core allows only one default image per version).
+
+            # Clear any existing default for this version BEFORE saving the new one
+            # as default (core allows only one default image per version).
             if default_image:
                 others = SoftwareImageFile.objects.filter(
-                    software_version=software_version, default_image=True
+                    software_version=version, default_image=True
                 ).exclude(pk=image.pk)
                 for other in others:
                     other.default_image = False
