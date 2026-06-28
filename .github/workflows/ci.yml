@@ -16,9 +16,11 @@ jobs:
       - name: Install tooling
         run: pip install ruff
       - name: Ruff (lint)
-        run: ruff check .
+        # Style-gate the shipped Job code; the docs generator under scripts/ is a
+        # build tool with long data literals and is only syntax-checked below.
+        run: ruff check jobs __init__.py
       - name: Ruff (format check)
-        run: ruff format --check .
+        run: ruff format --check jobs __init__.py
       - name: Compile check
         # We cannot import Nautobot here, but byte-compiling catches syntax errors.
-        run: python -m compileall -q __init__.py jobs
+        run: python -m compileall -q __init__.py jobs scripts

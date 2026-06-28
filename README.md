@@ -47,6 +47,9 @@ stopping on the first failure for a device:
 Feedback is mandatory and built in: every gate logs to the Job Result with the
 device attached, and a **Debug** toggle logs every RESTCONF request/response.
 
+See **[docs/upgrade-flow.md](docs/upgrade-flow.md)** for a flowchart of the
+per-device decision logic (editable [`upgrade-flow.drawio`](docs/upgrade-flow.drawio)).
+
 ## Why these design choices
 
 The design follows a deep up-front analysis to avoid reinvention and respect the
@@ -240,12 +243,23 @@ Everything actually depended on (`requests`, Nautobot core) is permissive
 
 - **Untested against hardware.** RESTCONF payload field names, operational leaf
   paths, and the install-state polling are research-derived and need lab
-  validation.
+  validation. The following specifically require confirmation against a real
+  device's `install-oper` data before production use:
+  - **Auto-rollback timer:** the job arms it explicitly on `activate`
+    (`auto-abort-timer-val`, research-derived leaf) and best-effort checks it is
+    pending after reload, warning loudly if it can't confirm one. Whether a bare
+    `activate` arms a timer, and the exact leaf name, are release-specific — the
+    failure paths rely on this safety net, so verify it actually arms.
+  - **Install-state classification:** `_classify_state` normalizes full enums and
+    short codes (C/A/U/I), but the real `install-oper` state leaf names/values
+    should be confirmed; commit/idempotency gates fail *safe* (commit-to-be-safe)
+    if a state can't be classified.
 - **16.12.x is not supported** (no RESTCONF install model on that train).
 - Free-space and on-device file-size reads use **best-effort, release-dependent**
-  paths and may need tuning per release.
-- Stack/SVL handling is limited to confirming the system booted the target
-  version; per-member deep health checks are minimal.
+  paths (q-filesystem; exact/stack-suffix partition match) and may need tuning per
+  release via `constants.py`.
+- Stack/SVL handling checks that **all members** report install mode and that the
+  system booted the target version; per-member deep health checks are minimal.
 
 ## Deferred (by agreement — not built yet)
 

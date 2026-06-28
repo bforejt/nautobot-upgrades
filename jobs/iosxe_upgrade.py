@@ -15,13 +15,15 @@ Scope (kept deliberately small):
 
 Upgrade flow (per device):
   0. Resolve credentials + RESTCONF reachability
-  1. Pre-flight gates: current version, install-mode, version floor, image
+  1. Idempotency: if already on target, commit it if it is merely activated
+     (cancelling a pending rollback), else no-op
+  2. Pre-flight gates: version floor, install-mode (fail-closed), image
      resolution + compatibility, free-space
-  2. Copy the image (device-initiated) and verify it arrived intact
-  3. install add  ->  install activate (auto-rollback timer armed)  ->  reload
-  4. Reconnect, verify the new version actually booted  ->  install commit
-  5. Post-checks + sync Nautobot's Device.software_version
-  6. Optional: install remove inactive (off by default)
+  3. Copy the image (device-initiated) and verify it arrived intact
+  4. install add -> install activate (auto-rollback timer armed) -> reload
+  5. Poll until the target version actually booted -> install commit
+  6. Post-checks + sync Nautobot's Device.software_version
+  7. Optional: install remove inactive (off by default)
 
 NOTE: This project is brand new and has NOT been validated against real
 hardware. Treat the exact RESTCONF payloads/paths as research-derived and verify
@@ -49,7 +51,7 @@ from nautobot.extras.choices import (
     SecretsGroupAccessTypeChoices,
     SecretsGroupSecretTypeChoices,
 )
-from nautobot.extras.models import Role, SecretsGroup, Status, Tag
+from nautobot.extras.models import Role, SecretsGroup, SecretsGroupAssociation, Status, Tag
 
 from . import constants as C
 from .restconf import RestconfClient, RestconfError
@@ -152,6 +154,13 @@ class IOSXEUpgrade(Job):
             "set this only to force a single group for this run."
         ),
     )
+    assume_install_mode = BooleanVar(
+        default=False,
+        description=(
+            "Proceed even if INSTALL vs BUNDLE boot mode cannot be confirmed over "
+            "RESTCONF. Off (default) = fail closed; confirmed BUNDLE always aborts."
+        ),
+    )
     remove_inactive = BooleanVar(
         default=False,
         description=(
@@ -192,6 +201,7 @@ class IOSXEUpgrade(Job):
             "devices",
             "target_version",
             "secrets_group_override",
+            "assume_install_mode",
             "remove_inactive",
             "debug",
             "dryrun",
@@ -212,6 +222,7 @@ class IOSXEUpgrade(Job):
         devices,
         target_version,
         secrets_group_override,
+        assume_install_mode,
         remove_inactive,
         debug,
         dryrun,
@@ -244,7 +255,13 @@ class IOSXEUpgrade(Job):
         for device in devices:
             try:
                 summary = self._upgrade_device(
-                    device, target_version, secrets_group_override, remove_inactive, debug, dryrun
+                    device,
+                    target_version,
+                    secrets_group_override,
+                    remove_inactive,
+                    debug,
+                    dryrun,
+                    assume_install_mode,
                 )
                 results[device.name] = summary
                 log_success(summary, extra={"object": device})
@@ -263,7 +280,8 @@ class IOSXEUpgrade(Job):
     # ----------------------------------------------------------- orchestrate --
 
     def _upgrade_device(
-        self, device, target_version, override_group, remove_inactive, debug, dryrun
+        self, device, target_version, override_group, remove_inactive, debug, dryrun,
+        assume_install_mode,
     ):
         log = {"object": device}
 
@@ -273,19 +291,19 @@ class IOSXEUpgrade(Job):
         client = RestconfClient(
             host, username, password, logger=self.logger, log_object=device, debug=debug
         )
-        self._check_reachable(client, host)
+        data = self._check_reachable(client, host)
         self.logger.info("RESTCONF reachable and authenticated at %s.", host, extra=log)
 
-        # -- 1. Pre-flight gates ---------------------------------------------
-        current = self._current_version(client)
+        # -- 1. Idempotency (commit-state aware) -----------------------------
+        current = self._extract_version(data)
         self.logger.info("Current version: **%s**.", current or "unknown", extra=log)
-
         target_str = target_version.version
         if _version_tuple(current) and _version_tuple(current) == _version_tuple(target_str):
-            return f"Already running target version {target_str}; nothing to do."
+            return self._handle_already_on_target(client, device, target_version, dryrun, log)
 
+        # -- 2. Pre-flight gates ---------------------------------------------
         self._gate_version_floor(current, log)
-        self._gate_install_mode(client, log)
+        self._gate_install_mode(client, log, assume_install_mode)
 
         image = self._resolve_image(device, target_version, log)
         self._gate_free_space(client, image, log)
@@ -297,36 +315,93 @@ class IOSXEUpgrade(Job):
                 "All pre-flight gates passed."
             )
 
-        # -- 2. Transfer + integrity -----------------------------------------
+        # -- 3. Transfer + integrity -----------------------------------------
         self._copy_image(client, image, log)
         self._verify_image(client, image, log)
 
-        # -- 3. install add / activate / reload ------------------------------
+        # -- 4. install add / activate / reload ------------------------------
         op_uuid = str(uuid_lib.uuid4())
         self._install_add(client, image, op_uuid, log)
         self._install_activate(client, image, op_uuid, log)
-        self._wait_for_reload(client, log)
 
-        # -- 4. Verify booted, then commit -----------------------------------
-        booted = self._current_version(client)
-        self.logger.info("Post-reload version: **%s**.", booted or "unknown", extra=log)
-        if not _version_tuple(booted) or _version_tuple(booted) != _version_tuple(target_str):
+        # -- 5. Confirm booted, verify rollback net, commit, then sync -------
+        self._wait_for_target(client, target_str, log)
+        self._log_rollback_state(client, log)
+        try:
+            self._install_commit(client, op_uuid, log)
+            self._verify_committed(client, target_str, log)
+        except Exception as exc:  # noqa: BLE001 - real rollback risk if commit fails
             raise UpgradeAbort(
-                f"Device did not boot the target version (got {booted!r}, expected "
-                f"{target_str}). NOT committing — the auto-rollback timer will revert "
-                "the device to the previous image."
+                f"Device booted {target_str} but COMMIT failed ({exc}). The device "
+                "is ACTIVATED but NOT committed — re-run this job (it will commit) or "
+                "roll back manually before the auto-abort timer expires."
+            ) from exc
+        # Commit succeeded: the device is safe even if the metadata update fails, so
+        # a sync failure is logged AND surfaced in the result, but does NOT fail the
+        # (committed) upgrade.
+        sync_note = ""
+        try:
+            self._sync_nautobot(device, target_version, log)
+        except Exception as exc:  # noqa: BLE001 - device committed; only Nautobot lagged
+            self.logger.error(
+                "Upgrade committed, but updating Nautobot Device.software_version "
+                "failed (%s); update it manually.", exc, extra=log,
             )
-        self._install_commit(client, op_uuid, log)
-
-        # -- 5. Post-checks + sync Nautobot ----------------------------------
-        self._verify_committed(client, log)
-        self._sync_nautobot(device, target_version, log)
+            sync_note = " (Nautobot software_version update FAILED — set it manually)"
 
         # -- 6. Optional cleanup ---------------------------------------------
         if remove_inactive:
             self._remove_inactive(client, op_uuid, log)
 
-        return f"Upgraded and committed to {target_str}."
+        return f"Upgraded and committed to {target_str}.{sync_note}"
+
+    def _handle_already_on_target(self, client, device, target_version, dryrun, log):
+        """Device already runs the target version — but is it committed?
+
+        Fail SAFE: treat it as a no-op only when we can positively confirm it is
+        committed. Otherwise (activated/uncommitted, OR the state cannot be read or
+        classified) run install commit anyway — committing an already-committed
+        image is a harmless no-op, and it cancels a pending auto-rollback left by an
+        interrupted prior run, which would otherwise silently revert the device.
+        """
+        target_str = target_version.version
+        tokens = self._state_tokens(client, target_str)
+        if _is_committed(tokens):
+            return f"Already on target version {target_str} and committed; nothing to do."
+        if dryrun:
+            return (
+                f"DRY-RUN: on target {target_str} but not confirmed committed "
+                f"(state: {tokens or 'unknown'}); would run install commit to be safe."
+            )
+        self.logger.warning(
+            "On target %s but not confirmed committed (state: %s); committing to be "
+            "safe (cancels any pending auto-rollback).", target_str, tokens or "unknown",
+            extra=log,
+        )
+        op_uuid = str(uuid_lib.uuid4())
+        try:
+            self._install_commit(client, op_uuid, log)
+        except RestconfError as exc:
+            # Committing when nothing is pending can error on some releases; the
+            # device is already on the target version, so treat this as benign.
+            self.logger.warning(
+                "install commit on an already-on-target device returned an error "
+                "(%s); it is likely already committed. Verify with 'show install "
+                "summary'.", exc, extra=log,
+            )
+            return (
+                f"On target {target_str}; commit returned an error (likely already "
+                "committed — verify)."
+            )
+        self._verify_committed(client, target_str, log)
+        try:
+            self._sync_nautobot(device, target_version, log)
+        except Exception as exc:  # noqa: BLE001 - committed; only Nautobot metadata lagged
+            self.logger.error(
+                "Committed, but updating Nautobot software_version failed (%s); "
+                "update it manually.", exc, extra=log,
+            )
+        return f"On target {target_str}; ran install commit to ensure it is committed."
 
     # -------------------------------------------------------- helpers: setup --
 
@@ -356,8 +431,10 @@ class IOSXEUpgrade(Job):
 
     @staticmethod
     def _secret(group, device, secret_type):
-        # Try the most specific access types first; fall back gracefully across
-        # Nautobot versions that may not define a RESTCONF access type.
+        # Try the most specific access types first. A missing association for an
+        # access type is expected (fall through); any OTHER error (provider down,
+        # decryption/permission failure) is a real problem and aborts immediately
+        # instead of being masked as "secret not found".
         candidates = [
             getattr(SecretsGroupAccessTypeChoices, attr, None)
             for attr in ("TYPE_RESTCONF", "TYPE_HTTP", "TYPE_REST", "TYPE_GENERIC")
@@ -367,25 +444,28 @@ class IOSXEUpgrade(Job):
                 return group.get_secret_value(
                     access_type=access_type, secret_type=secret_type, obj=device
                 )
-            except Exception:  # noqa: BLE001 - wrong access type / missing secret
-                continue
+            except SecretsGroupAssociation.DoesNotExist:
+                continue  # this access type isn't defined for the group
+            except Exception as exc:  # noqa: BLE001 - real backend/decryption error
+                raise UpgradeAbort(
+                    f"Error retrieving the '{secret_type}' secret from Secrets Group "
+                    f"'{group}' ({access_type}): {exc}"
+                ) from exc
         raise UpgradeAbort(
-            f"Could not retrieve a '{secret_type}' secret from Secrets Group "
-            f"'{group}' for any of the RESTCONF/HTTP/Generic access types."
+            f"No '{secret_type}' secret defined in Secrets Group '{group}' for any "
+            "of the RESTCONF/HTTP/Generic access types."
         )
 
     @staticmethod
     def _check_reachable(client, host):
         """Confirm RESTCONF is reachable AND the credentials authenticate.
 
-        Distinguishes authentication (401) and authorization/privilege (403)
-        failures from plain connectivity so the Job Result is actionable. A
-        successful read proves authentication only; authorization to run the
-        install operations is exercised later (and a 403 there is classified the
-        same way) — the account must be privilege 15 / have install authorization.
+        Returns the parsed device-system data (reused for the current-version read
+        so we don't issue a second identical GET). Distinguishes authentication
+        (401) and authorization/privilege (403) failures from plain connectivity.
         """
         try:
-            client.get(C.DATA_DEVICE_SYSTEM, ok_404=False)
+            return client.get(C.DATA_DEVICE_SYSTEM, ok_404=False) or {}
         except RestconfError as exc:
             status = exc.status_code
             if status == 401:
@@ -407,10 +487,18 @@ class IOSXEUpgrade(Job):
 
     # --------------------------------------------------- helpers: read state --
 
-    def _current_version(self, client):
-        data = client.get(C.DATA_DEVICE_SYSTEM, ok_404=True) or {}
-        system = data.get("Cisco-IOS-XE-device-hardware-oper:device-system-data", {})
+    @staticmethod
+    def _extract_version(data):
+        system = (data or {}).get("Cisco-IOS-XE-device-hardware-oper:device-system-data", {})
         return system.get("software-version")
+
+    def _current_version(self, client):
+        return self._extract_version(client.get(C.DATA_DEVICE_SYSTEM, ok_404=True) or {})
+
+    def _state_tokens(self, client, version_str):
+        """All install-oper state tokens for entries matching version_str."""
+        data = client.get(C.DATA_INSTALL_OPER, ok_404=True) or {}
+        return _version_state_tokens(data, version_str)
 
     def _gate_version_floor(self, current, log):
         current_tuple = _version_tuple(current)
@@ -426,30 +514,57 @@ class IOSXEUpgrade(Job):
             )
         self.logger.info("Version floor gate passed (>= %s).", floor, extra=log)
 
-    def _gate_install_mode(self, client, log):
+    def _gate_install_mode(self, client, log, assume_install_mode):
         data = client.get(C.DATA_INSTALL_OPER, ok_404=True)
         if not data:
+            # install-oper entirely unreadable: every later gate (add/commit/
+            # rollback confirmation) would also be blind, so refuse even WITH the
+            # opt-in rather than run writes against an unobservable device.
             raise UpgradeAbort(
                 "Could not read Cisco-IOS-XE-install-oper data; RESTCONF may lack "
-                "the install model. Refusing to run install commands."
+                "the install model. The operational gates cannot function — refusing "
+                "(assume_install_mode does not override an unreadable model)."
             )
-        # The install-mode enum is install-mode-{bundle,install,install-bundle,...}.
-        # Presence of the container alone is NOT proof of install mode.
-        mode = _find_value(data, "install-mode")
-        state = str(mode).lower().rsplit("install-mode-", 1)[-1] if mode else ""
-        if state in ("install", "install-bundle"):
-            self.logger.info("Install-mode gate passed (%s).", mode, extra=log)
-        elif state == "bundle":
+        # Collect the boot mode of EVERY member. The enum is
+        # install-mode-{install,bundle,install-bundle,...}; compare the suffix.
+        suffixes = [
+            str(m).lower().rsplit("install-mode-", 1)[-1]
+            for m in _find_all_values(data, "install-mode")
+        ]
+        if any(s == "bundle" for s in suffixes):
             raise UpgradeAbort(
-                "Device is in BUNDLE mode, which this job does not support. Convert "
-                "it to INSTALL mode (boot flash:packages.conf) first."
+                "One or more members report BUNDLE mode, which this job does not "
+                "support. Convert to INSTALL mode (boot flash:packages.conf) first."
             )
-        else:
+        if suffixes and all(s == "install" for s in suffixes):
+            self.logger.info("Install-mode gate passed (install).", extra=log)
+            return
+        if suffixes and all(s in ("install", "install-bundle") for s in suffixes):
+            # install-bundle = install mode booted from a .bin, not packages.conf —
+            # an install variant (not plain bundle), so proceed but flag it.
             self.logger.warning(
-                "Could not determine boot mode from install-oper (got %r); "
-                "proceeding on the assumption of INSTALL mode (the C9300 default). "
-                "Verify with 'show version'.", mode, extra=log,
+                "Boot mode is install-bundle (%s) — install mode but booted from a "
+                "bundle rather than packages.conf. Proceeding; verify intended.",
+                suffixes, extra=log,
             )
+            return
+        if suffixes:
+            # Present but unrecognized — fail closed regardless of the opt-in.
+            raise UpgradeAbort(
+                f"Unrecognized boot mode(s) {suffixes}; refusing (fail-closed). "
+                "Verify the device is in install mode."
+            )
+        # Model readable but no boot-mode leaf found: only the opt-in proceeds.
+        if assume_install_mode:
+            self.logger.warning(
+                "No boot-mode value found in install-oper; assume_install_mode is "
+                "set, so proceeding. Verify with 'show version'.", extra=log,
+            )
+            return
+        raise UpgradeAbort(
+            "No boot-mode value found in install-oper. Set 'assume_install_mode' to "
+            "proceed, or verify the device is in install mode."
+        )
 
     def _resolve_image(self, device, target_version, log):
         # Prefer an image explicitly mapped to this device's device-type for the
@@ -524,11 +639,23 @@ class IOSXEUpgrade(Job):
         )
 
     @staticmethod
-    def _read_free_space(client):
-        try:
-            data = client.get(C.DATA_Q_FILESYSTEM, ok_404=True)
-        except RestconfError:
-            return None
+    def _read_q_filesystem(client):
+        """GET q-filesystem data, retrying briefly on transient RESTCONF errors.
+
+        Returns None only if every attempt fails (so a one-off blip after a
+        multi-minute copy doesn't get mistaken for 'no data').
+        """
+        for attempt in range(C.QFS_READ_RETRIES):
+            try:
+                return client.get(C.DATA_Q_FILESYSTEM, ok_404=True) or {}
+            except RestconfError:
+                if attempt + 1 >= C.QFS_READ_RETRIES:
+                    return None
+                time.sleep(C.POLL_INTERVAL)
+        return None
+
+    def _read_free_space(self, client):
+        data = self._read_q_filesystem(client)
         if not data:
             return None
         return _free_bytes_for_fs(data, C.TARGET_FS_NAMES)
@@ -580,81 +707,143 @@ class IOSXEUpgrade(Job):
             )
         self.logger.info("Image size verified (%s bytes).", on_device, extra=log)
 
-    @staticmethod
-    def _read_file_size(client, image_file_name):
-        try:
-            data = client.get(C.DATA_Q_FILESYSTEM, ok_404=True)
-        except RestconfError:
-            return None
+    def _read_file_size(self, client, image_file_name):
+        data = self._read_q_filesystem(client)
         if not data:
             return None
         return _file_size_bytes(data, image_file_name)
 
     def _install_add(self, client, image, op_uuid, log):
         path = f"{C.TARGET_FS}{image.image_file_name}"
+        version_str = image.software_version.version
         self.logger.info("install add %s ...", path, extra=log)
         payload = {"Cisco-IOS-XE-install-rpc:input": {"uuid": op_uuid, "path": path}}
         client.post_rpc(C.OP_INSTALL, payload, timeout=C.RPC_TIMEOUT)
-        self._wait_for_added(client, log)
+        self._wait_for_added(client, version_str, log)
 
-    def _wait_for_added(self, client, log):
+    def _wait_for_added(self, client, version_str, log):
         deadline = time.monotonic() + C.ADD_TIMEOUT
         while time.monotonic() < deadline:
-            data = client.get(C.DATA_INSTALL_OPER, ok_404=True) or {}
-            if "install-state-added" in str(data).lower():
-                self.logger.info("install add staged.", extra=log)
+            # Before 'install add' the target version is not in the install
+            # inventory; once staged it appears (with some install state), so its
+            # presence — scoped to the target version — confirms the add.
+            if self._state_tokens(client, version_str):
+                self.logger.info("install add staged (target version present).", extra=log)
                 return
             time.sleep(C.POLL_INTERVAL)
         # Don't hard-fail on polling ambiguity — install-oper shape drifts between
         # releases. Warn and proceed; activate fails loudly if add never completed.
         self.logger.warning(
-            "Could not positively confirm 'install add' completion from "
-            "install-oper within %ss; proceeding to activate.", C.ADD_TIMEOUT, extra=log,
+            "Could not confirm 'install add' for %s from install-oper within %ss; "
+            "proceeding to activate.", version_str, C.ADD_TIMEOUT, extra=log,
         )
 
     def _install_activate(self, client, image, op_uuid, log):
         self.logger.info(
-            "install activate (the device will reload; auto-rollback timer armed)...", extra=log
+            "install activate → device reloads (auto-rollback timer: %s min)...",
+            C.AUTO_ABORT_MINUTES, extra=log,
         )
-        # The 'activate' RPC has a mandatory choice (version/path/name); supply the
-        # image path. The device arms its default ~120-minute auto-abort timer,
-        # which rolls back if we do not commit after the device returns.
+        # 'activate' requires the mandatory choice (version/path/name); supply the
+        # image path. Arm the auto-abort timer EXPLICITLY so the rollback window is
+        # deterministic — if we never commit, the device reverts when it expires.
+        # (auto-abort-timer-val is research-derived; verify the leaf per release.)
         payload = {
             "Cisco-IOS-XE-install-rpc:input": {
                 "uuid": op_uuid,
                 "path": f"{C.TARGET_FS}{image.image_file_name}",
+                "auto-abort-timer-val": C.AUTO_ABORT_MINUTES,
             }
         }
         client.post_rpc(C.OP_ACTIVATE, payload, timeout=C.RPC_TIMEOUT, tolerate_disconnect=True)
 
-    def _wait_for_reload(self, client, log):
-        self.logger.info("Waiting for the device to reload...", extra=log)
+    def _wait_for_target(self, client, target_str, log):
+        """Wait for the device to reload AND stably report the target version.
+
+        Polls the booted version within RELOAD_TIMEOUT. Transient connection errors
+        and not-yet-populated reads are treated as 'still coming up' (no false
+        'wrong version' abort). Requires the target to be seen on TWO consecutive
+        polls before returning, so a single early/transient read from a
+        partially-converged control plane does not trigger the irreversible commit.
+        """
+        self.logger.info("Waiting for reload and the target version to come up...", extra=log)
         time.sleep(C.RELOAD_INITIAL_SLEEP)
+        target = _version_tuple(target_str)
         deadline = time.monotonic() + C.RELOAD_TIMEOUT
+        went_down = False
+        online = False
+        last_seen = None
+        consecutive = 0
         while time.monotonic() < deadline:
-            if client.ping():
+            try:
+                booted = self._current_version(client)
+            except RestconfError:
+                booted = None
+            if booted is None:
+                went_down = True  # observed the reboot (unreachable at least once)
+            elif not online:
+                online = True
                 self.logger.info("Device is back online.", extra=log)
-                return
+            # Only accept the target AFTER we've seen the device go down, so a box
+            # that never actually reloaded cannot satisfy the confirmation.
+            if went_down and _version_tuple(booted) == target:
+                consecutive += 1
+                if consecutive >= 2:
+                    self.logger.info(
+                        "Confirmed booted target version **%s** (stable).", booted, extra=log
+                    )
+                    return
+            else:
+                consecutive = 0
+                if _version_tuple(booted):
+                    last_seen = booted
             time.sleep(C.POLL_INTERVAL)
         raise UpgradeAbort(
-            f"Device did not return within {C.RELOAD_TIMEOUT}s after activate. The "
-            "auto-rollback timer should revert it to the previous image; NOT "
-            "committing."
+            f"Device did not stably boot the target version within {C.RELOAD_TIMEOUT}s "
+            f"(went_down={went_down}, online={online}, last definite version: "
+            f"{last_seen or 'unknown'}). NOT committing — the auto-rollback timer "
+            "should revert it; verify and roll back manually if needed."
         )
+
+    def _log_rollback_state(self, client, log):
+        """Best-effort: confirm an auto-abort (rollback) timer appears armed.
+
+        We armed it on activate, but the leaf is release-dependent, so verify it is
+        actually pending before relying on it. If it cannot be confirmed, warn
+        loudly rather than letting later messaging promise protection we don't have.
+        """
+        data = client.get(C.DATA_INSTALL_OPER, ok_404=True) or {}
+        timer = None
+        for key in ("auto-abort-timer", "auto-abort-timer-val", "abort-timer", "remaining-time"):
+            for value in _find_all_values(data, key):
+                text = str(value).strip().lower()
+                if text and text not in ("0", "false", "no", "none", "disabled"):
+                    timer = value
+                    break
+            if timer is not None:
+                break
+        if timer is not None:
+            self.logger.info("Auto-rollback timer appears armed (%s).", timer, extra=log)
+        else:
+            self.logger.warning(
+                "Could not confirm an auto-rollback timer is armed; if commit is "
+                "interrupted the device may NOT auto-revert — be ready to roll back "
+                "manually.", extra=log,
+            )
 
     def _install_commit(self, client, op_uuid, log):
         self.logger.info("install commit (making the new image permanent)...", extra=log)
         payload = {"Cisco-IOS-XE-install-rpc:input": {"uuid": op_uuid}}
         client.post_rpc(C.OP_COMMIT, payload, timeout=C.RPC_TIMEOUT)
 
-    def _verify_committed(self, client, log):
-        data = client.get(C.DATA_INSTALL_OPER, ok_404=True) or {}
-        if "install-state-committed" in str(data).lower():
-            self.logger.info("Commit confirmed via install-oper.", extra=log)
+    def _verify_committed(self, client, version_str, log):
+        tokens = self._state_tokens(client, version_str)
+        if _is_committed(tokens):
+            self.logger.info("Commit confirmed via install-oper (state: %s).", tokens, extra=log)
         else:
             self.logger.warning(
-                "Could not positively confirm committed state from install-oper; "
-                "verify with 'show install summary'.", extra=log,
+                "Could not confirm committed state for %s from install-oper (state: "
+                "%s); verify with 'show install summary'.", version_str,
+                tokens or "unknown", extra=log,
             )
 
     def _remove_inactive(self, client, op_uuid, log):
@@ -692,21 +881,94 @@ def _auth_hint(status_code):
     return ""
 
 
-def _find_value(data, key):
-    """Return the first scalar value stored under ``key`` anywhere in ``data``."""
+def _find_all_values(data, key):
+    """Return every scalar value stored under ``key`` anywhere in ``data``."""
+    out = []
     if isinstance(data, dict):
         for found_key, value in data.items():
             if found_key == key and isinstance(value, (str, int, float)):
-                return value
-            found = _find_value(value, key)
-            if found is not None:
-                return found
+                out.append(value)
+            out.extend(_find_all_values(value, key))
     elif isinstance(data, list):
         for item in data:
-            found = _find_value(item, key)
-            if found is not None:
-                return found
-    return None
+            out.extend(_find_all_values(item, key))
+    return out
+
+
+def _version_state_tokens(data, version_str):
+    """All install-oper state tokens (lowercased) for entries matching version_str.
+
+    Collects EVERY state of the target version (per-member rows, and historical
+    rows for the same version), not just the first match, so a stale lower-priority
+    entry cannot mask the live state. Callers reduce these with _is_committed().
+    """
+    target = _version_tuple(version_str)
+    if target is None:
+        return []
+    tokens = []
+    _collect_states(data, target, tokens)
+    return tokens
+
+
+def _collect_states(node, target, out):
+    if isinstance(node, dict):
+        has_version = any(
+            "version" in key.lower()
+            and isinstance(value, (str, int, float))
+            and _version_tuple(value) == target
+            for key, value in node.items()
+        )
+        if has_version:
+            for key, value in node.items():
+                # Collect any non-empty string under a state-named key; the VALUE
+                # may be a full enum ('install-state-committed') OR a short code
+                # ('C'/'A'/'U'/'I') OR a plain word — do not require it to contain
+                # the literal 'state'. _classify_state() normalizes all of these.
+                if "state" in key.lower() and isinstance(value, str) and value.strip():
+                    out.append(value.strip().lower())
+        for value in node.values():
+            _collect_states(value, target, out)
+    elif isinstance(node, list):
+        for item in node:
+            _collect_states(item, target, out)
+
+
+def _classify_state(token):
+    """Normalize an install-oper state value to a canonical state.
+
+    Handles full enums ('install-state-committed'), short codes ('C'/'A'/'U'/'I'),
+    and plain words ('committed'/'activated'/'inactive'). Ordered so 'uncommitted'
+    is never misread as 'committed' and 'inactive' is never misread as 'activated'.
+    """
+    t = token.strip().lower().rsplit("state-", 1)[-1]
+    if t in ("c", "committed"):
+        return "committed"
+    if t in ("u", "uncommitted"):
+        return "uncommitted"
+    if t in ("a", "activated", "active"):
+        return "activated"
+    if t in ("i", "inactive", "added"):
+        return "added"
+    if "uncommitted" in t:
+        return "uncommitted"
+    if "committed" in t:
+        return "committed"
+    if "inactive" in t or "added" in t:
+        return "added"
+    if "activ" in t:
+        return "activated"
+    return "other"
+
+
+def _is_committed(tokens):
+    """True only if a committed state is present and no pending state is.
+
+    'Pending' = activated or uncommitted. Aggregating across rows is conservative:
+    a stale pending row makes this return False, so the caller commits to be safe
+    (a harmless no-op if already committed) rather than risk skipping a real commit.
+    """
+    classes = [_classify_state(t) for t in tokens]
+    return "committed" in classes and not any(c in ("activated", "uncommitted") for c in classes)
 
 
 def _find_partitions(data):
@@ -734,33 +996,40 @@ def _partition_free(partition):
 
 
 def _free_bytes_for_fs(data, fs_names):
-    """Free bytes on the target filesystem from q-filesystem data (KB -> bytes)."""
-    partitions = _find_partitions(data)
-    if not partitions:
-        return None
-    # Prefer a partition whose name matches the target filesystem.
-    for partition in partitions:
-        partition_name = str(partition.get("name", "")).lower()
-        if any(fs in partition_name for fs in fs_names):
-            free = _partition_free(partition)
-            if free is not None:
-                return free
-    # Fall back only when there is exactly one partition to choose from.
-    if len(partitions) == 1:
-        return _partition_free(partitions[0])
+    """Free bytes on the target filesystem from q-filesystem data (KB -> bytes).
+
+    Matches a partition whose name equals a configured name OR is that name with a
+    stack-member suffix ('flash-1', 'flash:1') — but never 'bootflash'/'usbflash',
+    and never an unrelated single partition. Returns None when the target
+    filesystem can't be found, which makes the caller abort rather than validate
+    space on the wrong filesystem.
+    """
+    for partition in _find_partitions(data):
+        name = str(partition.get("name", "")).strip().rstrip(":").lower()
+        for fs in fs_names:
+            if name == fs or name.startswith(fs + "-") or name.startswith(fs + ":"):
+                free = _partition_free(partition)
+                if free is not None:
+                    return free
     return None
 
 
 def _file_size_bytes(data, image_file_name):
-    """Find a named file in q-filesystem data and return its size (KB -> bytes)."""
+    """Find a named file in q-filesystem data and return its size (KB -> bytes).
+
+    Matches the file's basename for EQUALITY (not substring) so a longer filename
+    that merely contains the target name can't mask a truncated copy.
+    """
     if isinstance(data, dict):
         path = data.get("full-path") or data.get("name") or data.get("filename")
-        if path and image_file_name in str(path):
-            size = data.get("file-size") or data.get("size")
-            try:
-                return int(size) * 1024
-            except (TypeError, ValueError):
-                pass
+        if path:
+            basename = str(path).split(":")[-1].rsplit("/", 1)[-1]
+            if basename == image_file_name:
+                size = data.get("file-size") or data.get("size")
+                try:
+                    return int(size) * 1024
+                except (TypeError, ValueError):
+                    pass
         for value in data.values():
             found = _file_size_bytes(value, image_file_name)
             if found is not None:

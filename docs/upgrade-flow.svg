@@ -1,0 +1,178 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 2920" width="980" height="2920" font-family="Helvetica,Arial,sans-serif">
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,3 L0,6 z" fill="#555"/></marker></defs>
+<rect x="0" y="0" width="980" height="2920" fill="#ffffff"/>
+<text x="20" y="28" font-size="18" font-weight="bold" fill="#111">Cisco IOS-XE Upgrade (RESTCONF) — per-device flow</text>
+<rect x="570" y="38" width="400" height="96" rx="6" ry="6" fill="#fbfbfb" stroke="#bbb" stroke-width="1.5"/>
+<text x="770" y="66" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#333"><tspan x="770" dy="0">Legend:  diamonds = decisions</tspan><tspan x="770" dy="14">· red = ABORT this device (logs the reason and continues with the next selected device)</tspan><tspan x="770" dy="14">· amber = warn &amp; continue</tspan><tspan x="770" dy="14">· green = successful end state.</tspan></text>
+<path d="M 400 81 L 400 124" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 400 180 L 400 206" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 400 290 L 400 316" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 400 372 L 400 398" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 400 482 L 400 508" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 400 564 L 400 590" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 400 674 L 400 700" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 400 756 L 400 782" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 400 866 L 400 878" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="406" y="863" width="21" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="416" y="876" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="416" dy="0">No</tspan></text>
+<path d="M 400 962 L 400 988" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="402" y="966" width="28" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="416" y="979" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="416" dy="0">Yes</tspan></text>
+<path d="M 400 1044 L 400 1070" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 400 1154 L 400 1180" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="402" y="1158" width="28" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="416" y="1171" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="416" dy="0">Yes</tspan></text>
+<path d="M 400 1236 L 400 1262" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 400 1346 L 400 1372" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="402" y="1350" width="28" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="416" y="1363" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="416" dy="0">Yes</tspan></text>
+<path d="M 400 1428 L 400 1454" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 400 1538 L 400 1550" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="402" y="1535" width="28" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="416" y="1548" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="416" dy="0">Yes</tspan></text>
+<path d="M 400 1634 L 400 1660" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="406" y="1638" width="21" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="416" y="1651" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="416" dy="0">No</tspan></text>
+<path d="M 400 1716 L 400 1742" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 400 1826 L 400 1852" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="396" y="1830" width="40" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="416" y="1843" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="416" dy="0">match</tspan></text>
+<path d="M 400 1908 L 400 1948" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 400 2004 L 400 2044" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 400 2100 L 400 2126" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 400 2210 L 400 2236" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="402" y="2214" width="28" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="416" y="2227" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="416" dy="0">Yes</tspan></text>
+<path d="M 400 2292 L 400 2332" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 400 2388 L 400 2414" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 400 2498 L 400 2524" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="402" y="2502" width="28" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="416" y="2515" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="416" dy="0">Yes</tspan></text>
+<path d="M 400 2580 L 400 2606" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 400 2690 L 400 2716" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="402" y="2694" width="28" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="416" y="2707" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="416" dy="0">Yes</tspan></text>
+<path d="M 400 2772 L 400 2813" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 275 2648 L 200 2648 L 200 2840 L 240 2840" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="216" y="2735" width="21" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="226" y="2748" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="226" dy="0">No</tspan></text>
+<path d="M 525 248 L 600 248" fill="none" stroke="#B85450" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="552" y="229" width="21" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="562.5" y="242" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B85450"><tspan x="562.5" dy="0">No</tspan></text>
+<rect x="600" y="215" width="330" height="66" rx="6" ry="6" fill="#F8CECC" stroke="#B85450" stroke-width="1.5"/>
+<text x="765.0" y="239" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#8a1f1f"><tspan x="765.0" dy="0">ABORT</tspan></text>
+<text x="765.0" y="257" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#5b1414"><tspan x="765.0" dy="0">No primary IP set</tspan></text>
+<path d="M 525 440 L 600 440" fill="none" stroke="#B85450" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="552" y="421" width="21" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="562.5" y="434" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B85450"><tspan x="562.5" dy="0">No</tspan></text>
+<rect x="600" y="407" width="330" height="66" rx="6" ry="6" fill="#F8CECC" stroke="#B85450" stroke-width="1.5"/>
+<text x="765.0" y="431" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#8a1f1f"><tspan x="765.0" dy="0">ABORT</tspan></text>
+<text x="765.0" y="449" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#5b1414"><tspan x="765.0" dy="0">No Secrets Group / secret missing</tspan></text>
+<path d="M 525 632 L 600 632" fill="none" stroke="#B85450" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="552" y="613" width="21" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="562.5" y="626" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B85450"><tspan x="562.5" dy="0">No</tspan></text>
+<rect x="600" y="599" width="330" height="66" rx="6" ry="6" fill="#F8CECC" stroke="#B85450" stroke-width="1.5"/>
+<text x="765.0" y="623" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#8a1f1f"><tspan x="765.0" dy="0">ABORT</tspan></text>
+<text x="765.0" y="634" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#5b1414"><tspan x="765.0" dy="0">HTTP 401 auth / 403 privilege /</tspan><tspan x="765.0" dy="14">unreachable (RESTCONF disabled?)</tspan></text>
+<path d="M 525 824 L 600 824" fill="none" stroke="#2E7D32" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="549" y="805" width="28" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="562.5" y="818" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#2E7D32"><tspan x="562.5" dy="0">Yes</tspan></text>
+<rect x="600" y="796" width="330" height="56" rx="22" ry="22" fill="#D5E8D4" stroke="#2E7D32" stroke-width="1.5"/>
+<text x="765.0" y="817" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20"><tspan x="765.0" dy="0">Already on target → no-op if committed;</tspan><tspan x="765.0" dy="14">else install commit (commit-to-be-safe)</tspan></text>
+<path d="M 525 920 L 600 920" fill="none" stroke="#B85450" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="552" y="901" width="21" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="562.5" y="914" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B85450"><tspan x="562.5" dy="0">No</tspan></text>
+<rect x="600" y="887" width="330" height="66" rx="6" ry="6" fill="#F8CECC" stroke="#B85450" stroke-width="1.5"/>
+<text x="765.0" y="911" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#8a1f1f"><tspan x="765.0" dy="0">ABORT</tspan></text>
+<text x="765.0" y="922" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#5b1414"><tspan x="765.0" dy="0">Unknown version, or below the</tspan><tspan x="765.0" dy="14">17.3.1 RESTCONF-install floor</tspan></text>
+<path d="M 525 1112 L 600 1112" fill="none" stroke="#B85450" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="520" y="1093" width="86" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="562.5" y="1106" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B85450"><tspan x="562.5" dy="0">bundle / bad</tspan></text>
+<rect x="600" y="1079" width="330" height="66" rx="6" ry="6" fill="#F8CECC" stroke="#B85450" stroke-width="1.5"/>
+<text x="765.0" y="1103" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#8a1f1f"><tspan x="765.0" dy="0">ABORT</tspan></text>
+<text x="765.0" y="1114" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#5b1414"><tspan x="765.0" dy="0">BUNDLE, unrecognized mode, or</tspan><tspan x="765.0" dy="14">install-oper unreadable (fail-closed)</tspan></text>
+<path d="M 275 1112 L 250 1112" fill="none" stroke="#D79B00" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+<rect x="184" y="1093" width="158" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="262.5" y="1099" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B7791f"><tspan x="262.5" dy="0">bundle-derived /</tspan><tspan x="262.5" dy="14">opt-in</tspan></text>
+<rect x="30" y="1082" width="220" height="60" rx="6" ry="6" fill="#FFE6CC" stroke="#D79B00" stroke-width="1.5"/>
+<text x="140.0" y="1105" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#7a4f00"><tspan x="140.0" dy="0">install-bundle, or absent mode-leaf +</tspan><tspan x="140.0" dy="14">assume_install_mode → warn, proceed</tspan></text>
+<path d="M 140 1142 L 140 1208 L 250 1208" fill="none" stroke="#D79B00" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+<rect x="165" y="1189" width="60" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="195.0" y="1202" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B7791f"><tspan x="195.0" dy="0">continue</tspan></text>
+<path d="M 525 1304 L 600 1304" fill="none" stroke="#B85450" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="552" y="1285" width="21" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="562.5" y="1298" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B85450"><tspan x="562.5" dy="0">No</tspan></text>
+<rect x="600" y="1271" width="330" height="66" rx="6" ry="6" fill="#F8CECC" stroke="#B85450" stroke-width="1.5"/>
+<text x="765.0" y="1295" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#8a1f1f"><tspan x="765.0" dy="0">ABORT</tspan></text>
+<text x="765.0" y="1306" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#5b1414"><tspan x="765.0" dy="0">No compatible image, or missing</tspan><tspan x="765.0" dy="14">filename / download URL</tspan></text>
+<path d="M 525 1496 L 600 1496" fill="none" stroke="#B85450" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="552" y="1477" width="21" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="562.5" y="1490" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B85450"><tspan x="562.5" dy="0">No</tspan></text>
+<rect x="600" y="1463" width="330" height="66" rx="6" ry="6" fill="#F8CECC" stroke="#B85450" stroke-width="1.5"/>
+<text x="765.0" y="1487" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#8a1f1f"><tspan x="765.0" dy="0">ABORT</tspan></text>
+<text x="765.0" y="1498" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#5b1414"><tspan x="765.0" dy="0">Free space unconfirmed or</tspan><tspan x="765.0" dy="14">insufficient</tspan></text>
+<path d="M 525 1592 L 600 1592" fill="none" stroke="#2E7D32" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="549" y="1573" width="28" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="562.5" y="1586" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#2E7D32"><tspan x="562.5" dy="0">Yes</tspan></text>
+<rect x="600" y="1564" width="330" height="56" rx="22" ry="22" fill="#D5E8D4" stroke="#2E7D32" stroke-width="1.5"/>
+<text x="765.0" y="1585" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20"><tspan x="765.0" dy="0">DONE: DRY-RUN — pre-flight</tspan><tspan x="765.0" dy="14">passed, no changes made</tspan></text>
+<path d="M 525 1784 L 600 1784" fill="none" stroke="#B85450" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="532" y="1765" width="60" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="562.5" y="1778" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B85450"><tspan x="562.5" dy="0">mismatch</tspan></text>
+<rect x="600" y="1751" width="330" height="66" rx="6" ry="6" fill="#F8CECC" stroke="#B85450" stroke-width="1.5"/>
+<text x="765.0" y="1775" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#8a1f1f"><tspan x="765.0" dy="0">ABORT</tspan></text>
+<text x="765.0" y="1786" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#5b1414"><tspan x="765.0" dy="0">Size mismatch — incomplete</tspan><tspan x="765.0" dy="14">or corrupt transfer</tspan></text>
+<path d="M 275 1784 L 250 1784" fill="none" stroke="#D79B00" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+<rect x="236" y="1765" width="54" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="262.5" y="1778" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B7791f"><tspan x="262.5" dy="0">unknown</tspan></text>
+<rect x="30" y="1754" width="220" height="60" rx="6" ry="6" fill="#FFE6CC" stroke="#D79B00" stroke-width="1.5"/>
+<text x="140.0" y="1777" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#7a4f00"><tspan x="140.0" dy="0">Size unknown/unreadable</tspan><tspan x="140.0" dy="14">→ warn, rely on signature</tspan></text>
+<path d="M 140 1814 L 140 1880 L 250 1880" fill="none" stroke="#D79B00" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+<rect x="165" y="1861" width="60" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="195.0" y="1874" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B7791f"><tspan x="195.0" dy="0">continue</tspan></text>
+<path d="M 525 2168 L 600 2168" fill="none" stroke="#B85450" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="552" y="2149" width="21" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="562.5" y="2162" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B85450"><tspan x="562.5" dy="0">No</tspan></text>
+<rect x="600" y="2135" width="330" height="66" rx="6" ry="6" fill="#F8CECC" stroke="#B85450" stroke-width="1.5"/>
+<text x="765.0" y="2159" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#8a1f1f"><tspan x="765.0" dy="0">ABORT</tspan></text>
+<text x="765.0" y="2170" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#5b1414"><tspan x="765.0" dy="0">Not confirmed before timeout — NOT</tspan><tspan x="765.0" dy="14">committed; auto-rollback should revert</tspan></text>
+<path d="M 525 2456 L 600 2456" fill="none" stroke="#B85450" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="552" y="2437" width="21" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="562.5" y="2450" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B85450"><tspan x="562.5" dy="0">No</tspan></text>
+<rect x="600" y="2423" width="330" height="66" rx="6" ry="6" fill="#F8CECC" stroke="#B85450" stroke-width="1.5"/>
+<text x="765.0" y="2447" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#8a1f1f"><tspan x="765.0" dy="0">ABORT</tspan></text>
+<text x="765.0" y="2458" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#5b1414"><tspan x="765.0" dy="0">Commit failed — ACTIVATED but NOT</tspan><tspan x="765.0" dy="14">committed; manual intervention / re-run</tspan></text>
+<rect x="250" y="31" width="300" height="50" rx="24" ry="24" fill="#DAE8FC" stroke="#6C8EBF" stroke-width="1.5"/>
+<text x="400" y="56" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#1b3a6b"><tspan x="400" dy="0">FOR EACH selected device</tspan></text>
+<rect x="250" y="124" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
+<text x="400" y="145" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Resolve mgmt host</tspan><tspan x="400" dy="14">(primary_ip4 / primary_ip)</tspan></text>
+<polygon points="400,206.0 525.0,248 400,290.0 275.0,248" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
+<text x="400" y="248" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Primary IP set?</tspan></text>
+<rect x="250" y="316" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
+<text x="400" y="337" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Resolve credentials</tspan><tspan x="400" dy="14">(job override OR device Secrets Group)</tspan></text>
+<polygon points="400,398.0 525.0,440 400,482.0 275.0,440" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
+<text x="400" y="433" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Secrets group +</tspan><tspan x="400" dy="14">username &amp; password?</tspan></text>
+<rect x="250" y="508" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
+<text x="400" y="529" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">GET device-system-data</tspan><tspan x="400" dy="14">(auth + reachability)</tspan></text>
+<polygon points="400,590.0 525.0,632 400,674.0 275.0,632" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
+<text x="400" y="625" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Reachable &amp;</tspan><tspan x="400" dy="14">authenticated?</tspan></text>
+<rect x="250" y="700" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
+<text x="400" y="721" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Read current version</tspan><tspan x="400" dy="14">(from the reachability response)</tspan></text>
+<polygon points="400,782.0 525.0,824 400,866.0 275.0,824" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
+<text x="400" y="817" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Already on</tspan><tspan x="400" dy="14">target version?</tspan></text>
+<polygon points="400,878.0 525.0,920 400,962.0 275.0,920" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
+<text x="400" y="913" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Version parses</tspan><tspan x="400" dy="14">&amp; ≥ 17.3.1?</tspan></text>
+<rect x="250" y="988" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
+<text x="400" y="1009" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Read install-oper boot mode</tspan><tspan x="400" dy="14">(all members)</tspan></text>
+<polygon points="400,1070.0 525.0,1112 400,1154.0 275.0,1112" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
+<text x="400" y="1105" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">All members</tspan><tspan x="400" dy="14">INSTALL mode?</tspan></text>
+<rect x="250" y="1180" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
+<text x="400" y="1201" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Resolve image (device-type map</tspan><tspan x="400" dy="14">→ default; warn if fallback)</tspan></text>
+<polygon points="400,1262.0 525.0,1304 400,1346.0 275.0,1304" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
+<text x="400" y="1297" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Image has filename</tspan><tspan x="400" dy="14">&amp; download URL?</tspan></text>
+<rect x="250" y="1372" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
+<text x="400" y="1393" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Read free space</tspan><tspan x="400" dy="14">(q-filesystem, exact flash: match)</tspan></text>
+<polygon points="400,1454.0 525.0,1496 400,1538.0 275.0,1496" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
+<text x="400" y="1489" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Free ≥ image × 2</tspan><tspan x="400" dy="14">(or ≥ 2 GB if size unknown)?</tspan></text>
+<polygon points="400,1550.0 525.0,1592 400,1634.0 275.0,1592" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
+<text x="400" y="1592" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Dry-run?</tspan></text>
+<rect x="250" y="1660" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
+<text x="400" y="1681" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Copy image to flash:</tspan><tspan x="400" dy="14">(device-initiated copy RPC)</tspan></text>
+<polygon points="400,1742.0 525.0,1784 400,1826.0 275.0,1784" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
+<text x="400" y="1777" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">On-device size</tspan><tspan x="400" dy="14">vs expected?</tspan></text>
+<rect x="250" y="1852" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
+<text x="400" y="1873" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">install add (poll target version</tspan><tspan x="400" dy="14">→ staged; warn if unconfirmed)</tspan></text>
+<rect x="250" y="1948" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
+<text x="400" y="1969" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">install activate → reload</tspan><tspan x="400" dy="14">(arm auto-abort timer)</tspan></text>
+<rect x="250" y="2044" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
+<text x="400" y="2065" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Wait for reload; poll booted version</tspan><tspan x="400" dy="14">until stable (2 consecutive matches)</tspan></text>
+<polygon points="400,2126.0 525.0,2168 400,2210.0 275.0,2168" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
+<text x="400" y="2161" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Target version</tspan><tspan x="400" dy="14">stably confirmed?</tspan></text>
+<rect x="250" y="2236" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
+<text x="400" y="2257" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Check auto-rollback timer armed</tspan><tspan x="400" dy="14">(warn if not confirmable)</tspan></text>
+<rect x="250" y="2332" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
+<text x="400" y="2353" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">install commit → verify</tspan><tspan x="400" dy="14">(scoped to target version)</tspan></text>
+<polygon points="400,2414.0 525.0,2456 400,2498.0 275.0,2456" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
+<text x="400" y="2449" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Commit</tspan><tspan x="400" dy="14">succeeded?</tspan></text>
+<rect x="250" y="2524" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
+<text x="400" y="2545" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Sync Nautobot software_version</tspan><tspan x="400" dy="14">(warn on fail; already committed)</tspan></text>
+<polygon points="400,2606.0 525.0,2648 400,2690.0 275.0,2648" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
+<text x="400" y="2641" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">remove_inactive</tspan><tspan x="400" dy="14">enabled?</tspan></text>
+<rect x="250" y="2716" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
+<text x="400" y="2737" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">install remove inactive</tspan><tspan x="400" dy="14">(warn on fail)</tspan></text>
+<rect x="240" y="2813" width="320" height="54" rx="24" ry="24" fill="#D5E8D4" stroke="#2E7D32" stroke-width="1.5"/>
+<text x="400" y="2840" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#14532d"><tspan x="400" dy="0">DONE: UPGRADED &amp; COMMITTED ✓</tspan></text>
+</svg>

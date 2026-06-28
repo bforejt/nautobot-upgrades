@@ -26,8 +26,10 @@ VERIFY_TLS = False
 #: Writable filesystem on a Catalyst 9300 (the C9000 upgrade guide uses flash:).
 TARGET_FS = "flash:"
 
-#: Substrings used to match the target filesystem's partition name in the
-#: platform-software-oper data (partition names vary: flash / bootflash / ...).
+#: Partition name(s) of the target filesystem in the platform-software-oper data.
+#: Matched by exact name OR a stack-member suffix (e.g. "flash", "flash-1",
+#: "flash:1") — NOT as a loose substring, so "bootflash"/"usbflash" never match.
+#: Add aliases here if a release/platform names the writable flash differently.
 TARGET_FS_NAMES = ("flash",)
 
 # --- Version gating ---------------------------------------------------------
@@ -63,6 +65,9 @@ OP_REMOVE = "operations/Cisco-IOS-XE-install-rpc:remove"
 
 GET_TIMEOUT = 30
 RPC_TIMEOUT = 120
+#: Retries for the q-filesystem read (free-space / copied-file-size) so a transient
+#: blip right after a long copy isn't mistaken for "no data".
+QFS_READ_RETRIES = 3
 #: The copy RPC blocks for the full image transfer (~1 GB) with no async
 #: progress, so its timeout is large.
 COPY_TIMEOUT = 3600
@@ -73,7 +78,16 @@ ADD_TIMEOUT = 1200
 #: After "install activate" the device reloads; how long to wait before it
 #: starts responding to RESTCONF again.
 RELOAD_INITIAL_SLEEP = 120
+#: Overall budget for the device to (a) come back online AND (b) report the
+#: target version after activate/reload. The booted-version read is polled within
+#: this window so a slow-to-converge control plane is not falsely failed.
 RELOAD_TIMEOUT = 1800
+
+#: Auto-abort (rollback) timer in MINUTES, armed explicitly on "install activate".
+#: If we cannot confirm the new image after reload we do NOT commit, and the
+#: device reverts when this timer expires. Must exceed RELOAD_TIMEOUT comfortably.
+#: (The RESTCONF leaf name is research-derived — verify against your release.)
+AUTO_ABORT_MINUTES = 60
 
 # --- Safety thresholds ------------------------------------------------------
 
