@@ -58,27 +58,27 @@ class RegisterImage(Job):
         model=SoftwareVersion,
         required=False,
         description=(
-            "Existing Software Version this image provides. Leave blank to create "
-            "one from the fields below."
+            "EITHER -> the existing Software Version this image provides (leave "
+            "blank to create a new one below)."
         ),
     )
     new_version = StringVar(
         required=False,
         description=(
-            "Create a new Software Version with this version string (e.g. 17.09.04) "
-            "when none is selected above."
+            "OR-> create a new Software Version with this version string (e.g. "
+            "17.09.04) when none is selected above."
         ),
     )
     platform = ObjectVar(
         model=Platform,
-        required=False,
-        description="Platform for the new Software Version (required when creating one).",
+        required=True,
+        description="Platform for the Software Version (used only when creating a new one).",
     )
     version_status = ObjectVar(
         model=Status,
-        required=False,
+        required=True,
         query_params={"content_types": "dcim.softwareversion"},
-        description="Status for the new Software Version (required when creating one).",
+        description="Status for the Software Version (used only when creating a new one).",
     )
     device_types = MultiObjectVar(
         model=DeviceType,
@@ -99,7 +99,8 @@ class RegisterImage(Job):
         required=False,
         description=(
             "Device-facing base URL; download_url is built as <base>/<filename>. "
-            "Defaults to the FIRMWARE_BASE_URL env var, then the project default."
+            "Defaults to the FIRMWARE_BASE_URL env var on the worker; required if "
+            "that is unset (unless you give a full Download URL override)."
         ),
     )
     download_url_override = StringVar(
@@ -212,18 +213,14 @@ class RegisterImage(Job):
         if not software_version:
             if not new_version:
                 raise RegisterAbort(
-                    "Select an existing Software Version, or provide a new version "
-                    "string (with platform and status) to create one."
+                    "Provide a New version to create (Platform and Version status "
+                    "are required), or select an existing Software Version."
                 )
-            if not platform:
-                raise RegisterAbort(f"A platform is required to create version '{new_version}'.")
-            if not version_status:
-                raise RegisterAbort(f"A status is required to create version '{new_version}'.")
             self._check_status(version_status, SoftwareVersion, "Software Versions")
-        elif new_version or platform or version_status:
+        elif new_version:
             self.logger.warning(
-                "An existing Software Version is selected; ignoring the new-version / "
-                "platform / status fields."
+                "An existing Software Version is selected; ignoring the New version "
+                "field (and the Platform / Version status)."
             )
         self._check_status(image_status, SoftwareImageFile, "Software Image Files")
 
@@ -275,9 +272,14 @@ class RegisterImage(Job):
         override = (url_override or "").strip()
         if override:
             return override
-        base = (base_override or "").strip()
+        base = (base_override or "").strip() or (os.getenv(C.FIRMWARE_BASE_URL_ENV) or "").strip()
         if not base:
-            base = (os.getenv(C.FIRMWARE_BASE_URL_ENV) or "").strip() or C.FIRMWARE_BASE_URL_DEFAULT
+            raise RegisterAbort(
+                "No firmware base URL configured. Set the FIRMWARE_BASE_URL "
+                "environment variable on the Nautobot worker (e.g. "
+                "https://<host>:9443/images/), fill the 'Firmware base URL' field, "
+                "or provide a full 'Download URL override'."
+            )
         return f"{base.rstrip('/')}/{file_name}"
 
     @staticmethod

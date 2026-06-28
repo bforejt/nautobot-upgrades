@@ -121,10 +121,12 @@ HASHLIB_SUPPORTED = ("md5", "sha1", "sha224", "sha256", "sha384", "sha512")
 
 #: DEVICE-FACING base URL stored in SoftwareImageFile.download_url as
 #: "<base>/<filename>". Must be reachable from the device management network AND
-#: the Nautobot worker. Override per run, or set the FIRMWARE_BASE_URL env var on
-#: the worker. (Matches the firmware server's FIRMWARE_SERVER_NAME + HTTPS port.)
+#: the Nautobot worker, and matches the firmware server's FIRMWARE_SERVER_NAME +
+#: HTTPS port (e.g. https://firmware.lab.example:9443/images/). REQUIRED: set this
+#: env var on the worker, or use the per-run field / a full Download URL override.
+#: There is intentionally NO default — the job aborts rather than guess a host and
+#: store a download_url devices can't reach.
 FIRMWARE_BASE_URL_ENV = "FIRMWARE_BASE_URL"
-FIRMWARE_BASE_URL_DEFAULT = "https://firmware.example.com:9443/images/"
 
 #: INTERNAL URL the Celery worker uses to VALIDATE an image — it reaches the nginx
 #: "firmware-download" service directly on the Docker network (plain HTTP, no cert

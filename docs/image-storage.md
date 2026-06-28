@@ -66,7 +66,7 @@ Set these on the **Nautobot worker** environment (the Register job reads them):
 
 | Env var | Purpose | Default |
 |---|---|---|
-| `FIRMWARE_BASE_URL` | Device-facing base; `download_url = base + filename` | `https://firmware.example.com:9443/images/` |
+| `FIRMWARE_BASE_URL` | Device-facing base; `download_url = base + filename` | **required** (no default — the job aborts if unset, unless the per-run field or a full Download URL override is given) |
 | `FIRMWARE_INTERNAL_URL` | Worker validation base (internal HTTP); set `""` to disable | `http://firmware-download/images/` |
 
 Both are also overridable per run on the **Register IOS-XE Image** job
@@ -82,7 +82,8 @@ Both are also overridable per run on the **Register IOS-XE Image** job
 3. **Register the image** — run **Register IOS-XE Image**:
    - `image_file_name` = the uploaded filename
    - `software_version` = the existing version, **or** leave it blank and set
-     `new_version` + `platform` + `version_status` to create the version inline
+     `new_version` to create the version inline (**platform** and **version
+     status** are required fields either way)
    - `device_types` = the compatible models (e.g. the C9300 types); optional
      `default_image`
    - `image_status`
