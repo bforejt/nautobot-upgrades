@@ -166,7 +166,20 @@ class RegisterImage(Job):
             "dryrun",
         ]
 
-    def run(
+    def run(self, **kwargs):
+        # A custom exception raised from a Git-repo job cannot be unpickled by
+        # Celery (it surfaces as UnpickleableExceptionWrapper). Translate our
+        # control-flow abort into a logged error + a built-in exception, raised
+        # OUTSIDE the except block so the custom exception isn't attached as the
+        # new exception's __context__ (which would re-introduce the pickle issue).
+        try:
+            return self._execute(**kwargs)
+        except RegisterAbort as exc:
+            abort_message = str(exc)
+        self.logger.error(abort_message)
+        raise RuntimeError(abort_message)
+
+    def _execute(
         self,
         *,
         image_file_name,
