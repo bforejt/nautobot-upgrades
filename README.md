@@ -3,15 +3,17 @@
 A native **Nautobot Job** that reliably and cautiously upgrades **Cisco IOS-XE**
 devices — **Catalyst 9300** primarily — driven entirely over **RESTCONF**.
 
-> ### ⚠️ Status: brand new — NOTHING has been tested yet
+> ### ⚠️ Status: new — installs on Nautobot 2.4; functionality not yet tested
 >
-> This project has **not** been validated against real hardware or even a running
-> Nautobot instance. The RESTCONF payloads and operational paths are
-> **research-derived** from Cisco's published YANG models and documentation, not
-> confirmed on a device. Treat everything here as a **first draft to be tested in
-> a lab** before it goes anywhere near production. **Always run with Dry-run
-> first.** Expect to adjust release-specific details (see
-> [`jobs/constants.py`](jobs/constants.py)).
+> The package **installs and syncs** as a Git Repository on **Nautobot 2.4**
+> (deployed via [nautobot-composer](#sister-project-nautobot-composer)). Beyond
+> that, **nothing has been exercised**: no Job has been run end-to-end, no real
+> device has been touched, and other Nautobot versions (3.x) have not been tried.
+> The RESTCONF payloads and operational paths are **research-derived** from
+> Cisco's published YANG models, not confirmed on a device. Treat this as a
+> **lab-only first draft** and **always run with Dry-run first**. Expect to adjust
+> release-specific details in [`jobs/constants.py`](jobs/constants.py). See
+> [Status & testing](#status--testing) for what is and isn't verified.
 
 ---
 
@@ -50,6 +52,58 @@ device attached, and a **Debug** toggle logs every RESTCONF request/response.
 See **[docs/upgrade-flow.md](docs/upgrade-flow.md)** for a flowchart of the
 per-device decision logic (editable [`upgrade-flow.drawio`](docs/upgrade-flow.drawio)).
 
+## Supported versions
+
+| Component | Supported | Notes |
+| --- | --- | --- |
+| **Nautobot** | **2.4 LTS** and **3.x** | The intended targets. Earlier 2.x (≥ 2.2, where the core `SoftwareVersion` / `SoftwareImageFile` models exist) *may* work but is **not tested or supported**. |
+| **Deployment** | [nautobot-composer](#sister-project-nautobot-composer) | The sister Docker-Compose installer this Job is built to run on; it currently ships Nautobot 2.4 and 3.x. |
+| **Device OS** | Cisco IOS-XE **≥ 17.3.1** | Where the RESTCONF install models exist; the Job refuses lower releases. **16.12.x is not supported.** |
+| **Platform** | Catalyst **9300** (install mode) | Primary target, booted from `flash:packages.conf`. |
+
+There is no separate Python dependency matrix: the Job imports only `requests`
+plus Nautobot core, so whatever ships with the supported Nautobot release suffices.
+
+## Status & testing
+
+This project is **new and largely unverified** — be conservative with it.
+
+**Verified so far**
+
+- ✅ The repository **installs / syncs cleanly as a Nautobot Git Repository on
+  Nautobot 2.4** (deployed via nautobot-composer): both Jobs register and appear
+  on the Jobs page.
+
+**Not yet tested — do not assume these work**
+
+- ❌ **End-to-end Job execution.** Neither *Cisco IOS-XE Upgrade* nor *Register
+  IOS-XE Image* has been run, even in Dry-run.
+- ❌ **Any interaction with a real device** (RESTCONF reachability, copy, install,
+  reload, commit) — every RESTCONF leaf path / RPC payload is research-derived.
+- ❌ **Nautobot 3.x** — only 2.4 has been installed against.
+- ❌ The **firmware-server integration** (upload → register → device pull).
+- ❌ The **auto-rollback timer** behavior and the `install-oper` state parsing on
+  real hardware (see [Known limitations](#known-limitations--not-yet-done)).
+
+**Suggested test order (lab only)**
+
+1. **Install + register.** Sync the repo on a 2.4 nautobot-composer instance and
+   enable both Jobs; upload a `.bin` to the firmware server and run **Register
+   IOS-XE Image** with Dry-run, then for real; confirm the resulting
+   `SoftwareImageFile` / `SoftwareVersion` look correct.
+2. **Upgrade Dry-run.** Against one lab Catalyst 9300 (≥ 17.3.1, RESTCONF enabled,
+   a Secrets Group assigned): run **Cisco IOS-XE Upgrade** with Dry-run on and
+   confirm the reachability/auth, version-floor, install-mode, image-resolution,
+   and free-space gates all read correctly. Fix any release-specific leaf paths in
+   [`jobs/constants.py`](jobs/constants.py).
+3. **Single real upgrade.** One non-production device — watch the Job Result log
+   through copy → add → activate → reload → confirm → commit, and verify the
+   auto-rollback timer actually arms.
+4. **Broaden.** Repeat on **Nautobot 3.x** and on a **stack** before any wider use.
+
+Until at least steps 1–3 pass in a lab, treat every run as experimental and keep
+Dry-run on.
+
 ## Why these design choices
 
 The design follows a deep up-front analysis to avoid reinvention and respect the
@@ -79,7 +133,9 @@ project's constraints. The key findings that shaped it:
 
 **Nautobot side**
 
-- Nautobot **≥ 2.2** (core software models); **≥ 2.3/2.4** recommended.
+- Nautobot **2.4 LTS** or **3.x** (see [Supported versions](#supported-versions)) —
+  typically deployed via [nautobot-composer](#sister-project-nautobot-composer),
+  the sister installer this Job targets.
 - The repository added as a **Git Repository** with the **`jobs`** provided
   contents type (see below).
 - Each target device must have:
@@ -161,6 +217,19 @@ default `http://firmware-download/images/`). Both are overridable per run.
 
 See **[docs/image-storage.md](docs/image-storage.md)** for the full design: URL
 formats, the acquire → upload → register workflow, TLS notes, and retention.
+
+## Sister project: nautobot-composer
+
+This Job is designed to run on **nautobot-composer** — a Docker-Compose-based
+installer for Nautobot and several related tools, by the same author, which
+currently supports **Nautobot 2.4 and 3.x**. It is also where the **firmware
+server** lives (its opt-in `firmware` profile — see [Image storage](#image-storage)).
+
+You can run this Job on any Nautobot 2.4/3.x instance, but nautobot-composer is
+the reference deployment: it provides a matching Nautobot version, the firmware
+host devices pull images from, and a worker environment that already has the
+Job's only runtime dependency (`requests`, plus Nautobot core). The one
+installation tested to date is a 2.4 nautobot-composer deployment.
 
 ## Installing into Nautobot
 
