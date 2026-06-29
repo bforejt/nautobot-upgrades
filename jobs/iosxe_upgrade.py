@@ -280,7 +280,13 @@ class IOSXEUpgrade(Job):
     # ----------------------------------------------------------- orchestrate --
 
     def _upgrade_device(
-        self, device, target_version, override_group, remove_inactive, debug, dryrun,
+        self,
+        device,
+        target_version,
+        override_group,
+        remove_inactive,
+        debug,
+        dryrun,
         assume_install_mode,
     ):
         log = {"object": device}
@@ -345,7 +351,9 @@ class IOSXEUpgrade(Job):
         except Exception as exc:  # noqa: BLE001 - device committed; only Nautobot lagged
             self.logger.error(
                 "Upgrade committed, but updating Nautobot Device.software_version "
-                "failed (%s); update it manually.", exc, extra=log,
+                "failed (%s); update it manually.",
+                exc,
+                extra=log,
             )
             sync_note = " (Nautobot software_version update FAILED — set it manually)"
 
@@ -375,7 +383,9 @@ class IOSXEUpgrade(Job):
             )
         self.logger.warning(
             "On target %s but not confirmed committed (state: %s); committing to be "
-            "safe (cancels any pending auto-rollback).", target_str, tokens or "unknown",
+            "safe (cancels any pending auto-rollback).",
+            target_str,
+            tokens or "unknown",
             extra=log,
         )
         op_uuid = str(uuid_lib.uuid4())
@@ -387,7 +397,9 @@ class IOSXEUpgrade(Job):
             self.logger.warning(
                 "install commit on an already-on-target device returned an error "
                 "(%s); it is likely already committed. Verify with 'show install "
-                "summary'.", exc, extra=log,
+                "summary'.",
+                exc,
+                extra=log,
             )
             return (
                 f"On target {target_str}; commit returned an error (likely already "
@@ -399,7 +411,9 @@ class IOSXEUpgrade(Job):
         except Exception as exc:  # noqa: BLE001 - committed; only Nautobot metadata lagged
             self.logger.error(
                 "Committed, but updating Nautobot software_version failed (%s); "
-                "update it manually.", exc, extra=log,
+                "update it manually.",
+                exc,
+                extra=log,
             )
         return f"On target {target_str}; ran install commit to ensure it is committed."
 
@@ -422,9 +436,7 @@ class IOSXEUpgrade(Job):
                 "cannot obtain RESTCONF credentials."
             )
         source = "job override" if override_group else "device"
-        self.logger.info(
-            "Using credentials from %s Secrets Group '%s'.", source, group, extra=log
-        )
+        self.logger.info("Using credentials from %s Secrets Group '%s'.", source, group, extra=log)
         username = self._secret(group, device, SecretsGroupSecretTypeChoices.TYPE_USERNAME)
         password = self._secret(group, device, SecretsGroupSecretTypeChoices.TYPE_PASSWORD)
         return username, password
@@ -504,9 +516,7 @@ class IOSXEUpgrade(Job):
         current_tuple = _version_tuple(current)
         floor = ".".join(str(p) for p in C.MIN_IOSXE_VERSION)
         if not current_tuple:
-            raise UpgradeAbort(
-                f"Could not determine the running IOS-XE version (got {current!r})."
-            )
+            raise UpgradeAbort(f"Could not determine the running IOS-XE version (got {current!r}).")
         if current_tuple < C.MIN_IOSXE_VERSION:
             raise UpgradeAbort(
                 f"Running version {current} is below {floor}. RESTCONF-driven "
@@ -545,7 +555,8 @@ class IOSXEUpgrade(Job):
             self.logger.warning(
                 "Boot mode is install-bundle (%s) — install mode but booted from a "
                 "bundle rather than packages.conf. Proceeding; verify intended.",
-                suffixes, extra=log,
+                suffixes,
+                extra=log,
             )
             return
         if suffixes:
@@ -558,7 +569,8 @@ class IOSXEUpgrade(Job):
         if assume_install_mode:
             self.logger.warning(
                 "No boot-mode value found in install-oper; assume_install_mode is "
-                "set, so proceeding. Verify with 'show version'.", extra=log,
+                "set, so proceeding. Verify with 'show version'.",
+                extra=log,
             )
             return
         raise UpgradeAbort(
@@ -581,7 +593,10 @@ class IOSXEUpgrade(Job):
                 self.logger.warning(
                     "No image mapped to device-type '%s' for %s; using default image "
                     "'%s'. Verify it is correct for this platform.",
-                    device.device_type, target_version, image.image_file_name, extra=log,
+                    device.device_type,
+                    target_version,
+                    image.image_file_name,
+                    extra=log,
                 )
         if image is None:
             raise UpgradeAbort(
@@ -626,8 +641,8 @@ class IOSXEUpgrade(Job):
             needed = C.SPACE_FALLBACK_MIN_BYTES
             label = f"{needed} bytes (image size unknown in Nautobot)"
             self.logger.warning(
-                "Image file size not set in Nautobot; using fallback space "
-                "requirement.", extra=log,
+                "Image file size not set in Nautobot; using fallback space requirement.",
+                extra=log,
             )
         if free < needed:
             raise UpgradeAbort(
@@ -689,7 +704,8 @@ class IOSXEUpgrade(Job):
             self.logger.warning(
                 "Image file size not set in Nautobot; cannot size-check the "
                 "transfer. Relying on 'install add' image signature validation. Set "
-                "a file size in Nautobot for a stricter pre-install gate.", extra=log,
+                "a file size in Nautobot for a stricter pre-install gate.",
+                extra=log,
             )
             return
         on_device = self._read_file_size(client, image.image_file_name)
@@ -735,13 +751,17 @@ class IOSXEUpgrade(Job):
         # releases. Warn and proceed; activate fails loudly if add never completed.
         self.logger.warning(
             "Could not confirm 'install add' for %s from install-oper within %ss; "
-            "proceeding to activate.", version_str, C.ADD_TIMEOUT, extra=log,
+            "proceeding to activate.",
+            version_str,
+            C.ADD_TIMEOUT,
+            extra=log,
         )
 
     def _install_activate(self, client, image, op_uuid, log):
         self.logger.info(
             "install activate → device reloads (auto-rollback timer: %s min)...",
-            C.AUTO_ABORT_MINUTES, extra=log,
+            C.AUTO_ABORT_MINUTES,
+            extra=log,
         )
         # 'activate' requires the mandatory choice (version/path/name); supply the
         # image path. Arm the auto-abort timer EXPLICITLY so the rollback window is
@@ -827,7 +847,8 @@ class IOSXEUpgrade(Job):
             self.logger.warning(
                 "Could not confirm an auto-rollback timer is armed; if commit is "
                 "interrupted the device may NOT auto-revert — be ready to roll back "
-                "manually.", extra=log,
+                "manually.",
+                extra=log,
             )
 
     def _install_commit(self, client, op_uuid, log):
@@ -842,8 +863,10 @@ class IOSXEUpgrade(Job):
         else:
             self.logger.warning(
                 "Could not confirm committed state for %s from install-oper (state: "
-                "%s); verify with 'show install summary'.", version_str,
-                tokens or "unknown", extra=log,
+                "%s); verify with 'show install summary'.",
+                version_str,
+                tokens or "unknown",
+                extra=log,
             )
 
     def _remove_inactive(self, client, op_uuid, log):

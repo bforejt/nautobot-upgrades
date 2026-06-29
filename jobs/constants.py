@@ -45,8 +45,7 @@ MIN_IOSXE_VERSION = (17, 3, 1)
 
 #: device-hardware-data -> device-hardware -> device-system-data -> software-version
 DATA_DEVICE_SYSTEM = (
-    "data/Cisco-IOS-XE-device-hardware-oper:device-hardware-data"
-    "/device-hardware/device-system-data"
+    "data/Cisco-IOS-XE-device-hardware-oper:device-hardware-data/device-hardware/device-system-data"
 )
 DATA_INSTALL_OPER = "data/Cisco-IOS-XE-install-oper:install-oper-data"
 

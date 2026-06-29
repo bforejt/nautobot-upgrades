@@ -338,7 +338,8 @@ class RegisterImage(Job):
         if algo not in C.HASHLIB_SUPPORTED:
             self.logger.warning(
                 "Algorithm '%s' cannot be computed in-job; recording the provided "
-                "checksum without verification.", algo
+                "checksum without verification.",
+                algo,
             )
             return expected or ""
 
