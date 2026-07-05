@@ -68,7 +68,7 @@
 <rect x="552" y="901" width="21" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="562.5" y="914" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B85450"><tspan x="562.5" dy="0">No</tspan></text>
 <rect x="600" y="887" width="330" height="66" rx="6" ry="6" fill="#F8CECC" stroke="#B85450" stroke-width="1.5"/>
 <text x="765.0" y="911" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#8a1f1f"><tspan x="765.0" dy="0">ABORT</tspan></text>
-<text x="765.0" y="922" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#5b1414"><tspan x="765.0" dy="0">Unknown version, or below the</tspan><tspan x="765.0" dy="14">17.3.1 RESTCONF-install floor</tspan></text>
+<text x="765.0" y="922" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#5b1414"><tspan x="765.0" dy="0">Unknown version, or below the</tspan><tspan x="765.0" dy="14">17.12.1 support floor</tspan></text>
 <path d="M 525 1112 L 600 1112" fill="none" stroke="#B85450" stroke-width="1.5" marker-end="url(#arrow)"/>
 <rect x="520" y="1093" width="86" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="562.5" y="1106" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B85450"><tspan x="562.5" dy="0">bundle / bad</tspan></text>
 <rect x="600" y="1079" width="330" height="66" rx="6" ry="6" fill="#F8CECC" stroke="#B85450" stroke-width="1.5"/>
@@ -95,14 +95,14 @@
 <rect x="600" y="1564" width="330" height="56" rx="22" ry="22" fill="#D5E8D4" stroke="#2E7D32" stroke-width="1.5"/>
 <text x="765.0" y="1585" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20"><tspan x="765.0" dy="0">DONE: DRY-RUN — pre-flight</tspan><tspan x="765.0" dy="14">passed, no changes made</tspan></text>
 <path d="M 525 1784 L 600 1784" fill="none" stroke="#B85450" stroke-width="1.5" marker-end="url(#arrow)"/>
-<rect x="532" y="1765" width="60" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="562.5" y="1778" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B85450"><tspan x="562.5" dy="0">mismatch</tspan></text>
+<rect x="474" y="1765" width="177" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="562.5" y="1771" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B85450"><tspan x="562.5" dy="0">stall / timeout /</tspan><tspan x="562.5" dy="14">oversize</tspan></text>
 <rect x="600" y="1751" width="330" height="66" rx="6" ry="6" fill="#F8CECC" stroke="#B85450" stroke-width="1.5"/>
 <text x="765.0" y="1775" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#8a1f1f"><tspan x="765.0" dy="0">ABORT</tspan></text>
-<text x="765.0" y="1786" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#5b1414"><tspan x="765.0" dy="0">Size mismatch — incomplete</tspan><tspan x="765.0" dy="14">or corrupt transfer</tspan></text>
+<text x="765.0" y="1786" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#5b1414"><tspan x="765.0" dy="0">No progress, timeout, or file</tspan><tspan x="765.0" dy="14">larger than expected — abort</tspan></text>
 <path d="M 275 1784 L 250 1784" fill="none" stroke="#D79B00" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
-<rect x="236" y="1765" width="54" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="262.5" y="1778" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B7791f"><tspan x="262.5" dy="0">unknown</tspan></text>
+<rect x="220" y="1765" width="86" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="262.5" y="1778" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B7791f"><tspan x="262.5" dy="0">size unknown</tspan></text>
 <rect x="30" y="1754" width="220" height="60" rx="6" ry="6" fill="#FFE6CC" stroke="#D79B00" stroke-width="1.5"/>
-<text x="140.0" y="1777" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#7a4f00"><tspan x="140.0" dy="0">Size unknown/unreadable</tspan><tspan x="140.0" dy="14">→ warn, rely on signature</tspan></text>
+<text x="140.0" y="1777" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#7a4f00"><tspan x="140.0" dy="0">No expected size → settle-detect,</tspan><tspan x="140.0" dy="14">rely on install add signature</tspan></text>
 <path d="M 140 1814 L 140 1880 L 250 1880" fill="none" stroke="#D79B00" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
 <rect x="165" y="1861" width="60" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="195.0" y="1874" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B7791f"><tspan x="195.0" dy="0">continue</tspan></text>
 <path d="M 525 2168 L 600 2168" fill="none" stroke="#B85450" stroke-width="1.5" marker-end="url(#arrow)"/>
@@ -134,7 +134,7 @@
 <polygon points="400,782.0 525.0,824 400,866.0 275.0,824" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
 <text x="400" y="817" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Already on</tspan><tspan x="400" dy="14">target version?</tspan></text>
 <polygon points="400,878.0 525.0,920 400,962.0 275.0,920" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
-<text x="400" y="913" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Version parses</tspan><tspan x="400" dy="14">&amp; ≥ 17.3.1?</tspan></text>
+<text x="400" y="913" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Version parses</tspan><tspan x="400" dy="14">&amp; ≥ 17.12.1?</tspan></text>
 <rect x="250" y="988" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
 <text x="400" y="1009" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Read oper-state boot-mode</tspan><tspan x="400" dy="14">(install-oper, all members)</tspan></text>
 <polygon points="400,1070.0 525.0,1112 400,1154.0 275.0,1112" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
@@ -150,9 +150,9 @@
 <polygon points="400,1550.0 525.0,1592 400,1634.0 275.0,1592" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
 <text x="400" y="1592" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Dry-run?</tspan></text>
 <rect x="250" y="1660" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
-<text x="400" y="1681" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Copy image to flash:</tspan><tspan x="400" dy="14">(device-initiated copy RPC)</tspan></text>
+<text x="400" y="1681" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Async express copy (xcopy) + poll size:</tspan><tspan x="400" dy="14">progress %, stall watch (skip if file present)</tspan></text>
 <polygon points="400,1742.0 525.0,1784 400,1826.0 275.0,1784" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
-<text x="400" y="1777" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">On-device size</tspan><tspan x="400" dy="14">vs expected?</tspan></text>
+<text x="400" y="1777" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Transfer complete</tspan><tspan x="400" dy="14">&amp; size matches?</tspan></text>
 <rect x="250" y="1852" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
 <text x="400" y="1873" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">install add (poll target version</tspan><tspan x="400" dy="14">→ staged; warn if unconfirmed)</tspan></text>
 <rect x="250" y="1948" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>

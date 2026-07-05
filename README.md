@@ -28,15 +28,18 @@ stopping on the first failure for a device:
 1. **Connect** — resolve the device's primary IP and credentials (from core
    Secrets), confirm RESTCONF is reachable.
 2. **Pre-flight gates** — read the running version; skip if already on target;
-   confirm the device is **≥ 17.3.1** and in **install mode**; resolve the image
+   confirm the device is **≥ 17.12.1** and in **install mode**; resolve the image
    from Nautobot and confirm device-type compatibility; **confirm enough free
    space** before copying anything.
-3. **Transfer + integrity** — device pulls the image (`copy` RPC), then the job
-   **verifies the image arrived intact** by confirming the on-device file size
-   matches the expected size, backed by `install add`'s mandatory image
-   signature validation (which aborts on a corrupt/untrusted image). The
-   on-device hash RPC is intentionally not used as a gate — it is asynchronous
-   and returns no synchronous pass/fail.
+3. **Transfer + integrity** — the device pulls the image via the **async
+   express-copy RPC (`xcopy`)** while the job polls the growing on-device file,
+   logging **progress (MB / % / elapsed)**, aborting on **stall or timeout**,
+   and accepting completion only on an **exact size match** against the expected
+   size — backed by `install add`'s mandatory image signature validation (which
+   aborts on a corrupt/untrusted image). If the exact file is already on flash,
+   the copy is skipped (idempotent re-runs). The on-device hash RPC is
+   intentionally not used as a gate — it is asynchronous and returns no
+   synchronous pass/fail.
 4. **Install** — `install add` → `install activate` (which arms the device's
    **auto-rollback timer**) → reload.
 5. **Verify, then commit** — reconnect, confirm the device actually booted the
@@ -58,7 +61,7 @@ per-device decision logic (editable [`upgrade-flow.drawio`](docs/upgrade-flow.dr
 | --- | --- | --- |
 | **Nautobot** | **2.4 LTS** and **3.x** | The intended targets. Earlier 2.x (≥ 2.2, where the core `SoftwareVersion` / `SoftwareImageFile` models exist) *may* work but is **not tested or supported**. |
 | **Deployment** | [nautobot-composer](#sister-project-nautobot-composer) | The sister Docker-Compose installer this Job is built to run on; it currently ships Nautobot 2.4 and 3.x. |
-| **Device OS** | Cisco IOS-XE **≥ 17.3.1** | Where the RESTCONF install models exist; the Job refuses lower releases. **16.12.x is not supported.** |
+| **Device OS** | Cisco IOS-XE **≥ 17.12.1** | Tested fleet baseline (single async-xcopy code path). 17.5.1–17.11 *may* work (xcopy + boot-mode exist there) but is **not tested or supported**; below 17.5.1 the required RPCs don't exist. |
 | **Platform** | Catalyst **9300** (install mode) | Primary target, booted from `flash:packages.conf`. |
 
 There is no separate Python dependency matrix: the Job imports only `requests`
@@ -91,7 +94,7 @@ This project is **new and largely unverified** — be conservative with it.
    enable both Jobs; upload a `.bin` to the firmware server and run **Register
    IOS-XE Image** with Dry-run, then for real; confirm the resulting
    `SoftwareImageFile` / `SoftwareVersion` look correct.
-2. **Upgrade Dry-run.** Against one lab Catalyst 9300 (≥ 17.3.1, RESTCONF enabled,
+2. **Upgrade Dry-run.** Against one lab Catalyst 9300 (≥ 17.12.1, RESTCONF enabled,
    a Secrets Group assigned): run **Cisco IOS-XE Upgrade** with Dry-run on and
    confirm the reachability/auth, version-floor, install-mode, image-resolution,
    and free-space gates all read correctly. Fix any release-specific leaf paths in
@@ -109,14 +112,16 @@ Dry-run on.
 The design follows a deep up-front analysis to avoid reinvention and respect the
 project's constraints. The key findings that shaped it:
 
-- **RESTCONF can drive the entire upgrade — but only on IOS-XE ≥ 17.2.1.** The
-  install workflow is exposed via the `Cisco-IOS-XE-install-rpc` YANG model
-  (`install` / `activate` / `install-commit` / `remove`), invokable over
-  RESTCONF. **That model does not exist on 16.12.x** (verified against Cisco's
-  published YANG models — it first appears in 17.2.1, with `install-oper` in
-  17.3.1). On a box currently running 16.12.x the install step has **no RESTCONF
-  path** at all. We therefore **require ≥ 17.3.1** and the job refuses lower
-  releases with guidance, rather than dragging in a second protocol.
+- **RESTCONF can drive the entire upgrade — on modern IOS-XE.** The install
+  workflow is exposed via the `Cisco-IOS-XE-install-rpc` YANG model
+  (`install` / `activate` / `install-commit` / `remove`), and the image transfer
+  via the async **express copy** RPC (`Cisco-IOS-XE-xcopy-rpc`, 17.5.1+), which
+  frees the job to poll copy **progress/stall/completion** from the on-device
+  file size. None of this exists on 16.12.x (verified against Cisco's published
+  YANG models: install-rpc appears in 17.2.1, install-oper in 17.3.1, xcopy and
+  the boot-mode leaf in 17.5.1). The support floor is **17.12.1** — the tested
+  fleet baseline — keeping a single code path with no legacy blocking-copy
+  fallback; the job refuses lower releases with guidance.
 - **Software version/image data is now Nautobot _core_, not a plugin.**
   `dcim.SoftwareVersion` and `dcim.SoftwareImageFile` moved into core in
   **Nautobot 2.2** (image file name, checksum + hashing algorithm, file size,
@@ -151,7 +156,7 @@ project's constraints. The key findings that shaped it:
 
 **Device side**
 
-- Cisco IOS-XE **≥ 17.3.1**, Catalyst 9300, booted in **install mode**
+- Cisco IOS-XE **≥ 17.12.1**, Catalyst 9300, booted in **install mode**
   (`flash:packages.conf`).
 - **RESTCONF enabled** (`restconf` + `ip http secure-server`). Enabling RESTCONF
   on devices that lack it is intentionally **out of scope** for now.
@@ -201,7 +206,7 @@ map). The binaries are hosted by the companion **`nautobot-composer` stack's
 `firmware` profile**: a **Filebrowser** UI (`:8088`, authenticated) for engineers
 to upload, and a read-only **nginx `firmware-download`** service (`:9443` HTTPS /
 `:9080` HTTP, network/ACL-restricted) that the **devices pull from** via the
-RESTCONF `copy` RPC.
+RESTCONF `xcopy` (express copy) RPC.
 
 The **Register IOS-XE Image** job builds the device `download_url` from a
 configurable base + the uploaded filename, validates the image is reachable
@@ -263,7 +268,7 @@ installation tested to date is a 2.4 nautobot-composer deployment.
 | Devices | yes | Target devices to upgrade (narrowed by the filters above). |
 | Target version | yes | Core `SoftwareVersion` to upgrade to. |
 | Secrets group override | no | Force one Secrets Group for the whole run; by default each device uses its own assigned group. |
-| Assume install mode | no | Proceed when boot mode can't be confirmed over RESTCONF (default **off** = fail closed; confirmed BUNDLE always aborts). **Required for devices on 17.3.1–17.4.x** — the install-oper `boot-mode` leaf only exists from **IOS-XE 17.5.1**; verify install mode manually first. |
+| Assume install mode | no | Proceed when boot mode can't be confirmed over RESTCONF (default **off** = fail closed; confirmed BUNDLE always aborts). Only needed for model drift — verify install mode manually first. |
 | Remove inactive | no | After commit, reclaim space (default **off** — keeps the rollback image for a soak period). |
 | Debug | no | Verbose RESTCONF request/response logging. |
 | Dry-run | — | Read-only pre-flight only (default **on**). |
@@ -275,7 +280,7 @@ installation tested to date is a 2.4 nautobot-composer deployment.
 | Read version | `GET .../Cisco-IOS-XE-device-hardware-oper:device-hardware-data/device-system-data` |
 | Install state / mode | `GET .../Cisco-IOS-XE-install-oper:install-oper-data` |
 | Free space / file size | `GET .../Cisco-IOS-XE-platform-software-oper:cisco-platform-software/q-filesystem` |
-| Copy image | `POST .../operations/Cisco-IOS-XE-rpc:copy` |
+| Copy image (async + progress) | `POST .../operations/Cisco-IOS-XE-xcopy-rpc:xcopy`, then size-poll via q-filesystem |
 | Add / activate / commit / remove | `POST .../operations/Cisco-IOS-XE-install-rpc:{install,activate,install-commit,remove}` |
 
 ## Configuration

@@ -6,7 +6,8 @@ upgrade job.
 ## Architecture: Nautobot is the index, the firmware server holds the bytes
 
 The upgrade is **RESTCONF-only and device-initiated** — the switch pulls its own
-image via the `Cisco-IOS-XE-rpc:copy` RPC from a URL we hand it. That dictates
+image via the async express-copy RPC (`Cisco-IOS-XE-xcopy-rpc:xcopy`) from a URL
+we hand it — while the job polls the growing file for progress. That dictates
 the storage model:
 
 ```
@@ -20,7 +21,7 @@ the storage model:
    │   • file size               │      └──────────────────────────────────────┘
    │   • mapped device types      │                 ▲              ▲
    └──────────────────────────────┘     device pull │              │ worker validates
-                                          (copy RPC) │              │ (internal HTTP)
+                                          (xcopy RPC) │              │ (internal HTTP)
                                        ┌─────────────┴──┐   ┌───────┴──────────┐
                                        │ Catalyst 9300  │   │ Nautobot worker  │
                                        └────────────────┘   └──────────────────┘
@@ -41,7 +42,7 @@ the storage model:
 ## Download URL format
 
 Device-facing (this is what gets stored in `download_url` and handed to the
-device's `copy` RPC):
+device's `xcopy` (express copy) RPC):
 
 ```
 https://<host>:9443/images/<filename>     # default HTTPS
@@ -103,9 +104,13 @@ Both are also overridable per run on the **Register IOS-XE Image** job
 ## TLS
 
 The firmware server's HTTPS cert is **self-signed by default**. IOS-XE
-`copy https:` validates the server cert against the device's trustpoints, so for
-real device pulls either (a) the firmware server presents a CA-trusted cert the
-devices trust, or (b) use the **HTTP** URL on a locked-down management VLAN.
+the HTTPS transfer validates the server cert against the device's trustpoints,
+so for real device pulls either (a) the firmware server presents a CA-trusted
+cert the devices trust, (b) use the **HTTP** URL on a locked-down management
+VLAN, or (c) install the firmware server's CA in a device trustpoint
+(`crypto pki trustpoint` + `authenticate`) and set **`XCOPY_TRUSTPOINT`** in
+[`jobs/constants.py`](../jobs/constants.py) so the xcopy RPC validates against
+that trustpoint.
 
 Worker-side validation avoids the issue by using the internal **HTTP**
 `firmware-download` route. If you instead validate an HTTPS URL, **Verify repo
