@@ -40,8 +40,10 @@ stopping on the first failure for a device:
    the copy is skipped (idempotent re-runs). The on-device hash RPC is
    intentionally not used as a gate — it is asynchronous and returns no
    synchronous pass/fail.
-4. **Install** — `install add` → `install activate` (which arms the device's
-   **auto-rollback timer**) → reload.
+4. **Install** — `install add` (the job waits for the add-**complete** state,
+   not mere presence) → `install activate` (arms the device's **auto-rollback
+   timer**; the job verifies activation actually **started** — the RPC returns
+   2xx even when the install engine rejects it) → reload.
 5. **Verify, then commit** — reconnect, confirm the device actually booted the
    target version, and **only then** `install commit`. If it didn't come back or
    booted the wrong version, the job does **not** commit and the device
@@ -259,6 +261,14 @@ installation tested to date is a 2.4 nautobot-composer deployment.
    it. Dry-run executes every read-only gate and reports exactly what *would*
    happen.
 3. When the dry-run is clean, run it again with Dry-run unchecked.
+
+**Expected device log noise during an upgrade** (benign — do not stop on these):
+`%ISSU-3-ISSU_COMP_CHECK_FAILED` appears on every `install add` (the engine
+auto-probes for a hitless ISSU path that Catalyst 9300s in normal deployments
+don't have; our upgrade is reload-based by design), and 17.15.x emits SELinux
+`%SELINUX-1-VIOLATION` AVC-denial spam for `smand`/`yang-infra` that is unrelated
+to the upgrade. The repeated `%DMI-5-AUTH_PASSED` entries are this job's own
+RESTCONF polling.
 
 ### Job inputs
 

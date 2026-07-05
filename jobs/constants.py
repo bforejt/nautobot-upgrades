@@ -101,8 +101,16 @@ XCOPY_VRF = ""
 XCOPY_TRUSTPOINT = ""
 
 POLL_INTERVAL = 30
-#: How long to wait for "install add" to finish staging the package.
+#: How long to wait for "install add" to finish staging the package. The target
+#: version appears in install-oper as soon as the add STARTS, so the gate waits
+#: for an add-complete state (added/inactive or beyond), not mere presence.
 ADD_TIMEOUT = 1200
+
+#: How long to wait for the activation to actually START after the activate RPC
+#: (state turns activated/uncommitted, or the device drops offline to reload).
+#: The RPC returns 2xx even when the install engine rejects it — e.g. 'add in
+#: progress' — so the state change is the real gate.
+ACTIVATE_START_TIMEOUT = 600
 #: After "install activate" the device reloads; how long to wait before it
 #: starts responding to RESTCONF again.
 RELOAD_INITIAL_SLEEP = 120
