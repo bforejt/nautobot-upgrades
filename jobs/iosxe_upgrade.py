@@ -158,7 +158,10 @@ class IOSXEUpgrade(Job):
         default=False,
         description=(
             "Proceed even if INSTALL vs BUNDLE boot mode cannot be confirmed over "
-            "RESTCONF. Off (default) = fail closed; confirmed BUNDLE always aborts."
+            "RESTCONF. Off (default) = fail closed; confirmed BUNDLE always aborts. "
+            "REQUIRED for devices running 17.3.1-17.4.x: install-oper only gained "
+            "the boot-mode leaf in IOS-XE 17.5.1, so older releases cannot report "
+            "it — verify install mode manually ('show version') before enabling."
         ),
     )
     remove_inactive = BooleanVar(
@@ -535,12 +538,12 @@ class IOSXEUpgrade(Job):
                 "the install model. The operational gates cannot function — refusing "
                 "(assume_install_mode does not override an unreadable model)."
             )
-        # Collect the boot mode of EVERY member. The enum is
-        # install-mode-{install,bundle,install-bundle,...}; compare the suffix.
-        suffixes = [
-            str(m).lower().rsplit("install-mode-", 1)[-1]
-            for m in _find_all_values(data, "install-mode")
-        ]
+        # Collect the boot mode of EVERY member. The leaf is 'boot-mode' (17.15.x:
+        # typedef install-boot-mode, values install-boot-mode-{unknown,install,
+        # bundle}); older texts also describe an install-mode-* enum family. We
+        # scope to oper-state containers first so stale rollback-point entries
+        # can't pollute the read, and normalize both enum prefixes.
+        suffixes = _boot_mode_suffixes(data)
         if any(s == "bundle" for s in suffixes):
             raise UpgradeAbort(
                 "One or more members report BUNDLE mode, which this job does not "
@@ -559,23 +562,26 @@ class IOSXEUpgrade(Job):
                 extra=log,
             )
             return
-        if suffixes:
+        unconfirmed = [s for s in suffixes if s not in ("install", "install-bundle", "unknown")]
+        if unconfirmed:
             # Present but unrecognized — fail closed regardless of the opt-in.
             raise UpgradeAbort(
-                f"Unrecognized boot mode(s) {suffixes}; refusing (fail-closed). "
+                f"Unrecognized boot mode(s) {unconfirmed}; refusing (fail-closed). "
                 "Verify the device is in install mode."
             )
-        # Model readable but no boot-mode leaf found: only the opt-in proceeds.
+        # No boot-mode leaf found (absent on e.g. 17.3.1), or the device reports
+        # the explicit 'unknown' enum: only the opt-in proceeds.
+        detail = f"read: {suffixes}" if suffixes else "no boot-mode value found"
         if assume_install_mode:
             self.logger.warning(
-                "No boot-mode value found in install-oper; assume_install_mode is "
-                "set, so proceeding. Verify with 'show version'.",
-                extra=log,
+                "Boot mode unconfirmed in install-oper (%s); assume_install_mode is "
+                "set, so proceeding. Verify with 'show version'.", detail, extra=log,
             )
             return
         raise UpgradeAbort(
-            "No boot-mode value found in install-oper. Set 'assume_install_mode' to "
-            "proceed, or verify the device is in install mode."
+            f"Boot mode unconfirmed in install-oper ({detail}). Set "
+            "'assume_install_mode' to proceed, or verify the device is in install "
+            "mode."
         )
 
     def _resolve_image(self, device, target_version, log):
@@ -916,6 +922,49 @@ def _find_all_values(data, key):
         for item in data:
             out.extend(_find_all_values(item, key))
     return out
+
+
+def _mode_suffix(value):
+    """Normalize a boot-mode enum to its suffix (install / bundle / ...).
+
+    Handles BOTH enum families: install-boot-mode-* (the oper-state boot-mode
+    leaf's typedef on 17.15.x) and install-mode-* (the older/rollback typedef).
+    The longer prefix is stripped first; an unprefixed value passes through as-is.
+    """
+    text = str(value).strip().lower()
+    for prefix in ("install-boot-mode-", "install-mode-"):
+        if text.startswith(prefix):
+            return text[len(prefix):]
+    return text
+
+
+def _boot_mode_suffixes(data):
+    """Normalized boot-mode suffixes from install-oper data.
+
+    Prefers boot-mode values found inside 'oper-state' containers (the live
+    per-location state on 17.15.x) so historical rollback-point entries are not
+    read as the current mode; falls back to a global key search when no
+    oper-state carries one.
+    """
+    scoped = []
+    _collect_oper_state_modes(data, scoped)
+    values = scoped or [
+        value for key in C.BOOT_MODE_KEYS for value in _find_all_values(data, key)
+    ]
+    return [_mode_suffix(value) for value in values]
+
+
+def _collect_oper_state_modes(node, out):
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "oper-state" and isinstance(value, dict):
+                for mode_key in C.BOOT_MODE_KEYS:
+                    out.extend(_find_all_values(value, mode_key))
+            else:
+                _collect_oper_state_modes(value, out)
+    elif isinstance(node, list):
+        for item in node:
+            _collect_oper_state_modes(item, out)
 
 
 def _version_state_tokens(data, version_str):
