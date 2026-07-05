@@ -6,8 +6,9 @@ engineer: every step is a PASS/FAIL gate, and the job stops on the first failed
 gate for a device rather than pushing forward.
 
 Scope (kept deliberately small):
-  * IOS-XE Catalyst 9300, devices currently running >= 17.3.1 (the floor where
-    the install RESTCONF models exist). Lower releases are refused with guidance.
+  * IOS-XE Catalyst 9300, devices currently running >= 17.12.1 (tested fleet
+    baseline; the async express-copy RPC and boot-mode leaf exist from 17.5.1,
+    but 17.5-17.11 is untested and unsupported). Lower releases are refused.
   * Reads target version + image metadata from CORE Nautobot
     (dcim.SoftwareVersion / dcim.SoftwareImageFile). No Device Lifecycle app
     dependency.
@@ -19,7 +20,8 @@ Upgrade flow (per device):
      (cancelling a pending rollback), else no-op
   2. Pre-flight gates: version floor, install-mode (fail-closed), image
      resolution + compatibility, free-space
-  3. Copy the image (device-initiated) and verify it arrived intact
+  3. Async express copy (xcopy) with progress/stall polling, completed by an
+     on-device size match against the expected size
   4. install add -> install activate (auto-rollback timer armed) -> reload
   5. Poll until the target version actually booted -> install commit
   6. Post-checks + sync Nautobot's Device.software_version
@@ -37,6 +39,7 @@ import re
 import time
 import uuid as uuid_lib
 
+from celery.exceptions import SoftTimeLimitExceeded
 from django.db import transaction
 from nautobot.apps.jobs import BooleanVar, DryRunVar, Job, MultiObjectVar, ObjectVar
 from nautobot.dcim.models import (
@@ -158,10 +161,9 @@ class IOSXEUpgrade(Job):
         default=False,
         description=(
             "Proceed even if INSTALL vs BUNDLE boot mode cannot be confirmed over "
-            "RESTCONF. Off (default) = fail closed; confirmed BUNDLE always aborts. "
-            "REQUIRED for devices running 17.3.1-17.4.x: install-oper only gained "
-            "the boot-mode leaf in IOS-XE 17.5.1, so older releases cannot report "
-            "it — verify install mode manually ('show version') before enabling."
+            "RESTCONF (e.g. a release names the boot-mode leaf differently). Off "
+            "(default) = fail closed; a confirmed BUNDLE always aborts. Verify "
+            "install mode manually ('show version') before enabling."
         ),
     )
     remove_inactive = BooleanVar(
@@ -187,12 +189,16 @@ class IOSXEUpgrade(Job):
         description = (
             "Conservative, gate-driven IOS-XE install-mode upgrade for Catalyst "
             "9300 devices, driven entirely over RESTCONF. Requires devices running "
-            "IOS-XE >= 17.3.1 with RESTCONF enabled."
+            "IOS-XE >= 17.12.1 with RESTCONF enabled."
         )
         has_sensitive_variables = False
         dryrun_default = True
-        soft_time_limit = 5400
-        time_limit = 7200
+        # One worst-case device (copy 3600 + add 1200 + reload 120+1800 + slack)
+        # must fit inside the soft limit; large batches should be split across
+        # runs. SoftTimeLimitExceeded is re-raised (never swallowed) so no new
+        # device upgrade starts after the budget is gone.
+        soft_time_limit = 7200
+        time_limit = 8400
         field_order = [
             "location",
             "role",
@@ -255,7 +261,8 @@ class IOSXEUpgrade(Job):
         )
         if filter_summary:
             self.logger.info("Filters applied: %s.", filter_summary)
-        for device in devices:
+        device_list = list(devices)
+        for index, device in enumerate(device_list):
             try:
                 summary = self._upgrade_device(
                     device,
@@ -268,6 +275,19 @@ class IOSXEUpgrade(Job):
                 )
                 results[device.name] = summary
                 log_success(summary, extra={"object": device})
+            except SoftTimeLimitExceeded:
+                # Never swallow the time budget: report where we stopped and fail
+                # the run rather than starting more upgrades against the hard-kill.
+                remaining = [d.name for d in device_list[index + 1 :]]
+                self.logger.error(
+                    "Job soft time limit reached while processing %s. Not attempted: "
+                    "%s. Check this device's state manually ('show install summary') "
+                    "and re-run for the remaining devices.",
+                    device.name,
+                    remaining or "none",
+                    extra={"object": device},
+                )
+                raise
             except UpgradeAbort as exc:
                 results[device.name] = f"ABORTED: {exc}"
                 self.logger.error("Upgrade aborted: %s", exc, extra={"object": device})
@@ -324,9 +344,9 @@ class IOSXEUpgrade(Job):
                 "All pre-flight gates passed."
             )
 
-        # -- 3. Transfer + integrity -----------------------------------------
+        # -- 3. Transfer + integrity (async xcopy, watched to a size-verified
+        # completion inside _copy_image) ---------------------------------------
         self._copy_image(client, image, log)
-        self._verify_image(client, image, log)
 
         # -- 4. install add / activate / reload ------------------------------
         op_uuid = str(uuid_lib.uuid4())
@@ -569,7 +589,8 @@ class IOSXEUpgrade(Job):
                 f"Unrecognized boot mode(s) {unconfirmed}; refusing (fail-closed). "
                 "Verify the device is in install mode."
             )
-        # No boot-mode leaf found (absent on e.g. 17.3.1), or the device reports
+        # No boot-mode leaf found (unexpected on >= 17.12.1 — likely leaf-name
+        # drift), or the device reports
         # the explicit 'unknown' enum: only the opt-in proceeds.
         detail = f"read: {suffixes}" if suffixes else "no boot-mode value found"
         if assume_install_mode:
@@ -686,17 +707,19 @@ class IOSXEUpgrade(Job):
         )
 
     @staticmethod
-    def _read_q_filesystem(client):
+    def _read_q_filesystem(client, retries=None):
         """GET q-filesystem data, retrying briefly on transient RESTCONF errors.
 
         Returns None only if every attempt fails (so a one-off blip after a
-        multi-minute copy doesn't get mistaken for 'no data').
+        multi-minute copy doesn't get mistaken for 'no data'). Callers that are
+        already polling on their own cadence (the copy watcher) pass retries=1.
         """
-        for attempt in range(C.QFS_READ_RETRIES):
+        attempts = C.QFS_READ_RETRIES if retries is None else retries
+        for attempt in range(attempts):
             try:
                 return client.get(C.DATA_Q_FILESYSTEM, ok_404=True) or {}
             except RestconfError:
-                if attempt + 1 >= C.QFS_READ_RETRIES:
+                if attempt + 1 >= attempts:
                     return None
                 time.sleep(C.POLL_INTERVAL)
         return None
@@ -710,59 +733,172 @@ class IOSXEUpgrade(Job):
     # ------------------------------------------------- helpers: device writes --
 
     def _copy_image(self, client, image, log):
+        """Start an async express copy (xcopy) and watch it to completion.
+
+        xcopy returns immediately with a uuid; there is no oper node and its rich
+        progress events are notification-only, so progress, stall detection, AND
+        completion all come from polling the on-device file size (with free-space
+        consumption as a fallback signal for releases that hide the growing file).
+        The final size match doubles as the transfer-integrity gate; 'install add'
+        image-signature validation remains the cryptographic backstop.
+        """
         dest = f"{C.TARGET_FS}{image.image_file_name}"
-        self.logger.info("Copying image to %s (this can take several minutes)...", dest, extra=log)
-        payload = {
-            "Cisco-IOS-XE-rpc:input": {
-                "source-drop-node-name": image.download_url,
-                "destination-drop-node-name": dest,
-            }
+        expected = image.image_file_size
+        pre_data = self._read_q_filesystem(client) or {}
+        baseline_free = _free_bytes_for_fs(pre_data, C.TARGET_FS_NAMES)
+        pre_size = _file_size_bytes(pre_data, image.image_file_name)
+        if expected and pre_size is not None and pre_size == expected:
+            # Idempotent short-circuit: the exact file is already on flash (e.g. a
+            # prior run copied it but died before install add). Skip the transfer;
+            # 'install add' signature validation still vets the bytes.
+            self.logger.info(
+                "Image already present on %s with the expected size (%s bytes); skipping copy.",
+                dest,
+                expected,
+                extra=log,
+            )
+            return
+        if pre_size is not None:
+            self.logger.warning(
+                "A file named %s already exists on flash (%s bytes, expected %s); "
+                "it will be overwritten by the copy.",
+                image.image_file_name,
+                pre_size,
+                expected or "unknown",
+                extra=log,
+            )
+        self.logger.info(
+            "Starting express copy to %s (expected size: %s)...",
+            dest,
+            f"{expected} bytes" if expected else "unknown",
+            extra=log,
+        )
+        rpc_input = {
+            "uuid": str(uuid_lib.uuid4()),
+            "source-path": image.download_url,
+            "destination-path": dest,
+            # xcopy's device-side guard is in MINUTES.
+            "timeout": max(1, math.ceil(C.COPY_TIMEOUT / 60)),
         }
+        if C.XCOPY_VRF:
+            rpc_input["vrf"] = C.XCOPY_VRF
+        if C.XCOPY_TRUSTPOINT:
+            rpc_input["trustpoint"] = C.XCOPY_TRUSTPOINT
         try:
-            client.post_rpc(C.OP_COPY, payload, timeout=C.COPY_TIMEOUT)
+            client.post_rpc(C.OP_XCOPY, {"Cisco-IOS-XE-xcopy-rpc:input": rpc_input})
         except RestconfError as exc:
             raise UpgradeAbort(_interpret_copy_failure(exc, image.download_url)) from exc
-        self.logger.info("Copy completed.", extra=log)
+        self._watch_copy(client, image, expected, baseline_free, pre_size, log)
 
-    def _verify_image(self, client, image, log):
-        """Confirm the copied image arrived intact.
+    def _watch_copy(self, client, image, expected, baseline_free, pre_size, log):
+        """Poll for copy progress; return on verified completion, abort otherwise.
 
-        The on-device cryptographic hash verify RPC (Cisco-IOS-XE-verify-rpc) is
-        asynchronous — its synchronous response carries no pass/fail — so we do
-        NOT rely on it. Instead we confirm the on-device file size matches the
-        expected size (catches truncated/incomplete transfers) and lean on
-        'install add', which validates the image's digital signature and aborts on
-        a corrupt or untrusted image.
+        ``pre_size`` is the destination file's size BEFORE the copy started (None
+        if absent): completion is only accepted after the observed size has
+        changed from it, so a stale same-name file can't satisfy the gate while
+        xcopy is still overwriting it underneath.
         """
-        expected = image.image_file_size
-        if not expected:
-            self.logger.warning(
-                "Image file size not set in Nautobot; cannot size-check the "
-                "transfer. Relying on 'install add' image signature validation. Set "
-                "a file size in Nautobot for a stricter pre-install gate.",
-                extra=log,
-            )
-            return
-        on_device = self._read_file_size(client, image.image_file_name)
-        if on_device is None:
-            self.logger.warning(
-                "Could not read the copied file's size over RESTCONF; relying on "
-                "'install add' signature validation to catch a bad transfer.",
-                extra=log,
-            )
-            return
-        if abs(on_device - expected) > C.SIZE_MATCH_TOLERANCE_BYTES:
-            raise UpgradeAbort(
-                f"Copied image size {on_device} bytes != expected {expected} bytes; "
-                "the transfer was incomplete or corrupt."
-            )
-        self.logger.info("Image size verified (%s bytes).", on_device, extra=log)
+        deadline = time.monotonic() + C.COPY_TIMEOUT
+        started = time.monotonic()
+        last_signal = 0
+        last_logged = 0
+        stall_polls = 0
+        settle_polls = 0
+        last_size = None
+        overwrite_seen = pre_size is None
+        while time.monotonic() < deadline:
+            time.sleep(C.POLL_INTERVAL)
+            data = self._read_q_filesystem(client, retries=1) or {}
+            size = _file_size_bytes(data, image.image_file_name)
+            free = _free_bytes_for_fs(data, C.TARGET_FS_NAMES)
+            consumed = None
+            if baseline_free is not None and free is not None:
+                consumed = max(0, baseline_free - free)
+            elapsed = int(time.monotonic() - started)
+            if size is not None and size != pre_size:
+                overwrite_seen = True
 
-    def _read_file_size(self, client, image_file_name):
-        data = self._read_q_filesystem(client)
-        if not data:
-            return None
-        return _file_size_bytes(data, image_file_name)
+            # Completion: exact size match when the expected size is known — but
+            # only once the pre-existing file (if any) has been observed changing.
+            if (
+                expected
+                and overwrite_seen
+                and size is not None
+                and abs(size - expected) <= C.SIZE_MATCH_TOLERANCE_BYTES
+            ):
+                self.logger.info(
+                    "Copy complete and size verified (%s bytes, %ss).",
+                    size,
+                    elapsed,
+                    extra=log,
+                )
+                return
+            if expected and size is not None and size > expected + C.SIZE_MATCH_TOLERANCE_BYTES:
+                raise UpgradeAbort(
+                    f"Copied file is larger than expected ({size} > {expected} "
+                    "bytes) — wrong file on the server or stale metadata in "
+                    "Nautobot."
+                )
+            # Completion without an expected size: file present and stable.
+            if (
+                not expected
+                and overwrite_seen
+                and size is not None
+                and size > 0
+                and size == last_size
+            ):
+                settle_polls += 1
+                if settle_polls >= C.COPY_SETTLE_POLLS:
+                    self.logger.warning(
+                        "Copy appears complete (%s bytes, stable for %d polls), but "
+                        "no expected size is set in Nautobot so the transfer cannot "
+                        "be size-verified — relying on 'install add' signature "
+                        "validation. Set the image file size for a stricter gate.",
+                        size,
+                        settle_polls,
+                        extra=log,
+                    )
+                    return
+            else:
+                settle_polls = 0
+            last_size = size
+
+            # Progress + stall bookkeeping (best available signal). Small
+            # free-space jitter must not count as progress or reset the stall
+            # counter, and progress lines are rate-limited to meaningful steps.
+            signal = size if size is not None else consumed
+            if signal is not None and abs(signal - last_signal) >= C.PROGRESS_MIN_DELTA_BYTES:
+                last_signal = signal
+                stall_polls = 0
+                step = max((expected or 0) // 20, 25_000_000)  # ~5% or 25 MB
+                if abs(signal - last_logged) >= step:
+                    last_logged = signal
+                    self.logger.info(
+                        "Copy progress: %s (elapsed %ss).",
+                        _progress_label(size, consumed, expected),
+                        elapsed,
+                        extra=log,
+                    )
+            else:
+                stall_polls += 1
+                if stall_polls in (2, 6) or stall_polls % 10 == 0:
+                    self.logger.info(
+                        "Copy running, no progress visible yet (%s, elapsed %ss, "
+                        "stall %d/%d polls).",
+                        _progress_label(size, consumed, expected),
+                        elapsed,
+                        stall_polls,
+                        C.COPY_STALL_POLLS,
+                        extra=log,
+                    )
+                if stall_polls >= C.COPY_STALL_POLLS:
+                    raise UpgradeAbort(
+                        f"Copy stalled: no progress for {stall_polls} polls "
+                        f"(~{stall_polls * C.POLL_INTERVAL}s). " + _fetch_hints(image.download_url)
+                    )
+        raise UpgradeAbort(
+            f"Copy did not complete within {C.COPY_TIMEOUT}s. " + _fetch_hints(image.download_url)
+        )
 
     def _install_add(self, client, image, op_uuid, log):
         path = f"{C.TARGET_FS}{image.image_file_name}"
@@ -774,6 +910,8 @@ class IOSXEUpgrade(Job):
 
     def _wait_for_added(self, client, version_str, log):
         deadline = time.monotonic() + C.ADD_TIMEOUT
+        started = time.monotonic()
+        polls = 0
         while time.monotonic() < deadline:
             # Before 'install add' the target version is not in the install
             # inventory; once staged it appears (with some install state), so its
@@ -781,6 +919,14 @@ class IOSXEUpgrade(Job):
             if self._state_tokens(client, version_str):
                 self.logger.info("install add staged (target version present).", extra=log)
                 return
+            polls += 1
+            if polls % 4 == 0:  # heartbeat every ~2 minutes
+                self.logger.info(
+                    "install add still running (elapsed %ds of up to %ds)...",
+                    int(time.monotonic() - started),
+                    C.ADD_TIMEOUT,
+                    extra=log,
+                )
             time.sleep(C.POLL_INTERVAL)
         # Don't hard-fail on polling ambiguity — install-oper shape drifts between
         # releases. Warn and proceed; activate fails loudly if add never completed.
@@ -823,11 +969,13 @@ class IOSXEUpgrade(Job):
         self.logger.info("Waiting for reload and the target version to come up...", extra=log)
         time.sleep(C.RELOAD_INITIAL_SLEEP)
         target = _version_tuple(target_str)
-        deadline = time.monotonic() + C.RELOAD_TIMEOUT
+        started = time.monotonic()
+        deadline = started + C.RELOAD_TIMEOUT
         went_down = False
         online = False
         last_seen = None
         consecutive = 0
+        polls = 0
         while time.monotonic() < deadline:
             try:
                 booted = self._current_version(client)
@@ -851,6 +999,18 @@ class IOSXEUpgrade(Job):
                 consecutive = 0
                 if _version_tuple(booted):
                     last_seen = booted
+            polls += 1
+            if polls % 4 == 0:  # heartbeat every ~2 minutes
+                self.logger.info(
+                    "Waiting on reload: elapsed %ds of up to %ds (went down: %s, "
+                    "online: %s, last version seen: %s).",
+                    int(time.monotonic() - started),
+                    C.RELOAD_TIMEOUT,
+                    went_down,
+                    online,
+                    last_seen or "none",
+                    extra=log,
+                )
             time.sleep(C.POLL_INTERVAL)
         raise UpgradeAbort(
             f"Device did not stably boot the target version within {C.RELOAD_TIMEOUT}s "
@@ -927,39 +1087,65 @@ class IOSXEUpgrade(Job):
 # --------------------------------------------------------- module utilities --
 
 
+def _progress_label(size, consumed, expected):
+    """Human progress string from the best available copy signal.
+
+    ``size`` is the on-device file size, ``consumed`` the free-space delta since
+    the copy started (fallback when the growing file isn't listed yet), and
+    ``expected`` the size recorded in Nautobot (enables a percentage).
+    """
+    mb = 1_000_000
+    signal = size if size is not None else consumed
+    if signal is None:
+        return "no size data"
+    label = f"{signal // mb} MB"
+    source = "file size" if size is not None else "space used"
+    if expected:
+        pct = min(100, round(signal * 100 / expected))
+        return f"{label} / {expected // mb} MB ({pct}%, {source})"
+    return f"{label} ({source}, expected size unknown)"
+
+
+def _fetch_hints(url):
+    """Actionable causes for a device failing to download from ``url``.
+
+    The dominant real-world cause for an https source is TLS: the firmware
+    server's certificate is not trusted by the device (a browser downloading the
+    same URL proves nothing — different trust store).
+    """
+    hints = []
+    if url.lower().startswith("https://"):
+        hints.append(
+            "MOST LIKELY: the device does not trust the firmware server's TLS "
+            "certificate (self-signed). Fix: use the HTTP URL on the "
+            "mgmt-restricted network (edit the image's download_url to "
+            "http://<host>:9080/images/...), install the server's CA in a device "
+            "trustpoint (crypto pki trustpoint + authenticate) and set "
+            "XCOPY_TRUSTPOINT in constants.py"
+        )
+    hints.append(
+        "check the device can actually reach the URL host (if via a VRF, set "
+        "XCOPY_VRF in constants.py), and test from the device CLI: "
+        "copy " + url + " null:"
+    )
+    return f"Likely causes: {'; '.join(hints)}."
+
+
 def _interpret_copy_failure(exc, url):
-    """Turn a copy-RPC rejection into an actionable message.
+    """Turn an xcopy-RPC rejection into an actionable message.
 
     The device reports fetch failures as an opaque '%Error opening ... (I/O
-    error)' inside an HTTP 400. The dominant real-world cause for an https source
-    is TLS: the firmware server's certificate is not trusted by the device (a
-    browser downloading the same URL proves nothing — different trust store).
+    error)' inside an HTTP 400; some immediate failures surface synchronously
+    even though the transfer itself is asynchronous.
     """
     text = str(exc)
-    message = f"Image copy failed — the device could not fetch {url}: {text}"
     lowered = text.lower()
     if "error opening" in lowered or "i/o error" in lowered:
-        hints = [
-            "the device could reach the RPC but failed to download the file",
-        ]
-        if url.lower().startswith("https://"):
-            hints.append(
-                "MOST LIKELY: the device does not trust the firmware server's TLS "
-                "certificate (self-signed). Fix: use the HTTP URL on the "
-                "mgmt-restricted network (edit the image's download_url to "
-                "http://<host>:9080/images/...), or install the server's CA in a "
-                "device trustpoint (crypto pki trustpoint + authenticate)"
-            )
-        hints.append(
-            "also check the device can actually reach the URL host (VRF/"
-            "source-interface: 'ip http client source-interface ...'), and test "
-            "from the device CLI: copy " + url + " null:"
+        return (
+            f"Image copy failed — device could not fetch {url}. "
+            f"{_fetch_hints(url)} Device said: {text}"
         )
-        message = (
-            f"Image copy failed — device could not fetch {url} "
-            f"({'; '.join(hints)}). Device said: {text}"
-        )
-    return message
+    return f"Image copy failed — the device rejected the xcopy request: {text}"
 
 
 def _auth_hint(status_code):
@@ -1149,10 +1335,13 @@ def _free_bytes_for_fs(data, fs_names):
 
 
 def _file_size_bytes(data, image_file_name):
-    """Find a named file in q-filesystem data and return its size (KB -> bytes).
+    """Find a named file in q-filesystem data and return its size in bytes.
 
-    Matches the file's basename for EQUALITY (not substring) so a longer filename
-    that merely contains the target name can't mask a truncated copy.
+    File sizes (image-files/file-size, partition-content/size) are reported in
+    BYTES on supported releases (>= 17.9 per the model's 2022-07-01 revision;
+    only partition total-size/used-size are kilobytes). Matches the file's
+    basename for EQUALITY (not substring) so a longer filename that merely
+    contains the target name can't mask a truncated copy.
     """
     if isinstance(data, dict):
         path = data.get("full-path") or data.get("name") or data.get("filename")
@@ -1161,7 +1350,7 @@ def _file_size_bytes(data, image_file_name):
             if basename == image_file_name:
                 size = data.get("file-size") or data.get("size")
                 try:
-                    return int(size) * 1024
+                    return int(size)
                 except (TypeError, ValueError):
                     pass
         for value in data.values():
