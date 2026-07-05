@@ -575,7 +575,9 @@ class IOSXEUpgrade(Job):
         if assume_install_mode:
             self.logger.warning(
                 "Boot mode unconfirmed in install-oper (%s); assume_install_mode is "
-                "set, so proceeding. Verify with 'show version'.", detail, extra=log,
+                "set, so proceeding. Verify with 'show version'.",
+                detail,
+                extra=log,
             )
             return
         raise UpgradeAbort(
@@ -958,7 +960,7 @@ def _mode_suffix(value):
     text = str(value).strip().lower()
     for prefix in ("install-boot-mode-", "install-mode-"):
         if text.startswith(prefix):
-            return text[len(prefix):]
+            return text[len(prefix) :]
     return text
 
 
@@ -972,9 +974,7 @@ def _boot_mode_suffixes(data):
     """
     scoped = []
     _collect_oper_state_modes(data, scoped)
-    values = scoped or [
-        value for key in C.BOOT_MODE_KEYS for value in _find_all_values(data, key)
-    ]
+    values = scoped or [value for key in C.BOOT_MODE_KEYS for value in _find_all_values(data, key)]
     return [_mode_suffix(value) for value in values]
 
 
