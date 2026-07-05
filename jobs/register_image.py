@@ -83,7 +83,12 @@ class RegisterImage(Job):
     device_types = MultiObjectVar(
         model=DeviceType,
         required=False,
-        description="Device types this image is compatible with (recommended).",
+        description=(
+            "Device types this image is compatible with. IMPORTANT: the upgrade job "
+            "can only use an image that is mapped to the device's type, assigned "
+            "directly to the device, or marked Default image — set this (or Default "
+            "image below) or the image will not be resolvable."
+        ),
     )
     image_status = ObjectVar(
         model=Status,
@@ -93,7 +98,11 @@ class RegisterImage(Job):
     )
     default_image = BooleanVar(
         default=False,
-        description="Mark as the default image for this version (unsets any other).",
+        description=(
+            "Mark as the default image for this version (unsets any other). The "
+            "upgrade job falls back to the default image when no device-type "
+            "mapping matches — check this if you leave Device types blank."
+        ),
     )
     firmware_base_url = StringVar(
         required=False,
@@ -237,10 +246,11 @@ class RegisterImage(Job):
         )
 
         if dryrun:
+            note = self._resolvability_note(bool(device_types), default_image)
             return (
                 f"DRY-RUN ok: '{file_name}' reachable via {used_url} (size={size}). "
                 f"Would store download_url={device_url} for {version_label} and map "
-                f"{len(device_types or [])} device type(s)."
+                f"{len(device_types or [])} device type(s).{note}"
             )
 
         image = self._write(
@@ -262,7 +272,36 @@ class RegisterImage(Job):
             f"(download_url: {device_url}).",
             extra={"object": image},
         )
-        return f"Registered '{image.image_file_name}' for {image.software_version}."
+        # Evaluate on the SAVED record: a re-run may inherit mappings/default from
+        # a prior registration, in which case the image is already resolvable.
+        note = self._resolvability_note(
+            image.device_types.exists(), image.default_image, log_object=image
+        )
+        return f"Registered '{image.image_file_name}' for {image.software_version}.{note}"
+
+    def _resolvability_note(self, has_device_types, is_default, log_object=None):
+        """Warn when the registered image cannot be resolved by the upgrade job.
+
+        The upgrade job resolves an image via device-assignment, the device-type
+        map, or the version's default image. With no device types and no default
+        flag, the record exists but no upgrade can ever use it — flag that loudly
+        in the log AND in the job result rather than letting it surface later as
+        an upgrade-time abort.
+        """
+        if has_device_types or is_default:
+            return ""
+        self.logger.warning(
+            "Neither Device types nor Default image is set: the UPGRADE JOB WILL "
+            "NOT FIND THIS IMAGE until you map it to a device type, assign it "
+            "directly to a device, or mark it as the version's default image "
+            "(re-run this job with those fields set, or edit the Software Image "
+            "File in Nautobot).",
+            extra={"object": log_object} if log_object is not None else None,
+        )
+        return (
+            " WARNING: not yet resolvable by the upgrade job — no device-type "
+            "mapping and not the default image."
+        )
 
     # ------------------------------------------------------------------- URLs --
 

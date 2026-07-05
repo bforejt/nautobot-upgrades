@@ -84,8 +84,11 @@ Both are also overridable per run on the **Register IOS-XE Image** job
    - `software_version` = the existing version, **or** leave it blank and set
      `new_version` to create the version inline (**platform** and **version
      status** are required fields either way)
-   - `device_types` = the compatible models (e.g. the C9300 types); optional
-     `default_image`
+   - `device_types` = the compatible models (e.g. the C9300 types), **and/or**
+     tick `default_image`. **At least one of these matters:** the upgrade job can
+     only resolve an image that is mapped to the device's type, assigned directly
+     to the device, or marked as the version's default — with neither set, the
+     registration succeeds (with a warning) but no upgrade can use the image.
    - `image_status`
    - `expected_checksum` + `hashing_algorithm` (Cisco's published values);
      optionally tick **Verify download** (worker downloads + hashes the file)
