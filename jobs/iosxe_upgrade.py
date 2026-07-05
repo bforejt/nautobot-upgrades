@@ -22,7 +22,8 @@ Upgrade flow (per device):
      resolution + compatibility, free-space
   3. Async express copy (xcopy) with progress/stall polling, completed by an
      on-device size match against the expected size
-  4. install add -> install activate (auto-rollback timer armed) -> reload
+  4. install add (wait for add-COMPLETE state) -> install activate (auto-rollback
+     timer armed; activation start verified, not just the RPC 2xx) -> reload
   5. Poll until the target version actually booted -> install commit
   6. Post-checks + sync Nautobot's Device.software_version
   7. Optional: install remove inactive (off by default)
@@ -348,10 +349,11 @@ class IOSXEUpgrade(Job):
         # completion inside _copy_image) ---------------------------------------
         self._copy_image(client, image, log)
 
-        # -- 4. install add / activate / reload ------------------------------
+        # -- 4. install add / activate (verified started) / reload -----------
         op_uuid = str(uuid_lib.uuid4())
         self._install_add(client, image, op_uuid, log)
         self._install_activate(client, image, op_uuid, log)
+        self._confirm_activation(client, target_str, log)
 
         # -- 5. Confirm booted, verify rollback net, commit, then sync -------
         self._wait_for_target(client, target_str, log)
@@ -913,26 +915,32 @@ class IOSXEUpgrade(Job):
         started = time.monotonic()
         polls = 0
         while time.monotonic() < deadline:
-            # Before 'install add' the target version is not in the install
-            # inventory; once staged it appears (with some install state), so its
-            # presence — scoped to the target version — confirms the add.
-            if self._state_tokens(client, version_str):
-                self.logger.info("install add staged (target version present).", extra=log)
+            # The target version appears in install-oper as soon as the add STARTS
+            # (e.g. an in-progress state), so mere presence is NOT completion —
+            # activating while the add is still running is rejected by the install
+            # engine (seen on a real 17.15.4). Require a state that only exists
+            # once the add has finished (added/inactive, or beyond).
+            tokens = self._state_tokens(client, version_str)
+            states = {_classify_state(t) for t in tokens}
+            if states & {"added", "activated", "uncommitted", "committed"}:
+                self.logger.info("install add complete (state: %s).", sorted(tokens), extra=log)
                 return
             polls += 1
             if polls % 4 == 0:  # heartbeat every ~2 minutes
                 self.logger.info(
-                    "install add still running (elapsed %ds of up to %ds)...",
+                    "install add still running (state: %s, elapsed %ds of up to %ds)...",
+                    sorted(tokens) or "not visible yet",
                     int(time.monotonic() - started),
                     C.ADD_TIMEOUT,
                     extra=log,
                 )
             time.sleep(C.POLL_INTERVAL)
         # Don't hard-fail on polling ambiguity — install-oper shape drifts between
-        # releases. Warn and proceed; activate fails loudly if add never completed.
+        # releases. Warn and proceed; _confirm_activation aborts if the activation
+        # then never actually starts.
         self.logger.warning(
-            "Could not confirm 'install add' for %s from install-oper within %ss; "
-            "proceeding to activate.",
+            "Could not confirm 'install add' completion for %s from install-oper "
+            "within %ss; proceeding to activate (activation start is verified).",
             version_str,
             C.ADD_TIMEOUT,
             extra=log,
@@ -955,7 +963,61 @@ class IOSXEUpgrade(Job):
                 "auto-abort-timer-val": C.AUTO_ABORT_MINUTES,
             }
         }
-        client.post_rpc(C.OP_ACTIVATE, payload, timeout=C.RPC_TIMEOUT, tolerate_disconnect=True)
+        response = client.post_rpc(
+            C.OP_ACTIVATE, payload, timeout=C.RPC_TIMEOUT, tolerate_disconnect=True
+        )
+        # The RPC returns 2xx even when the install engine rejects the request
+        # (e.g. 'add in progress' — seen on a real 17.15.4), so surface whatever
+        # the body says and NEVER trust the status code alone; _confirm_activation
+        # below is the actual gate.
+        if response and not response.get("_disconnected"):
+            self.logger.info("activate RPC response: %s", response, extra=log)
+
+    def _confirm_activation(self, client, version_str, log):
+        """Verify the activation actually started before waiting out a reload.
+
+        Success signals: the target version's install state turns activated/
+        uncommitted (or committed), or the device stops answering (reload under
+        way). If the state never moves and the device stays reachable, the
+        install engine silently rejected the activate — abort with the device
+        unchanged rather than waiting RELOAD_TIMEOUT for a reload that will
+        never come.
+        """
+        deadline = time.monotonic() + C.ACTIVATE_START_TIMEOUT
+        started = time.monotonic()
+        polls = 0
+        last_tokens = []
+        while time.monotonic() < deadline:
+            time.sleep(C.POLL_INTERVAL)
+            try:
+                tokens = self._state_tokens(client, version_str)
+            except RestconfError:
+                self.logger.info(
+                    "Device stopped answering — reload appears to have started.",
+                    extra=log,
+                )
+                return
+            states = {_classify_state(t) for t in tokens}
+            if states & {"activated", "uncommitted", "committed"}:
+                self.logger.info("Activation confirmed (state: %s).", sorted(tokens), extra=log)
+                return
+            last_tokens = tokens
+            polls += 1
+            if polls % 4 == 0:  # heartbeat every ~2 minutes
+                self.logger.info(
+                    "Waiting for activation to start (state: %s, elapsed %ds of up to %ds)...",
+                    sorted(tokens) or "none",
+                    int(time.monotonic() - started),
+                    C.ACTIVATE_START_TIMEOUT,
+                    extra=log,
+                )
+        raise UpgradeAbort(
+            f"Activation did not start within {C.ACTIVATE_START_TIMEOUT}s (install "
+            f"state still: {sorted(last_tokens) or 'unknown'}). The install engine "
+            "likely rejected the activate (e.g. the add was still in progress). The "
+            "device is UNCHANGED (image added, not activated, no reload pending) — "
+            "check 'show install log' and re-run this job."
+        )
 
     def _wait_for_target(self, client, target_str, log):
         """Wait for the device to reload AND stably report the target version.
@@ -1012,11 +1074,19 @@ class IOSXEUpgrade(Job):
                     extra=log,
                 )
             time.sleep(C.POLL_INTERVAL)
+        if not went_down:
+            raise UpgradeAbort(
+                f"Device never went down within {C.RELOAD_TIMEOUT}s — the "
+                "activation/reload appears not to have happened despite confirmation "
+                f"(still answering, last version seen: {last_seen or 'unknown'}). NOT "
+                "committed; the device should still be running the previous version. "
+                "Check 'show install log' and 'show install summary'."
+            )
         raise UpgradeAbort(
             f"Device did not stably boot the target version within {C.RELOAD_TIMEOUT}s "
-            f"(went_down={went_down}, online={online}, last definite version: "
-            f"{last_seen or 'unknown'}). NOT committing — the auto-rollback timer "
-            "should revert it; verify and roll back manually if needed."
+            f"(online={online}, last definite version: {last_seen or 'unknown'}). "
+            "NOT committing — the auto-rollback timer should revert it; verify and "
+            "roll back manually if needed."
         )
 
     def _log_rollback_state(self, client, log):
