@@ -140,7 +140,7 @@
 <polygon points="400,1070.0 525.0,1112 400,1154.0 275.0,1112" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
 <text x="400" y="1105" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">All members</tspan><tspan x="400" dy="14">INSTALL mode?</tspan></text>
 <rect x="250" y="1180" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
-<text x="400" y="1201" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Resolve image (device-type map</tspan><tspan x="400" dy="14">→ default; warn if fallback)</tspan></text>
+<text x="400" y="1201" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Resolve image (device override →</tspan><tspan x="400" dy="14">device-type map → default)</tspan></text>
 <polygon points="400,1262.0 525.0,1304 400,1346.0 275.0,1304" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
 <text x="400" y="1297" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Image has filename</tspan><tspan x="400" dy="14">&amp; download URL?</tspan></text>
 <rect x="250" y="1372" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
