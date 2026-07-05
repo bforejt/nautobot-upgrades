@@ -718,7 +718,10 @@ class IOSXEUpgrade(Job):
                 "destination-drop-node-name": dest,
             }
         }
-        client.post_rpc(C.OP_COPY, payload, timeout=C.COPY_TIMEOUT)
+        try:
+            client.post_rpc(C.OP_COPY, payload, timeout=C.COPY_TIMEOUT)
+        except RestconfError as exc:
+            raise UpgradeAbort(_interpret_copy_failure(exc, image.download_url)) from exc
         self.logger.info("Copy completed.", extra=log)
 
     def _verify_image(self, client, image, log):
@@ -922,6 +925,41 @@ class IOSXEUpgrade(Job):
 
 
 # --------------------------------------------------------- module utilities --
+
+
+def _interpret_copy_failure(exc, url):
+    """Turn a copy-RPC rejection into an actionable message.
+
+    The device reports fetch failures as an opaque '%Error opening ... (I/O
+    error)' inside an HTTP 400. The dominant real-world cause for an https source
+    is TLS: the firmware server's certificate is not trusted by the device (a
+    browser downloading the same URL proves nothing — different trust store).
+    """
+    text = str(exc)
+    message = f"Image copy failed — the device could not fetch {url}: {text}"
+    lowered = text.lower()
+    if "error opening" in lowered or "i/o error" in lowered:
+        hints = [
+            "the device could reach the RPC but failed to download the file",
+        ]
+        if url.lower().startswith("https://"):
+            hints.append(
+                "MOST LIKELY: the device does not trust the firmware server's TLS "
+                "certificate (self-signed). Fix: use the HTTP URL on the "
+                "mgmt-restricted network (edit the image's download_url to "
+                "http://<host>:9080/images/...), or install the server's CA in a "
+                "device trustpoint (crypto pki trustpoint + authenticate)"
+            )
+        hints.append(
+            "also check the device can actually reach the URL host (VRF/"
+            "source-interface: 'ip http client source-interface ...'), and test "
+            "from the device CLI: copy " + url + " null:"
+        )
+        message = (
+            f"Image copy failed — device could not fetch {url} "
+            f"({'; '.join(hints)}). Device said: {text}"
+        )
+    return message
 
 
 def _auth_hint(status_code):
