@@ -585,15 +585,22 @@ class IOSXEUpgrade(Job):
         )
 
     def _resolve_image(self, device, target_version, log):
-        # Prefer an image explicitly mapped to this device's device-type for the
-        # target version (core's compatibility map); otherwise fall back to the
-        # version's default image.
-        dt_images = list(
-            device.device_type.software_image_files.filter(software_version=target_version)
-        )
-        image = self._pick_image(dt_images)
+        # Core precedence: a device-level image override wins, then an image mapped
+        # to this device's device-type (the compatibility map), then the version's
+        # default image.
+        dev_images = list(device.software_image_files.filter(software_version=target_version))
+        image = self._pick_image(dev_images)
+        if image is not None:
+            self.logger.info(
+                "Using device-assigned image override '%s'.", image.image_file_name, extra=log
+            )
         if image is None:
-            all_images = list(SoftwareImageFile.objects.filter(software_version=target_version))
+            dt_images = list(
+                device.device_type.software_image_files.filter(software_version=target_version)
+            )
+            image = self._pick_image(dt_images)
+        all_images = list(SoftwareImageFile.objects.filter(software_version=target_version))
+        if image is None:
             image = self._pick_image(all_images, require_default=True)
             if image is not None:
                 self.logger.warning(
@@ -605,9 +612,26 @@ class IOSXEUpgrade(Job):
                     extra=log,
                 )
         if image is None:
+            # Diagnostic abort: say exactly which link is missing so "it all looks
+            # OK" cases are self-explaining in the Job Result.
+            mappings = {
+                img.image_file_name: [str(dt) for dt in img.device_types.all()]
+                for img in all_images
+            }
+            defaults = [img.image_file_name for img in all_images if img.default_image]
             raise UpgradeAbort(
-                f"No Software Image File found for version {target_version} that is "
-                f"compatible with device-type '{device.device_type}'."
+                f"No usable Software Image File for {target_version} (platform: "
+                f"{target_version.platform}). Checked, in order: device-assigned "
+                f"images (none for this version), device-type map for "
+                f"'{device.device_type}' (image→device-type mappings on this "
+                f"version: {mappings or 'none'}), and a default image (defaults: "
+                f"{defaults or 'none'}). {len(all_images)} image record(s) exist for "
+                "this exact version record. Fix: map an image to this device type "
+                "or mark one as the default image (e.g. re-run 'Register IOS-XE "
+                "Image' with Device types filled and/or Default image checked). If "
+                "you expected a different version record, check for duplicate "
+                "SoftwareVersion entries with the same version string on another "
+                "platform."
             )
         if not image.image_file_name:
             raise UpgradeAbort(f"Image '{image}' has no image file name set in Nautobot.")

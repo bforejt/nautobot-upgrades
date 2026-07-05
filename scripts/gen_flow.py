@@ -53,7 +53,7 @@ SPINE = [
       "warn": ("bundle-derived /\nopt-in",
                "install-bundle, or absent/'unknown'\nmode + assume_install_mode → proceed"),
       "passlabel": "Yes"}),
-    ("img", "proc", "Resolve image (device-type map\n→ default; warn if fallback)", {}),
+    ("img", "proc", "Resolve image (device override →\ndevice-type map → default)", {}),
     ("d_img", "dec", "Image has filename\n& download URL?",
      {"abort": ("No", "No compatible image, or missing\nfilename / download URL"),
       "passlabel": "Yes"}),
