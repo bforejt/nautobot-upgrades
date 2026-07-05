@@ -263,6 +263,7 @@ installation tested to date is a 2.4 nautobot-composer deployment.
 | Devices | yes | Target devices to upgrade (narrowed by the filters above). |
 | Target version | yes | Core `SoftwareVersion` to upgrade to. |
 | Secrets group override | no | Force one Secrets Group for the whole run; by default each device uses its own assigned group. |
+| Assume install mode | no | Proceed when boot mode can't be confirmed over RESTCONF (default **off** = fail closed; confirmed BUNDLE always aborts). **Required for devices on 17.3.1–17.4.x** — the install-oper `boot-mode` leaf only exists from **IOS-XE 17.5.1**; verify install mode manually first. |
 | Remove inactive | no | After commit, reclaim space (default **off** — keeps the rollback image for a soak period). |
 | Debug | no | Verbose RESTCONF request/response logging. |
 | Dry-run | — | Read-only pre-flight only (default **on**). |

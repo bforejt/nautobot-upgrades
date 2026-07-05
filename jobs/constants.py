@@ -34,6 +34,15 @@ TARGET_FS_NAMES = ("flash",)
 
 # --- Version gating ---------------------------------------------------------
 
+#: JSON keys that may carry the boot mode in install-oper data. Verified against
+#: Cisco's published YANG: the leaf is 'boot-mode' (typedef install-boot-mode,
+#: values install-boot-mode-{unknown,install,bundle}) under
+#: install-location-information[]/oper-state; 'install-mode' is kept as a
+#: fallback for releases that may name it differently. NOTE: the leaf was ADDED
+#: in IOS-XE 17.5.1 (install-oper revision 2021-03-01) — on 17.3.1-17.4.x it
+#: does not exist at all, so assume_install_mode is required there.
+BOOT_MODE_KEYS = ("boot-mode", "install-mode")
+
 #: Minimum IOS-XE release that exposes the Cisco-IOS-XE-install-rpc /
 #: install-oper YANG models. Below this the install workflow is simply not
 #: available over RESTCONF, so the job refuses to proceed. (Verified against the
