@@ -120,19 +120,26 @@ class RestconfClient:
         Returns parsed JSON (or {} on an empty 2xx body).
 
         ``tolerate_disconnect`` is for operations that reboot the device (e.g.
-        ``activate``): the in-flight TCP connection drops mid-request, which we
-        treat as "the RPC was accepted and the reload has begun". Only
-        connection-level drops are tolerated — an HTTP 4xx/5xx (a rejected RPC)
-        still raises, as do DNS/TLS/auth setup failures.
+        ``activate``). A dropped connection returns {"_disconnected": True} ("the
+        RPC was accepted and the reload has begun"); a READ TIMEOUT with the
+        connection still open returns {"_timeout": True} (the engine is stuck —
+        NOT a reload). HTTP 4xx/5xx and DNS/TLS/auth failures still raise.
         """
         url = f"{self.base_url}/{operation}"
         self._debug(f"POST {url} body={self._truncate(payload)}")
         try:
             resp = self._session.post(url, json=payload, timeout=timeout)
+        except requests.exceptions.ReadTimeout as exc:
+            # The connection stayed OPEN but silent: the server-side handler is
+            # stuck (a real 17.15.x held an ambiguous activate for the whole
+            # timeout). This is NOT a reload — a reload resets the connection.
+            if tolerate_disconnect:
+                self._debug(f"POST {url} timed out with the connection open: {exc}")
+                return {"_timeout": True}
+            raise RestconfError(f"POST {operation} failed: {exc}") from exc
         except (
             requests.exceptions.ConnectionError,
             requests.exceptions.ChunkedEncodingError,
-            requests.exceptions.ReadTimeout,
         ) as exc:
             if tolerate_disconnect:
                 self._debug(f"POST {url} disconnected (expected on reload): {exc}")
