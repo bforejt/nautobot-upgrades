@@ -163,7 +163,7 @@
 <rect x="250" y="1852" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
 <text x="400" y="1873" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">install add (abort if stuck &#x27;marked for</tspan><tspan x="400" dy="14">activation&#x27;; poll until add-COMPLETE)</tspan></text>
 <rect x="250" y="1948" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
-<text x="400" y="1969" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">install activate (arm auto-abort</tspan><tspan x="400" dy="14">timer; log RPC response)</tspan></text>
+<text x="400" y="1969" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">install activate (explicitly non-ISSU,</tspan><tspan x="400" dy="14">by version; log RPC response)</tspan></text>
 <polygon points="400,2030.0 525.0,2072 400,2114.0 275.0,2072" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
 <text x="400" y="2065" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Activation started?</tspan><tspan x="400" dy="14">(state moves or device drops)</tspan></text>
 <rect x="250" y="2140" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>

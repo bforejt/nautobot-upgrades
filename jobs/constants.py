@@ -119,11 +119,10 @@ RELOAD_INITIAL_SLEEP = 120
 #: this window so a slow-to-converge control plane is not falsely failed.
 RELOAD_TIMEOUT = 1800
 
-#: Auto-abort (rollback) timer in MINUTES, armed explicitly on "install activate".
-#: If we cannot confirm the new image after reload we do NOT commit, and the
-#: device reverts when this timer expires. Must exceed RELOAD_TIMEOUT comfortably.
-#: (The RESTCONF leaf name is research-derived — verify against your release.)
-AUTO_ABORT_MINUTES = 60
+#: NOTE: the activate RPC deliberately does NOT send auto-abort-timer-val, and
+#: sends issu=false explicitly — a real 17.15.4 fatally failed activation on an
+#: "ISSU compatibility check" with the timer leaf supplied. The platform's
+#: default auto-abort timer applies instead and is verified after reload.
 
 # --- Safety thresholds ------------------------------------------------------
 
