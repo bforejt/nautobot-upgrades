@@ -179,7 +179,7 @@
 <rect x="250" y="1948" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
 <text x="400" y="1969" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">install add (poll until staged: pending/</tspan><tspan x="400" dy="14">added or beyond; warn if unconfirmed)</tspan></text>
 <rect x="250" y="2044" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
-<text x="400" y="2065" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">install activate (non-ISSU, by FULL</tspan><tspan x="400" dy="14">internal version from install-oper)</tspan></text>
+<text x="400" y="2065" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">install activate (non-ISSU, by full internal</tspan><tspan x="400" dy="14">version; re-sent if engine drops it)</tspan></text>
 <polygon points="400,2126.0 525.0,2168 400,2210.0 275.0,2168" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
 <text x="400" y="2161" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Activation started?</tspan><tspan x="400" dy="14">(state moves or device drops)</tspan></text>
 <rect x="250" y="2236" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>

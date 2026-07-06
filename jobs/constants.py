@@ -112,6 +112,13 @@ COMMIT_CONFIRM_TIMEOUT = 300
 #: The RPC returns 2xx even when the install engine rejects it — e.g. 'add in
 #: progress' — so the state change is the real gate.
 ACTIVATE_START_TIMEOUT = 600
+
+#: Re-send the activate RPC when no state movement is seen for this long.
+#: Field-verified failure mode (17.15.x): an activate arriving while the
+#: engine's automatic post-add ISSU compatibility probe is still running is
+#: SILENTLY dropped (NDBMAN dispatches it; no install_activate op ever starts).
+#: A later resend lands after the probe settles and proceeds normally.
+ACTIVATE_RETRY_INTERVAL = 150
 #: After "install activate" the device reloads; how long to wait before it
 #: starts responding to RESTCONF again.
 RELOAD_INITIAL_SLEEP = 120

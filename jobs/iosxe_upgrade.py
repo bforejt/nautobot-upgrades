@@ -366,8 +366,8 @@ class IOSXEUpgrade(Job):
             )
         op_uuid = str(uuid_lib.uuid4())
         self._install_add(client, image, op_uuid, log)
-        self._install_activate(client, image, op_uuid, log)
-        self._confirm_activation(client, target_str, log)
+        resend = self._install_activate(client, image, op_uuid, log)
+        self._confirm_activation(client, target_str, log, resend=resend)
 
         # -- 5. Confirm booted + all members back, rollback net, commit, sync --
         self._wait_for_target(client, target_str, log)
@@ -1125,15 +1125,12 @@ class IOSXEUpgrade(Job):
         # "ISSU compatibility check" when the request was ambiguous); no
         # auto-abort-timer-val — the platform's default rollback timer applies and
         # is verified after reload by _log_rollback_state.
-        payload = {
-            "Cisco-IOS-XE-install-rpc:input": {
-                "uuid": op_uuid,
-                "version": version,
-                "issu": False,
-            }
-        }
+        payload_input = {"uuid": op_uuid, "version": version, "issu": False}
         response = client.post_rpc(
-            C.OP_ACTIVATE, payload, timeout=C.RPC_TIMEOUT, tolerate_disconnect=True
+            C.OP_ACTIVATE,
+            {"Cisco-IOS-XE-install-rpc:input": payload_input},
+            timeout=C.RPC_TIMEOUT,
+            tolerate_disconnect=True,
         )
         # The RPC returns 2xx even when the install engine rejects the request
         # (e.g. 'add in progress' — seen on a real 17.15.4), so surface whatever
@@ -1158,18 +1155,42 @@ class IOSXEUpgrade(Job):
                     "logs; the device is unchanged."
                 )
 
-    def _confirm_activation(self, client, version_str, log):
+        def resend():
+            # Fresh uuid per attempt (correlation-only). A rejection body here is
+            # NOT fatal: "operation already in progress" would mean an earlier
+            # request finally took — the confirm loop remains the arbiter.
+            retry_payload = {
+                "Cisco-IOS-XE-install-rpc:input": {**payload_input, "uuid": str(uuid_lib.uuid4())}
+            }
+            try:
+                retry_response = client.post_rpc(
+                    C.OP_ACTIVATE,
+                    retry_payload,
+                    timeout=C.RPC_TIMEOUT,
+                    tolerate_disconnect=True,
+                )
+            except RestconfError as exc:
+                self.logger.warning("activate re-send failed: %s", exc, extra=log)
+                return
+            if retry_response and not retry_response.get("_disconnected"):
+                self.logger.info("activate re-send RPC response: %s", retry_response, extra=log)
+
+        return resend
+
+    def _confirm_activation(self, client, version_str, log, resend=None):
         """Verify the activation actually started before waiting out a reload.
 
         Success signals: the target version's install state turns activated/
         uncommitted (or committed), or the device stops answering (reload under
-        way). If the state never moves and the device stays reachable, the
-        install engine silently rejected the activate — abort with the device
-        unchanged rather than waiting RELOAD_TIMEOUT for a reload that will
-        never come.
+        way). While the state does not move, ``resend`` (when given) is invoked
+        every ACTIVATE_RETRY_INTERVAL to re-issue the activate — countering the
+        field-verified race where the engine silently drops an activate that
+        arrives during its post-add ISSU compatibility probe. If nothing ever
+        moves, abort with the device unchanged.
         """
         deadline = time.monotonic() + C.ACTIVATE_START_TIMEOUT
         started = time.monotonic()
+        last_resend = time.monotonic()
         polls = 0
         last_tokens = []
         while time.monotonic() < deadline:
@@ -1196,13 +1217,27 @@ class IOSXEUpgrade(Job):
                     C.ACTIVATE_START_TIMEOUT,
                     extra=log,
                 )
+            # Field-verified 17.15.x race: an activate landing while the engine's
+            # automatic post-add ISSU probe is still evaluating is SILENTLY
+            # dropped (dispatched by NDBMAN, but no install_activate op ever
+            # starts). Re-send after a settle interval — a later request lands
+            # after the probe finishes and proceeds normally.
+            if resend is not None and time.monotonic() - last_resend >= C.ACTIVATE_RETRY_INTERVAL:
+                last_resend = time.monotonic()
+                self.logger.warning(
+                    "No activation movement after %ds — re-sending the activate "
+                    "RPC (the engine likely dropped the first request during its "
+                    "post-add compatibility probe).",
+                    int(time.monotonic() - started),
+                    extra=log,
+                )
+                resend()
         raise UpgradeAbort(
-            f"Activation did not start within {C.ACTIVATE_START_TIMEOUT}s (install "
-            f"state still: {sorted(last_tokens) or 'unknown'}). The install engine "
-            "rejected or ignored the activate — see the 'activate RPC response' "
-            "line above and 'show install log' on the device for the reason. The "
-            "device is UNCHANGED (image added, not activated, no reload pending); "
-            "re-run this job after addressing the cause."
+            f"Activation did not start within {C.ACTIVATE_START_TIMEOUT}s despite "
+            f"re-sends (install state still: {sorted(last_tokens) or 'unknown'}). "
+            "See the 'activate RPC response' lines above and 'show install log' on "
+            "the device. The device is UNCHANGED (image added, not activated, no "
+            "reload pending); re-run this job after addressing the cause."
         )
 
     def _wait_for_target(self, client, target_str, log):
