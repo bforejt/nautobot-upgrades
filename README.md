@@ -30,15 +30,14 @@ stopping on the first failure for a device:
    confirm the device is **≥ 17.12.1** and in **install mode**; resolve the image
    from Nautobot and confirm device-type compatibility; **confirm enough free
    space** before copying anything.
-3. **Transfer + integrity** — the device pulls the image via the **async
-   express-copy RPC (`xcopy`)** while the job polls the growing on-device file,
-   logging **progress (MB / % / elapsed)**, aborting on **stall or timeout**,
-   and accepting completion only on an **exact size match** against the expected
-   size — backed by `install add`'s mandatory image signature validation (which
-   aborts on a corrupt/untrusted image). If the exact file is already on flash,
-   the copy is skipped (idempotent re-runs). The on-device hash RPC is
-   intentionally not used as a gate — it is asynchronous and returns no
-   synchronous pass/fail.
+3. **Transfer + integrity** — the device pulls the image via the **classic
+   copy RPC** (run in a worker thread) while the job polls the growing on-device
+   file, logging **progress (MB / % / elapsed)**, and requiring an **exact size
+   match** when the transfer finishes — backed by `install add`'s mandatory
+   image signature validation (which aborts on a corrupt/untrusted image). If
+   the exact file is already on flash, the copy is skipped (idempotent re-runs).
+   The fancier async `xcopy` RPC was deliberately abandoned after a real
+   17.15.05 silently broke it while the classic path kept working.
 4. **Install** — `install add` (the job waits for the add-**complete** state,
    not mere presence) → `install activate` (**explicitly non-ISSU**, by version;
    the job verifies activation actually **started** — the RPC returns 2xx even
@@ -63,7 +62,7 @@ per-device decision logic (editable [`upgrade-flow.drawio`](docs/upgrade-flow.dr
 | --- | --- | --- |
 | **Nautobot** | **2.4 LTM** and **3.1+** | Installs/syncs verified on **2.4 and 3.1**; the end-to-end upgrade has run from **3.1**. **3.0 is untested and will stay that way** — it no longer receives maintenance now that 3.1 (the 3.x LTM designation) has shipped. Earlier 2.x (≥ 2.2) *may* work but is not tested or supported. |
 | **Deployment** | [nautobot-composer](#sister-project-nautobot-composer) | The sister Docker-Compose installer this Job is built to run on; it currently ships Nautobot 2.4 and 3.x. |
-| **Device OS** | Cisco IOS-XE **≥ 17.12.1** | Tested fleet baseline (single async-xcopy code path). 17.5.1–17.11 *may* work (xcopy + boot-mode exist there) but is **not tested or supported**; below 17.5.1 the required RPCs don't exist. |
+| **Device OS** | Cisco IOS-XE **≥ 17.12.1** | Tested fleet baseline. 17.5.1–17.11 *may* work but is **not tested or supported**; below 17.5.1 the required models don't exist. |
 | **Platform** | Catalyst **9300** (install mode) | Primary target, booted from `flash:packages.conf`. |
 
 There is no separate Python dependency matrix: the Job imports only `requests`
@@ -79,7 +78,7 @@ This project is **new and largely unverified** — be conservative with it.
   (nautobot-composer); both Jobs register.
 - ✅ **Register IOS-XE Image**: firmware-server upload → validate → record.
 - ✅ **Full upgrade end-to-end** (run from **Nautobot 3.1**): reachability/auth,
-  all pre-flight gates, device-pull copy (xcopy), install add, non-ISSU
+  all pre-flight gates, device-pull copy, install add, non-ISSU
   activate, reload, stable-boot confirm, commit, Nautobot sync —
   17.15.04 → 17.15.05.
 - ✅ Real-device fixes baked in for: boot-mode leaf naming, install-oper state
@@ -126,13 +125,13 @@ project's constraints. The key findings that shaped it:
 - **RESTCONF can drive the entire upgrade — on modern IOS-XE.** The install
   workflow is exposed via the `Cisco-IOS-XE-install-rpc` YANG model
   (`install` / `activate` / `install-commit` / `remove`), and the image transfer
-  via the async **express copy** RPC (`Cisco-IOS-XE-xcopy-rpc`, 17.5.1+), which
-  frees the job to poll copy **progress/stall/completion** from the on-device
-  file size. None of this exists on 16.12.x (verified against Cisco's published
-  YANG models: install-rpc appears in 17.2.1, install-oper in 17.3.1, xcopy and
-  the boot-mode leaf in 17.5.1). The support floor is **17.12.1** — the tested
-  fleet baseline — keeping a single code path with no legacy blocking-copy
-  fallback; the job refuses lower releases with guidance.
+  via the classic `Cisco-IOS-XE-rpc:copy` — run in a worker thread so the job
+  can poll copy **progress** from the on-device file size. None of this exists
+  on 16.12.x (verified against Cisco's published YANG models: install-rpc
+  appears in 17.2.1, install-oper in 17.3.1, the boot-mode leaf in 17.5.1). The
+  support floor is **17.12.1** — the tested fleet baseline; the job refuses
+  lower releases with guidance. (The async `xcopy` transfer was tried and
+  abandoned: 17.15.05 silently broke it in the field.)
 - **Software version/image data is now Nautobot _core_, not a plugin.**
   `dcim.SoftwareVersion` and `dcim.SoftwareImageFile` moved into core in
   **Nautobot 2.2** (image file name, checksum + hashing algorithm, file size,
@@ -217,7 +216,7 @@ map). The binaries are hosted by the companion **`nautobot-composer` stack's
 `firmware` profile**: a **Filebrowser** UI (`:8088`, authenticated) for engineers
 to upload, and a read-only **nginx `firmware-download`** service (`:9443` HTTPS /
 `:9080` HTTP, network/ACL-restricted) that the **devices pull from** via the
-RESTCONF `xcopy` (express copy) RPC.
+RESTCONF `copy` RPC.
 
 The **Register IOS-XE Image** job builds the device `download_url` from a
 configurable base + the uploaded filename, validates the image is reachable
@@ -300,7 +299,7 @@ RESTCONF polling.
 | Read version | `GET .../Cisco-IOS-XE-device-hardware-oper:device-hardware-data/device-system-data` |
 | Install state / mode | `GET .../Cisco-IOS-XE-install-oper:install-oper-data` |
 | Free space / file size | `GET .../Cisco-IOS-XE-platform-software-oper:cisco-platform-software/q-filesystem` |
-| Copy image (async + progress) | `POST .../operations/Cisco-IOS-XE-xcopy-rpc:xcopy`, then size-poll via q-filesystem |
+| Copy image (+ progress) | `POST .../operations/Cisco-IOS-XE-rpc:copy` (worker thread), size-polled via q-filesystem |
 | Add / activate / commit / remove | `POST .../operations/Cisco-IOS-XE-install-rpc:{install,activate,install-commit,remove}` |
 
 ## Configuration
