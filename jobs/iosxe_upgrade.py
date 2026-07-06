@@ -1099,6 +1099,58 @@ class IOSXEUpgrade(Job):
             extra=log,
         )
 
+    def _wait_for_engine_idle(self, client, log):
+        """Positive coast-is-clear gate before activate (field-verified need).
+
+        After install add, the engine automatically runs an ISSU compatibility
+        probe and SILENTLY drops an activate that arrives while it is busy. The
+        oper-state 'sys-activity' leaf reports exactly this (install-no-activity
+        vs install-/issu-in-progress), so wait for idle on every member. When
+        the release does not report the leaf, fall back to a fixed settle delay;
+        if it stays busy past the timeout, proceed anyway — the activate re-send
+        safety net remains the arbiter.
+        """
+        deadline = time.monotonic() + C.ENGINE_IDLE_TIMEOUT
+        started = time.monotonic()
+        polls = 0
+        while time.monotonic() < deadline:
+            data = client.get(C.DATA_INSTALL_OPER, ok_404=True) or {}
+            activities = [str(v).lower() for v in _find_all_values(data, "sys-activity")]
+            if not activities:
+                self.logger.info(
+                    "Engine activity (sys-activity) not reported by this release; "
+                    "using the fixed settle delay (%ss) before activating.",
+                    C.ACTIVATE_SETTLE_DELAY,
+                    extra=log,
+                )
+                time.sleep(C.ACTIVATE_SETTLE_DELAY)
+                return
+            if all(a.endswith("no-activity") for a in activities):
+                self.logger.info(
+                    "Install engine idle (sys-activity: %s, %ds) — clear to activate.",
+                    sorted(set(activities)),
+                    int(time.monotonic() - started),
+                    extra=log,
+                )
+                return
+            polls += 1
+            if polls % 4 == 0:  # heartbeat every ~2 minutes
+                self.logger.info(
+                    "Waiting for the install engine to go idle (sys-activity: %s, "
+                    "elapsed %ds of up to %ds)...",
+                    sorted(set(activities)),
+                    int(time.monotonic() - started),
+                    C.ENGINE_IDLE_TIMEOUT,
+                    extra=log,
+                )
+            time.sleep(C.POLL_INTERVAL)
+        self.logger.warning(
+            "Install engine still busy after %ss (sys-activity never went idle); "
+            "activating anyway — the re-send safety net covers a dropped request.",
+            C.ENGINE_IDLE_TIMEOUT,
+            extra=log,
+        )
+
     def _install_activate(self, client, image, op_uuid, log):
         # Resolve the FULL internal version identifier from install-oper (e.g.
         # '17.15.04.0.6839'): activate-by-bare-version hangs the RPC when the
