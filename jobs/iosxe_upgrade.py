@@ -394,8 +394,13 @@ class IOSXEUpgrade(Job):
                 )
         elif committed:
             self.logger.info(
-                "Previous version's files remain inactive on flash for rollback/"
-                "soak; re-run with 'Remove inactive' later to reclaim space.",
+                "Previous version's files were left on flash (may show as untracked "
+                "leftovers rather than in 'show install inactive'); re-run with "
+                "'Remove inactive' later to reclaim space. For a guaranteed "
+                "rollback path during soak, keep the previous version's image "
+                "registered in Nautobot and hosted on the firmware server — "
+                "downgrading is then just a run of this job with that version as "
+                "the target.",
                 extra=log,
             )
 
