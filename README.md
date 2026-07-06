@@ -7,7 +7,7 @@ devices — **Catalyst 9300** primarily — driven entirely over **RESTCONF**.
 >
 > A complete upgrade (Catalyst 9300, IOS-XE 17.15.04 → 17.15.05: copy → add →
 > activate → reload → commit, entirely over RESTCONF) has **succeeded on real
-> hardware**, run from a **Nautobot 2.4** nautobot-composer deployment. That is
+> hardware**, run from a **Nautobot 3.1** nautobot-composer deployment. That is
 > one device, one version pair, one platform: stacks, batches, rollback paths,
 > Nautobot 3.x, and failure-mode coverage remain **untested**. Treat this as
 > **lab-quality** — not production-ready — and **always run with Dry-run
@@ -61,7 +61,7 @@ per-device decision logic (editable [`upgrade-flow.drawio`](docs/upgrade-flow.dr
 
 | Component | Supported | Notes |
 | --- | --- | --- |
-| **Nautobot** | **2.4 LTS** and **3.x** | The intended targets. Earlier 2.x (≥ 2.2, where the core `SoftwareVersion` / `SoftwareImageFile` models exist) *may* work but is **not tested or supported**. |
+| **Nautobot** | **2.4 LTM** and **3.1+** | Installs/syncs verified on **2.4 and 3.1**; the end-to-end upgrade has run from **3.1**. **3.0 is untested and will stay that way** — it no longer receives maintenance now that 3.1 (the 3.x LTM designation) has shipped. Earlier 2.x (≥ 2.2) *may* work but is not tested or supported. |
 | **Deployment** | [nautobot-composer](#sister-project-nautobot-composer) | The sister Docker-Compose installer this Job is built to run on; it currently ships Nautobot 2.4 and 3.x. |
 | **Device OS** | Cisco IOS-XE **≥ 17.12.1** | Tested fleet baseline (single async-xcopy code path). 17.5.1–17.11 *may* work (xcopy + boot-mode exist there) but is **not tested or supported**; below 17.5.1 the required RPCs don't exist. |
 | **Platform** | Catalyst **9300** (install mode) | Primary target, booted from `flash:packages.conf`. |
@@ -75,19 +75,22 @@ This project is **new and largely unverified** — be conservative with it.
 
 **Verified so far (real hardware: one Catalyst 9300 on 17.15.4)**
 
-- ✅ Installs / syncs as a Nautobot Git Repository on **Nautobot 2.4**
+- ✅ Installs / syncs as a Nautobot Git Repository on **Nautobot 2.4 and 3.1**
   (nautobot-composer); both Jobs register.
 - ✅ **Register IOS-XE Image**: firmware-server upload → validate → record.
-- ✅ **Full upgrade end-to-end**: reachability/auth, all pre-flight gates,
-  device-pull copy (xcopy), install add, non-ISSU activate, reload, stable-boot
-  confirm, commit, Nautobot sync — 17.15.04 → 17.15.05.
+- ✅ **Full upgrade end-to-end** (run from **Nautobot 3.1**): reachability/auth,
+  all pre-flight gates, device-pull copy (xcopy), install add, non-ISSU
+  activate, reload, stable-boot confirm, commit, Nautobot sync —
+  17.15.04 → 17.15.05.
 - ✅ Real-device fixes baked in for: boot-mode leaf naming, install-oper state
   semantics, TLS-fetch failures (HTTP fallback), premature/rejected activates,
   and commit-confirmation timing.
 
 **Not yet tested — do not assume these work**
 
-- ❌ **Nautobot 3.x** — only 2.4 has been exercised.
+- ❌ **Job execution on Nautobot 2.4** — it installs/syncs there, but the
+  end-to-end upgrade has only been run from 3.1. (**Nautobot 3.0** is untested
+  by choice: it stopped receiving maintenance when 3.1 shipped.)
 - ❌ **Stacks**, **multi-device batches**, and other version pairs / 9300 models.
 - ❌ **Failure paths on hardware**: auto-rollback (activate without commit),
   `install rollback`, copy stall/corruption handling, downgrade runs.
@@ -238,8 +241,9 @@ server** lives (its opt-in `firmware` profile — see [Image storage](#image-sto
 You can run this Job on any Nautobot 2.4/3.x instance, but nautobot-composer is
 the reference deployment: it provides a matching Nautobot version, the firmware
 host devices pull images from, and a worker environment that already has the
-Job's only runtime dependency (`requests`, plus Nautobot core). The one
-installation tested to date is a 2.4 nautobot-composer deployment.
+Job's only runtime dependency (`requests`, plus Nautobot core). Tested to date:
+installs on 2.4 and 3.1 nautobot-composer deployments; the end-to-end device
+upgrade ran from 3.1.
 
 ## Installing into Nautobot
 
