@@ -126,8 +126,10 @@ when the server presents a CA-trusted cert.
 - **Access:** device download is read-only and network/ACL-restricted
   (`FIRMWARE_ALLOWED_CIDRS` on the firmware server); the Filebrowser UI is
   authenticated and for humans only.
-- **Retention:** keep the current and previous release (the rollback image); prune
-  older files per policy. The upgrade job's *Remove inactive* option reclaims space
+- **Retention:** keep the current and previous release hosted — this is the
+  GUARANTEED rollback path during a soak period (a downgrade is just an upgrade-job
+  run targeting the older version; leftover packages on the device are not a
+  reliable rollback vehicle). Prune older files per policy. The upgrade job's *Remove inactive* option reclaims space
   **on the device**, separate from firmware-server retention.
 - **Drift:** Nautobot indexes; the firmware server holds the bytes. A reconcile/
   audit job (server files ↔ Nautobot records) is deliberately deferred.

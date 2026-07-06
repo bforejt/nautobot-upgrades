@@ -361,7 +361,7 @@ class IOSXEUpgrade(Job):
         self._log_rollback_state(client, log)
         try:
             self._install_commit(client, op_uuid, log)
-            self._verify_committed(client, target_str, log)
+            committed = self._verify_committed(client, target_str, log)
         except Exception as exc:  # noqa: BLE001 - real rollback risk if commit fails
             raise UpgradeAbort(
                 f"Device booted {target_str} but COMMIT failed ({exc}). The device "
@@ -385,8 +385,30 @@ class IOSXEUpgrade(Job):
 
         # -- 6. Optional cleanup ---------------------------------------------
         if remove_inactive:
-            self._remove_inactive(client, op_uuid, log)
+            if committed:
+                self._remove_inactive(client, op_uuid, log)
+            else:
+                self.logger.warning(
+                    "Skipping 'install remove inactive': commit not yet confirmed.",
+                    extra=log,
+                )
+        elif committed:
+            self.logger.info(
+                "Previous version's files were left on flash (may show as untracked "
+                "leftovers rather than in 'show install inactive'); re-run with "
+                "'Remove inactive' later to reclaim space. For a guaranteed "
+                "rollback path during soak, keep the previous version's image "
+                "registered in Nautobot and hosted on the firmware server — "
+                "downgrading is then just a run of this job with that version as "
+                "the target.",
+                extra=log,
+            )
 
+        if not committed:
+            return (
+                f"Upgraded to {target_str}; commit issued but not yet confirmed — "
+                f"verify with 'show install summary'.{sync_note}"
+            )
         return f"Upgraded and committed to {target_str}.{sync_note}"
 
     def _handle_already_on_target(self, client, device, target_version, dryrun, log):
@@ -1111,29 +1133,37 @@ class IOSXEUpgrade(Job):
         )
 
     def _log_rollback_state(self, client, log):
-        """Best-effort: confirm an auto-abort (rollback) timer appears armed.
+        """Report the auto-abort (rollback) timer status before committing.
 
-        We armed it on activate, but the leaf is release-dependent, so verify it is
-        actually pending before relying on it. If it cannot be confirmed, warn
-        loudly rather than letting later messaging promise protection we don't have.
+        The oper-state/auto-abort-timer container carries 'state'
+        (install-timer-state-active) and 'end-time' leaves (verified against the
+        17.15 YANG). This is informational: the commit follows within seconds, so
+        an absent timer is not alarming — it only matters if that commit fails,
+        and the commit-failure path carries its own manual-rollback guidance.
         """
         data = client.get(C.DATA_INSTALL_OPER, ok_404=True) or {}
-        timer = None
-        for key in ("auto-abort-timer", "auto-abort-timer-val", "abort-timer", "remaining-time"):
-            for value in _find_all_values(data, key):
-                text = str(value).strip().lower()
-                if text and text not in ("0", "false", "no", "none", "disabled"):
-                    timer = value
-                    break
-            if timer is not None:
-                break
-        if timer is not None:
-            self.logger.info("Auto-rollback timer appears armed (%s).", timer, extra=log)
+        timers = _find_timer_entries(data)
+        # Exact suffix match: 'install-timer-state-inactive' CONTAINS 'active',
+        # so a substring test would misreport an idle timer as armed.
+        active = [
+            t for t in timers if str(t.get("state", "")).lower().rsplit("state-", 1)[-1] == "active"
+        ]
+        if active:
+            end = active[0].get("end-time", "unknown")
+            self.logger.info(
+                "Auto-rollback timer is armed (ends: %s); committing now.", end, extra=log
+            )
+        elif timers:
+            self.logger.info(
+                "No auto-rollback timer is active (state: %s); committing "
+                "immediately — if the commit fails, roll back manually.",
+                [str(t.get("state")) for t in timers],
+                extra=log,
+            )
         else:
-            self.logger.warning(
-                "Could not confirm an auto-rollback timer is armed; if commit is "
-                "interrupted the device may NOT auto-revert — be ready to roll back "
-                "manually.",
+            self.logger.info(
+                "Auto-rollback timer status not reported by this release; "
+                "committing immediately — if the commit fails, roll back manually.",
                 extra=log,
             )
 
@@ -1143,17 +1173,36 @@ class IOSXEUpgrade(Job):
         client.post_rpc(C.OP_COMMIT, payload, timeout=C.RPC_TIMEOUT)
 
     def _verify_committed(self, client, version_str, log):
-        tokens = self._state_tokens(client, version_str)
-        if _is_committed(tokens):
-            self.logger.info("Commit confirmed via install-oper (state: %s).", tokens, extra=log)
-        else:
-            self.logger.warning(
-                "Could not confirm committed state for %s from install-oper (state: "
-                "%s); verify with 'show install summary'.",
-                version_str,
-                tokens or "unknown",
-                extra=log,
-            )
+        """Poll until install-oper reports the target committed. Returns bool.
+
+        The commit RPC returns before the engine finishes committing (a real
+        17.15.4 reported provisioned-uncommitted for a few seconds after the
+        RPC), so a single immediate read false-warns. Poll instead; warn only if
+        it never confirms within COMMIT_CONFIRM_TIMEOUT.
+        """
+        started = time.monotonic()
+        deadline = started + C.COMMIT_CONFIRM_TIMEOUT
+        tokens = []
+        while time.monotonic() < deadline:
+            tokens = self._state_tokens(client, version_str)
+            if _is_committed(tokens):
+                self.logger.info(
+                    "Commit confirmed via install-oper (state: %s, %ds).",
+                    sorted(tokens),
+                    int(time.monotonic() - started),
+                    extra=log,
+                )
+                return True
+            time.sleep(C.POLL_INTERVAL)
+        self.logger.warning(
+            "Could not confirm committed state for %s within %ss (state: %s); "
+            "verify with 'show install summary'.",
+            version_str,
+            C.COMMIT_CONFIRM_TIMEOUT,
+            sorted(tokens) or "unknown",
+            extra=log,
+        )
+        return False
 
     def _remove_inactive(self, client, op_uuid, log):
         self.logger.info("install remove inactive (reclaiming space)...", extra=log)
@@ -1392,6 +1441,25 @@ def _is_committed(tokens):
     return "committed" in classes and not any(
         c in ("activated", "uncommitted", "pending") for c in classes
     )
+
+
+def _find_timer_entries(data):
+    """Collect auto-abort-timer containers ({'state':…, 'end-time':…}) anywhere.
+
+    The 17.15 YANG puts them at install-location-information[]/oper-state/
+    auto-abort-timer with leaves 'state' (install-timer-state-*) and 'end-time'.
+    """
+    found = []
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if key == "auto-abort-timer" and isinstance(value, dict):
+                found.append(value)
+            else:
+                found.extend(_find_timer_entries(value))
+    elif isinstance(data, list):
+        for item in data:
+            found.extend(_find_timer_entries(item))
+    return found
 
 
 def _find_partitions(data):

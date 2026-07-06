@@ -106,6 +106,12 @@ POLL_INTERVAL = 30
 #: for an add-complete state (added/inactive or beyond), not mere presence.
 ADD_TIMEOUT = 1200
 
+#: How long to poll for install-oper to report the target version COMMITTED
+#: after the commit RPC. The RPC returns before the engine finishes (a real
+#: 17.15.4 showed provisioned-uncommitted for a few seconds), so a single
+#: immediate read false-warns.
+COMMIT_CONFIRM_TIMEOUT = 300
+
 #: How long to wait for the activation to actually START after the activate RPC
 #: (state turns activated/uncommitted, or the device drops offline to reload).
 #: The RPC returns 2xx even when the install engine rejects it — e.g. 'add in
