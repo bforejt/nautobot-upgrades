@@ -905,9 +905,24 @@ class IOSXEUpgrade(Job):
     def _install_add(self, client, image, op_uuid, log):
         path = f"{C.TARGET_FS}{image.image_file_name}"
         version_str = image.software_version.version
+        # A pre-existing 'pending' state (install-version-state-in-progress =
+        # "marked for activation") means a HALF-OPEN install transaction from an
+        # earlier attempt: the engine rejects new operations while it is open, so
+        # abort with unstick guidance now instead of failing 30 minutes later.
+        pre_tokens = self._state_tokens(client, version_str)
+        if {"pending"} & {_classify_state(t) for t in pre_tokens}:
+            raise UpgradeAbort(
+                f"Target version {version_str} is already marked for activation in "
+                f"an open install transaction (state: {sorted(pre_tokens)}) — "
+                "likely left by a previous interrupted attempt. On the device run "
+                "'install abort' (safe: nothing is activated), or 'clear install "
+                "state' if abort refuses, then re-run this job."
+            )
         self.logger.info("install add %s ...", path, extra=log)
         payload = {"Cisco-IOS-XE-install-rpc:input": {"uuid": op_uuid, "path": path}}
-        client.post_rpc(C.OP_INSTALL, payload, timeout=C.RPC_TIMEOUT)
+        response = client.post_rpc(C.OP_INSTALL, payload, timeout=C.RPC_TIMEOUT)
+        if response:
+            self.logger.info("install add RPC response: %s", response, extra=log)
         self._wait_for_added(client, version_str, log)
 
     def _wait_for_added(self, client, version_str, log):
@@ -935,14 +950,26 @@ class IOSXEUpgrade(Job):
                     extra=log,
                 )
             time.sleep(C.POLL_INTERVAL)
-        # Don't hard-fail on polling ambiguity — install-oper shape drifts between
-        # releases. Warn and proceed; _confirm_activation aborts if the activation
-        # then never actually starts.
+        # Timed out. If the version is stuck 'pending' (marked for activation in
+        # an open transaction), activate is known to fail — abort with unstick
+        # guidance. For other/unknown states, warn and proceed;
+        # _confirm_activation aborts if the activation then never starts.
+        final_tokens = self._state_tokens(client, version_str)
+        if {"pending"} & {_classify_state(t) for t in final_tokens}:
+            raise UpgradeAbort(
+                f"install add did not reach a completed state within {C.ADD_TIMEOUT}s "
+                f"— version {version_str} is stuck 'marked for activation' in an "
+                f"open install transaction (state: {sorted(final_tokens)}). On the "
+                "device run 'install abort' (safe: nothing is activated), or 'clear "
+                "install state' if abort refuses, then re-run this job."
+            )
         self.logger.warning(
             "Could not confirm 'install add' completion for %s from install-oper "
-            "within %ss; proceeding to activate (activation start is verified).",
+            "within %ss (state: %s); proceeding to activate (activation start is "
+            "verified).",
             version_str,
             C.ADD_TIMEOUT,
+            sorted(final_tokens) or "none",
             extra=log,
         )
 
@@ -1339,6 +1366,14 @@ def _classify_state(token):
         return "activated"
     if t in ("i", "inactive", "added"):
         return "added"
+    # install-version-state family (verified against the 17.15 YANG):
+    # 'installed' = added & available for activation; 'present' = on device but
+    # not used; 'in-progress' = MARKED FOR ACTIVATION — an open install
+    # transaction (not "add still running"), classified as its own state.
+    if "progress" in t:
+        return "pending"
+    if "installed" in t or t == "present":
+        return "added"
     if "uncommitted" in t:
         return "uncommitted"
     if "committed" in t:
@@ -1353,12 +1388,16 @@ def _classify_state(token):
 def _is_committed(tokens):
     """True only if a committed state is present and no pending state is.
 
-    'Pending' = activated or uncommitted. Aggregating across rows is conservative:
-    a stale pending row makes this return False, so the caller commits to be safe
-    (a harmless no-op if already committed) rather than risk skipping a real commit.
+    'Pending' = activated, uncommitted, or an open install transaction (the
+    'pending' class, e.g. install-version-state-in-progress = marked for
+    activation). Aggregating across rows is conservative: a stale pending row
+    makes this return False, so the caller commits to be safe (a harmless no-op
+    if already committed) rather than risk skipping a real commit.
     """
     classes = [_classify_state(t) for t in tokens]
-    return "committed" in classes and not any(c in ("activated", "uncommitted") for c in classes)
+    return "committed" in classes and not any(
+        c in ("activated", "uncommitted", "pending") for c in classes
+    )
 
 
 def _find_partitions(data):
