@@ -913,12 +913,16 @@ class IOSXEUpgrade(Job):
         # transaction; a pre-existing added/pending state just makes this add a
         # quick no-op.
         pre_tokens = self._state_tokens(client, version_str)
-        if pre_tokens:
+        pre_states = {_classify_state(t) for t in pre_tokens}
+        if pre_states & {"pending", "added", "activated", "uncommitted", "committed"}:
+            # Already added: issuing another add is refused by the engine ("super
+            # package already added") and only litters the device log — skip it.
             self.logger.info(
-                "Target version already staged (state: %s); install add should be quick.",
+                "Target version already added (state: %s); skipping install add.",
                 sorted(pre_tokens),
                 extra=log,
             )
+            return
         self.logger.info("install add %s ...", path, extra=log)
         payload = {"Cisco-IOS-XE-install-rpc:input": {"uuid": op_uuid, "path": path}}
         response = client.post_rpc(C.OP_INSTALL, payload, timeout=C.RPC_TIMEOUT)
