@@ -42,6 +42,7 @@ import re
 import time
 import uuid as uuid_lib
 
+import requests
 from celery.exceptions import SoftTimeLimitExceeded
 from django.db import transaction
 from nautobot.apps.jobs import BooleanVar, DryRunVar, Job, MultiObjectVar, ObjectVar
@@ -874,6 +875,7 @@ class IOSXEUpgrade(Job):
                 expected or "unknown",
                 extra=log,
             )
+        self._preflight_download_url(image.download_url, log)
         self.logger.info(
             "Starting express copy to %s (expected size: %s)...",
             dest,
@@ -892,10 +894,61 @@ class IOSXEUpgrade(Job):
         if C.XCOPY_TRUSTPOINT:
             rpc_input["trustpoint"] = C.XCOPY_TRUSTPOINT
         try:
-            client.post_rpc(C.OP_XCOPY, {"Cisco-IOS-XE-xcopy-rpc:input": rpc_input})
+            response = client.post_rpc(C.OP_XCOPY, {"Cisco-IOS-XE-xcopy-rpc:input": rpc_input})
         except RestconfError as exc:
             raise UpgradeAbort(_interpret_copy_failure(exc, image.download_url)) from exc
+        # Parity with add/activate: the RPC can return 2xx with the refusal in
+        # the body (e.g. a previous express copy still holding the session) --
+        # fail loudly now rather than stall-watching a transfer that never began.
+        if response and not response.get("_disconnected"):
+            self.logger.info("xcopy RPC response: %s", response, extra=log)
+            error_text = _rpc_error_text(response)
+            if error_text:
+                raise UpgradeAbort(
+                    f"express copy was rejected: {error_text}. " + _fetch_hints(image.download_url)
+                )
         self._watch_copy(client, image, expected, baseline_free, pre_size, log)
+
+    def _preflight_download_url(self, url, log):
+        """Sanity-check the download URL from the worker before firing xcopy.
+
+        The Register job validates via the worker's INTERNAL route, so the
+        device-facing URL stored on the image may never have been exercised. A
+        definitive 404/410 (server answered: the file is not there) aborts --
+        e.g. never uploaded, renamed, or pruned. Anything else only warns: the
+        worker's network path is not the device's, and TLS trust differs, so an
+        unreachable-from-worker URL can still be perfectly fetchable on-device.
+        """
+        try:
+            resp = requests.head(url, timeout=C.GET_TIMEOUT, verify=False, allow_redirects=True)
+        except requests.RequestException as exc:
+            self.logger.warning(
+                "Could not verify the image URL from the worker (%s); the device "
+                "may still reach it -- proceeding.",
+                exc,
+                extra=log,
+            )
+            return
+        if resp.status_code in (404, 410):
+            raise UpgradeAbort(
+                f"The image URL returns HTTP {resp.status_code} -- the file is not "
+                f"on the firmware server ({url}). Re-upload it via Filebrowser "
+                "and/or re-run 'Register IOS-XE Image', then re-run this job."
+            )
+        if resp.ok:
+            self.logger.info(
+                "Image URL verified from the worker (HTTP %s, Content-Length: %s).",
+                resp.status_code,
+                resp.headers.get("Content-Length", "n/a"),
+                extra=log,
+            )
+        else:
+            self.logger.warning(
+                "Image URL probe returned HTTP %s from the worker; proceeding -- "
+                "the device may still be able to fetch it.",
+                resp.status_code,
+                extra=log,
+            )
 
     def _watch_copy(self, client, image, expected, baseline_free, pre_size, log):
         """Poll for copy progress; return on verified completion, abort otherwise.
