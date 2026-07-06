@@ -68,7 +68,7 @@ SPINE = [
      {"abort": ("stall / timeout /\noversize", "No progress, timeout, or file\nlarger than expected — abort"),
       "warn": ("size unknown", "No expected size → settle-detect,\nrely on install add signature"),
       "passlabel": "match"}),
-    ("add", "proc", "install add (abort if stuck 'marked for\nactivation'; poll until add-COMPLETE)", {}),
+    ("add", "proc", "install add (poll until staged: pending/\nadded or beyond; warn if unconfirmed)", {}),
     ("act", "proc", "install activate (explicitly non-ISSU,\nby version; log RPC response)", {}),
     ("d_act", "dec", "Activation started?\n(state moves or device drops)",
      {"abort": ("No", "State never moved & device still up —\nengine rejected activate; device unchanged"),

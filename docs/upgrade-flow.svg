@@ -161,7 +161,7 @@
 <polygon points="400,1742.0 525.0,1784 400,1826.0 275.0,1784" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
 <text x="400" y="1777" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Transfer complete</tspan><tspan x="400" dy="14">&amp; size matches?</tspan></text>
 <rect x="250" y="1852" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
-<text x="400" y="1873" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">install add (abort if stuck &#x27;marked for</tspan><tspan x="400" dy="14">activation&#x27;; poll until add-COMPLETE)</tspan></text>
+<text x="400" y="1873" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">install add (poll until staged: pending/</tspan><tspan x="400" dy="14">added or beyond; warn if unconfirmed)</tspan></text>
 <rect x="250" y="1948" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
 <text x="400" y="1969" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">install activate (explicitly non-ISSU,</tspan><tspan x="400" dy="14">by version; log RPC response)</tspan></text>
 <polygon points="400,2030.0 525.0,2072 400,2114.0 275.0,2072" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
