@@ -906,18 +906,18 @@ class IOSXEUpgrade(Job):
     def _install_add(self, client, image, op_uuid, log):
         path = f"{C.TARGET_FS}{image.image_file_name}"
         version_str = image.software_version.version
-        # A pre-existing 'pending' state (install-version-state-in-progress =
-        # "marked for activation") means a HALF-OPEN install transaction from an
-        # earlier attempt: the engine rejects new operations while it is open, so
-        # abort with unstick guidance now instead of failing 30 minutes later.
+        # NOTE (verified on a real 17.15.4): install-version-state-in-progress
+        # ("marked for activation") is the NORMAL resting state of an added,
+        # not-yet-activated image — the CLI shows a clean 'I' state and 'install
+        # abort' reports nothing to abort. It does NOT indicate a stuck
+        # transaction; a pre-existing added/pending state just makes this add a
+        # quick no-op.
         pre_tokens = self._state_tokens(client, version_str)
-        if {"pending"} & {_classify_state(t) for t in pre_tokens}:
-            raise UpgradeAbort(
-                f"Target version {version_str} is already marked for activation in "
-                f"an open install transaction (state: {sorted(pre_tokens)}) — "
-                "likely left by a previous interrupted attempt. On the device run "
-                "'install abort' (safe: nothing is activated), or 'clear install "
-                "state' if abort refuses, then re-run this job."
+        if pre_tokens:
+            self.logger.info(
+                "Target version already staged (state: %s); install add should be quick.",
+                sorted(pre_tokens),
+                extra=log,
             )
         self.logger.info("install add %s ...", path, extra=log)
         payload = {"Cisco-IOS-XE-install-rpc:input": {"uuid": op_uuid, "path": path}}
@@ -931,14 +931,15 @@ class IOSXEUpgrade(Job):
         started = time.monotonic()
         polls = 0
         while time.monotonic() < deadline:
-            # The target version appears in install-oper as soon as the add STARTS
-            # (e.g. an in-progress state), so mere presence is NOT completion —
-            # activating while the add is still running is rejected by the install
-            # engine (seen on a real 17.15.4). Require a state that only exists
-            # once the add has finished (added/inactive, or beyond).
+            # States that mean the add has finished (verified on a real 17.15.4):
+            # 'pending' (install-version-state-in-progress = "marked for
+            # activation") is the NORMAL resting state of an added image, and
+            # installed/present/added or beyond likewise count. While the add is
+            # still extracting, the version is absent or sits at 'invalid'
+            # ("complete image is not available") → keep waiting.
             tokens = self._state_tokens(client, version_str)
             states = {_classify_state(t) for t in tokens}
-            if states & {"added", "activated", "uncommitted", "committed"}:
+            if states & {"pending", "added", "activated", "uncommitted", "committed"}:
                 self.logger.info("install add complete (state: %s).", sorted(tokens), extra=log)
                 return
             polls += 1
@@ -951,19 +952,9 @@ class IOSXEUpgrade(Job):
                     extra=log,
                 )
             time.sleep(C.POLL_INTERVAL)
-        # Timed out. If the version is stuck 'pending' (marked for activation in
-        # an open transaction), activate is known to fail — abort with unstick
-        # guidance. For other/unknown states, warn and proceed;
+        # Timed out on absent/unclassifiable states only. Warn and proceed;
         # _confirm_activation aborts if the activation then never starts.
         final_tokens = self._state_tokens(client, version_str)
-        if {"pending"} & {_classify_state(t) for t in final_tokens}:
-            raise UpgradeAbort(
-                f"install add did not reach a completed state within {C.ADD_TIMEOUT}s "
-                f"— version {version_str} is stuck 'marked for activation' in an "
-                f"open install transaction (state: {sorted(final_tokens)}). On the "
-                "device run 'install abort' (safe: nothing is activated), or 'clear "
-                "install state' if abort refuses, then re-run this job."
-            )
         self.logger.warning(
             "Could not confirm 'install add' completion for %s from install-oper "
             "within %ss (state: %s); proceeding to activate (activation start is "
@@ -1039,9 +1030,10 @@ class IOSXEUpgrade(Job):
         raise UpgradeAbort(
             f"Activation did not start within {C.ACTIVATE_START_TIMEOUT}s (install "
             f"state still: {sorted(last_tokens) or 'unknown'}). The install engine "
-            "likely rejected the activate (e.g. the add was still in progress). The "
-            "device is UNCHANGED (image added, not activated, no reload pending) — "
-            "check 'show install log' and re-run this job."
+            "rejected or ignored the activate — see the 'activate RPC response' "
+            "line above and 'show install log' on the device for the reason. The "
+            "device is UNCHANGED (image added, not activated, no reload pending); "
+            "re-run this job after addressing the cause."
         )
 
     def _wait_for_target(self, client, target_str, log):
