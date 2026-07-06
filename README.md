@@ -91,7 +91,10 @@ This project is **new and largely unverified** — be conservative with it.
 - ❌ **Job execution on Nautobot 2.4** — it installs/syncs there, but the
   end-to-end upgrade has only been run from 3.1. (**Nautobot 3.0** is untested
   by choice: it stopped receiving maintenance when 3.1 shipped.)
-- ❌ **Stacks**, **multi-device batches**, and other version pairs / 9300 models.
+- ❌ **Stacks** — stack-aware gates are implemented (free space checked on
+  EVERY member; all members must rejoin after the reload before commit) but
+  have not run against a real stack. Also untested: **multi-device batches**
+  and other version pairs / 9300 models.
 - ❌ **Failure paths on hardware**: auto-rollback (activate without commit),
   `install rollback`, copy stall/corruption handling, downgrade runs.
 - ❌ The **Remove inactive** cleanup option.

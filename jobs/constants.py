@@ -60,6 +60,12 @@ DATA_DEVICE_SYSTEM = (
 )
 DATA_INSTALL_OPER = "data/Cisco-IOS-XE-install-oper:install-oper-data"
 
+#: Hardware inventory (stack member roster: hw-type-chassis entries with
+#: hw-dev-index + serial-number, verified against the 17.15 YANG).
+DATA_DEVICE_INVENTORY = (
+    "data/Cisco-IOS-XE-device-hardware-oper:device-hardware-data/device-hardware/device-inventory"
+)
+
 #: Filesystem data. Partitions carry name + total-size + used-size in KILOBYTES;
 #: file entries carry full-path + file-size in BYTES (>= 17.9 — the model's
 #: 2022-07-01 revision fixed the units description). The exact partition
@@ -105,6 +111,10 @@ POLL_INTERVAL = 30
 #: version appears in install-oper as soon as the add STARTS, so the gate waits
 #: for an add-complete state (added/inactive or beyond), not mere presence.
 ADD_TIMEOUT = 1200
+
+#: How long to wait after the reload for EVERY pre-upgrade stack member to
+#: rejoin (members can come up staggered) before refusing to commit.
+MEMBER_CHECK_TIMEOUT = 300
 
 #: How long to poll for install-oper to report the target version COMMITTED
 #: after the commit RPC. The RPC returns before the engine finishes (a real
