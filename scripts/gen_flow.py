@@ -70,7 +70,7 @@ SPINE = [
       "passlabel": "match"}),
     ("roster", "proc", "Capture stack member roster\n(chassis serials from inventory)", {}),
     ("add", "proc", "install add (poll until staged: pending/\nadded or beyond; warn if unconfirmed)", {}),
-    ("act", "proc", "install activate (explicitly non-ISSU,\nby version; log RPC response)", {}),
+    ("act", "proc", "install activate (non-ISSU, by FULL\ninternal version from install-oper)", {}),
     ("d_act", "dec", "Activation started?\n(state moves or device drops)",
      {"abort": ("No", "State never moved & device still up —\nengine rejected activate; device unchanged"),
       "passlabel": "Yes"}),

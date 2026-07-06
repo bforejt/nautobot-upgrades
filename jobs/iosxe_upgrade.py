@@ -1100,16 +1100,35 @@ class IOSXEUpgrade(Job):
         )
 
     def _install_activate(self, client, image, op_uuid, log):
-        self.logger.info("install activate (explicitly non-ISSU) → device reloads...", extra=log)
-        # A real 17.15.4 fatally failed our activation on an "ISSU compatibility
-        # check", so make the request impossible to misread: issu=false explicitly,
-        # activate by VERSION (what 'install add' staged), and no
+        # Resolve the FULL internal version identifier from install-oper (e.g.
+        # '17.15.04.0.6839'): activate-by-bare-version hangs the RPC when the
+        # target is a previously-tracked image (re-activation/rollback), while the
+        # full string works — verified by direct RPC experiments on a real
+        # 17.15.x. Fresh adds work either way, so the full form is used always.
+        data = client.get(C.DATA_INSTALL_OPER, ok_404=True) or {}
+        bare = image.software_version.version
+        full = _full_version_string(data, bare)
+        if full and full != bare:
+            self.logger.info(
+                "Resolved activation target '%s' → '%s' (from install-oper).",
+                bare,
+                full,
+                extra=log,
+            )
+        version = full or bare
+        self.logger.info(
+            "install activate %s (explicitly non-ISSU) → device reloads...",
+            version,
+            extra=log,
+        )
+        # issu=false explicitly (a real 17.15.4 fatally failed activation on an
+        # "ISSU compatibility check" when the request was ambiguous); no
         # auto-abort-timer-val — the platform's default rollback timer applies and
         # is verified after reload by _log_rollback_state.
         payload = {
             "Cisco-IOS-XE-install-rpc:input": {
                 "uuid": op_uuid,
-                "version": image.software_version.version,
+                "version": version,
                 "issu": False,
             }
         }
@@ -1120,7 +1139,16 @@ class IOSXEUpgrade(Job):
         # (e.g. 'add in progress' — seen on a real 17.15.4), so surface whatever
         # the body says and NEVER trust the status code alone; _confirm_activation
         # below is the actual gate.
-        if response and not response.get("_disconnected"):
+        if response and response.get("_timeout"):
+            self.logger.warning(
+                "activate RPC did not return within %ss — the connection stayed "
+                "open, so this is a STUCK engine call, not a reload (seen when the "
+                "activation target is ambiguous). Verifying activation state "
+                "anyway...",
+                C.RPC_TIMEOUT,
+                extra=log,
+            )
+        elif response and not response.get("_disconnected"):
             self.logger.info("activate RPC response: %s", response, extra=log)
             error_text = _rpc_error_text(response)
             if error_text:
@@ -1552,6 +1580,43 @@ def _is_committed(tokens):
     return "committed" in classes and not any(
         c in ("activated", "uncommitted", "pending") for c in classes
     )
+
+
+def _full_version_string(data, version_str):
+    """The device's full internal version for ``version_str`` (or None).
+
+    install-oper rows carry the complete identifier (e.g. '17.15.04.0.6839')
+    while Nautobot stores the human form ('17.15.04'). Returns the longest
+    version-leaf value whose numeric tuple matches, so the activate RPC can
+    reference the image exactly the way the install DB indexes it.
+    """
+    target = _version_tuple(version_str)
+    if target is None:
+        return None
+    best = None
+
+    def _walk(node):
+        nonlocal best
+        if isinstance(node, dict):
+            for key, value in node.items():
+                key_l = key.lower()
+                if (
+                    isinstance(value, str)
+                    and "version" in key_l
+                    and "state" not in key_l
+                    and _version_tuple(value) == target
+                ):
+                    candidate = value.strip()
+                    if best is None or len(candidate) > len(best):
+                        best = candidate
+                else:
+                    _walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    _walk(data)
+    return best
 
 
 def _rpc_error_text(response):
