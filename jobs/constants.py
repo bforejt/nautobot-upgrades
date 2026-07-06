@@ -8,7 +8,7 @@ constants below make those easy to tweak.
 
 RESTCONF endpoints used (verified against Cisco's published YANG models):
   * Cisco-IOS-XE-install-rpc (install / activate / install-commit / remove)
-  * Cisco-IOS-XE-xcopy-rpc (xcopy — async express copy)
+  * Cisco-IOS-XE-rpc (copy — the classic blocking transfer)
   * Cisco-IOS-XE-device-hardware-oper / Cisco-IOS-XE-install-oper (state reads)
   * Cisco-IOS-XE-platform-software-oper (filesystem free space / file sizes)
 """
@@ -45,11 +45,9 @@ BOOT_MODE_KEYS = ("boot-mode", "install-mode")
 
 #: Minimum IOS-XE release the job supports. History (verified against Cisco's
 #: published YANG models): install-rpc appears in 17.2.1, install-oper in 17.3.1,
-#: and both the oper-state boot-mode leaf AND the async express-copy RPC
-#: (Cisco-IOS-XE-xcopy-rpc) in 17.5.1. The floor is set at 17.12.1 — the tested
-#: fleet baseline (extended-maintenance train) — as a single code path with no
-#: legacy blocking-copy fallback. 17.5.1-17.11 would likely work but is untested
-#: and unsupported.
+#: and the oper-state boot-mode leaf in 17.5.1. The floor is set at 17.12.1 —
+#: the tested fleet baseline (extended-maintenance train). 17.5.1-17.11 would
+#: likely work but is untested and unsupported.
 MIN_IOSXE_VERSION = (17, 12, 1)
 
 # --- RESTCONF resource paths (relative to /restconf/) ------------------------
@@ -72,8 +70,11 @@ DATA_DEVICE_INVENTORY = (
 #: name for flash on a given platform may differ — see TARGET_FS_NAMES.
 DATA_Q_FILESYSTEM = "data/Cisco-IOS-XE-platform-software-oper:cisco-platform-software/q-filesystem"
 
-#: Async "express copy" RPC (returns a uuid immediately; present since 17.5.1).
-OP_XCOPY = "operations/Cisco-IOS-XE-xcopy-rpc:xcopy"
+#: Classic blocking copy RPC (two decades of production miles; chosen over the
+#: async xcopy after a real 17.15.05 silently broke xcopy transfers while this
+#: path kept working with the same URL). The job runs it in a worker thread so
+#: the on-device file size can still be polled for progress reporting.
+OP_COPY = "operations/Cisco-IOS-XE-rpc:copy"
 OP_INSTALL = "operations/Cisco-IOS-XE-install-rpc:install"
 OP_ACTIVATE = "operations/Cisco-IOS-XE-install-rpc:activate"
 OP_COMMIT = "operations/Cisco-IOS-XE-install-rpc:install-commit"
@@ -86,25 +87,9 @@ RPC_TIMEOUT = 120
 #: Retries for the q-filesystem read (free-space / copied-file-size) so a transient
 #: blip right after a long copy isn't mistaken for "no data".
 QFS_READ_RETRIES = 3
-#: Overall budget (seconds) for the async express copy to complete — the job
-#: polls on-device file size for progress within this window, and the same value
-#: (converted to minutes) is passed as xcopy's device-side timeout guard.
+#: Overall budget (seconds) for the copy: the blocking RPC's HTTP timeout in the
+#: worker thread, and the watcher's deadline for the whole transfer.
 COPY_TIMEOUT = 3600
-
-#: Abort the copy when NO progress signal (file-size growth or free-space
-#: consumption) is seen for this many consecutive polls. Generous because some
-#: releases may not expose the growing file until late in the transfer.
-COPY_STALL_POLLS = 20
-
-#: With no expected size in Nautobot, declare the copy complete once the file
-#: exists and its size has been stable for this many consecutive polls.
-COPY_SETTLE_POLLS = 3
-
-#: Optional xcopy inputs (leave empty to omit). VRF name if the firmware server
-#: is reached via a non-global VRF; IOS trustpoint name to validate the server's
-#: TLS certificate for https sources.
-XCOPY_VRF = ""
-XCOPY_TRUSTPOINT = ""
 
 POLL_INTERVAL = 30
 #: How long to wait for "install add" to finish staging the package. The target
@@ -156,10 +141,6 @@ SPACE_FALLBACK_MIN_BYTES = 2_000_000_000
 #: job records the server's Content-Length), so demand an exact match — this also
 #: closes the window where a still-growing file could pass near the target.
 SIZE_MATCH_TOLERANCE_BYTES = 0
-
-#: Minimum byte delta that counts as copy progress (free-space jitter from
-#: unrelated writes must not reset the stall counter or spam the log).
-PROGRESS_MIN_DELTA_BYTES = 1_000_000
 
 # --- Image repository / Register Image job ----------------------------------
 

@@ -55,6 +55,7 @@ class RestconfClient:
         debug=False,
     ):
         self.host = host
+        self.port = port
         self.base_url = f"https://{host}:{port}/restconf"
         self.logger = logger
         self.log_object = log_object
@@ -153,6 +154,24 @@ class RestconfClient:
             return resp.json()
         except ValueError:
             return {}
+
+    def clone(self):
+        """A new client (fresh HTTP session) with this client's settings.
+
+        requests.Session is not thread-safe; the copy watcher polls from its own
+        session while the blocking copy RPC occupies the original one.
+        """
+        username, password = self._session.auth
+        return RestconfClient(
+            self.host,
+            username,
+            password,
+            port=self.port,
+            verify=self._session.verify,
+            logger=self.logger,
+            log_object=self.log_object,
+            debug=self.debug,
+        )
 
     def ping(self):
         """Reachability check used to detect when a device is back up.

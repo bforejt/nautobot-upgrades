@@ -63,7 +63,7 @@ SPINE = [
     ("d_dry", "dec", "Dry-run?",
      {"okright": ("Yes", "DONE: DRY-RUN — pre-flight\npassed, no changes made"),
       "passlabel": "No"}),
-    ("copy", "proc", "URL preflight (404 aborts) → xcopy + poll\nsize: progress %, stall watch (skip if present)", {}),
+    ("copy", "proc", "URL preflight (404 aborts) → classic copy\nin worker thread + size-poll progress", {}),
     ("d_size", "dec", "Transfer complete\n& size matches?",
      {"abort": ("stall / timeout /\noversize", "No progress, timeout, or file\nlarger than expected — abort"),
       "warn": ("size unknown", "No expected size → settle-detect,\nrely on install add signature"),

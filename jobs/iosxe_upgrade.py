@@ -20,8 +20,8 @@ Upgrade flow (per device):
      (cancelling a pending rollback), else no-op
   2. Pre-flight gates: version floor, install-mode (fail-closed), image
      resolution + compatibility, free-space (minimum across stack members)
-  3. Async express copy (xcopy) with progress/stall polling, completed by an
-     on-device size match against the expected size
+  3. Classic copy RPC in a worker thread, with the on-device file size polled
+     for progress reporting and a size verification on completion
   4. install add (wait for add-COMPLETE state) -> install activate (explicitly
      non-ISSU, by version; activation start verified, not just the RPC 2xx;
      rollback timer checked after reload) -> reload
@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import math
 import re
+import threading
 import time
 import uuid as uuid_lib
 
@@ -348,8 +349,8 @@ class IOSXEUpgrade(Job):
                 "All pre-flight gates passed."
             )
 
-        # -- 3. Transfer + integrity (async xcopy, watched to a size-verified
-        # completion inside _copy_image) ---------------------------------------
+        # -- 3. Transfer + integrity (classic copy in a worker thread, watched
+        # to a size-verified completion inside _copy_image) --------------------
         self._copy_image(client, image, log)
 
         # -- 4. install add / activate (verified started) / reload -----------
@@ -841,19 +842,18 @@ class IOSXEUpgrade(Job):
     # ------------------------------------------------- helpers: device writes --
 
     def _copy_image(self, client, image, log):
-        """Start an async express copy (xcopy) and watch it to completion.
+        """Run the classic copy RPC in a worker thread and watch its progress.
 
-        xcopy returns immediately with a uuid; there is no oper node and its rich
-        progress events are notification-only, so progress, stall detection, AND
-        completion all come from polling the on-device file size (with free-space
-        consumption as a fallback signal for releases that hide the growing file).
-        The final size match doubles as the transfer-integrity gate; 'install add'
-        image-signature validation remains the cryptographic backstop.
+        The classic Cisco-IOS-XE-rpc:copy BLOCKS for the whole transfer (chosen
+        deliberately: a real 17.15.05 silently broke the fancier async xcopy
+        while this path kept working). Running it in a thread frees the job to
+        poll the growing on-device file for progress lines; the final exact size
+        match is the transfer-integrity gate, and 'install add' image-signature
+        validation remains the cryptographic backstop.
         """
         dest = f"{C.TARGET_FS}{image.image_file_name}"
         expected = image.image_file_size
         pre_data = self._read_q_filesystem(client) or {}
-        baseline_free = _free_bytes_for_fs(pre_data, C.TARGET_FS_NAMES)
         pre_size = _file_size_bytes(pre_data, image.image_file_name)
         if expected and pre_size is not None and pre_size == expected:
             # Idempotent short-circuit: the exact file is already on flash (e.g. a
@@ -877,40 +877,109 @@ class IOSXEUpgrade(Job):
             )
         self._preflight_download_url(image.download_url, log)
         self.logger.info(
-            "Starting express copy to %s (expected size: %s)...",
+            "Starting copy to %s (expected size: %s)...",
             dest,
             f"{expected} bytes" if expected else "unknown",
             extra=log,
         )
-        rpc_input = {
-            "uuid": str(uuid_lib.uuid4()),
-            "source-path": image.download_url,
-            "destination-path": dest,
-            # xcopy's device-side guard is in MINUTES.
-            "timeout": max(1, math.ceil(C.COPY_TIMEOUT / 60)),
+        payload = {
+            "Cisco-IOS-XE-rpc:input": {
+                "source-drop-node-name": image.download_url,
+                "destination-drop-node-name": dest,
+            }
         }
-        if C.XCOPY_VRF:
-            rpc_input["vrf"] = C.XCOPY_VRF
-        if C.XCOPY_TRUSTPOINT:
-            rpc_input["trustpoint"] = C.XCOPY_TRUSTPOINT
-        try:
-            response = client.post_rpc(C.OP_XCOPY, {"Cisco-IOS-XE-xcopy-rpc:input": rpc_input})
-        except RestconfError as exc:
-            raise UpgradeAbort(_interpret_copy_failure(exc, image.download_url)) from exc
-        # Parity with add/activate: the RPC can return 2xx with the refusal in
-        # the body (e.g. a previous express copy still holding the session) --
-        # fail loudly now rather than stall-watching a transfer that never began.
-        if response and not response.get("_disconnected"):
-            self.logger.info("xcopy RPC response: %s", response, extra=log)
-            error_text = _rpc_error_text(response)
-            if error_text:
+        result = {}
+
+        def _do_copy():
+            try:
+                result["response"] = client.post_rpc(C.OP_COPY, payload, timeout=C.COPY_TIMEOUT)
+            except Exception as exc:  # noqa: BLE001 - surfaced by the watcher
+                result["error"] = exc
+
+        copy_thread = threading.Thread(target=_do_copy, daemon=True, name="iosxe-copy")
+        copy_thread.start()
+        # Poll from a SEPARATE session: requests.Session is not thread-safe and
+        # the original one is occupied by the blocking copy.
+        self._watch_copy(client.clone(), copy_thread, result, image, expected, log)
+
+    def _watch_copy(self, poll_client, copy_thread, result, image, expected, log):
+        """Report progress while the copy thread runs; verify when it finishes.
+
+        Progress is best-effort (some releases may not list the growing file);
+        there is deliberately NO stall abort — the blocking RPC itself is the
+        liveness signal: server/TLS failures return quickly as errors, and hangs
+        are bounded by COPY_TIMEOUT.
+        """
+        started = time.monotonic()
+        deadline = started + C.COPY_TIMEOUT + 2 * C.POLL_INTERVAL
+        last_logged = 0
+        polls = 0
+        while copy_thread.is_alive():
+            if time.monotonic() > deadline:
                 raise UpgradeAbort(
-                    f"express copy was rejected: {error_text}. " + _fetch_hints(image.download_url)
+                    f"Copy did not complete within {C.COPY_TIMEOUT}s. "
+                    + _fetch_hints(image.download_url)
                 )
-        self._watch_copy(client, image, expected, baseline_free, pre_size, log)
+            time.sleep(C.POLL_INTERVAL)
+            polls += 1
+            data = self._read_q_filesystem(poll_client, retries=1) or {}
+            size = _file_size_bytes(data, image.image_file_name)
+            elapsed = int(time.monotonic() - started)
+            if size is not None:
+                step = max((expected or 0) // 20, 25_000_000)  # ~5% or 25 MB
+                if abs(size - last_logged) >= step:
+                    last_logged = size
+                    self.logger.info(
+                        "Copy progress: %s (elapsed %ss).",
+                        _progress_label(size, expected),
+                        elapsed,
+                        extra=log,
+                    )
+            elif polls % 4 == 0:  # heartbeat every ~2 minutes
+                self.logger.info(
+                    "Copy running (elapsed %ss; transfer size not yet visible on-device)...",
+                    elapsed,
+                    extra=log,
+                )
+        copy_thread.join(timeout=5)
+
+        error = result.get("error")
+        if error is not None:
+            if isinstance(error, RestconfError):
+                raise UpgradeAbort(_interpret_copy_failure(error, image.download_url)) from error
+            raise UpgradeAbort(
+                f"Copy failed unexpectedly: {error}. " + _fetch_hints(image.download_url)
+            ) from error
+        error_text = _rpc_error_text(result.get("response"))
+        if error_text:
+            raise UpgradeAbort(
+                f"The copy was rejected by the device: {error_text}. "
+                + _fetch_hints(image.download_url)
+            )
+        # RPC returned success — verify what actually landed on flash.
+        size = _file_size_bytes(self._read_q_filesystem(poll_client) or {}, image.image_file_name)
+        elapsed = int(time.monotonic() - started)
+        if expected and size is not None:
+            if abs(size - expected) > C.SIZE_MATCH_TOLERANCE_BYTES:
+                raise UpgradeAbort(
+                    f"Copy finished but the on-device size is {size} bytes, expected "
+                    f"{expected} — transfer incomplete or wrong file on the server."
+                )
+            self.logger.info(
+                "Copy complete and size verified (%s bytes, %ss).", size, elapsed, extra=log
+            )
+        else:
+            self.logger.warning(
+                "Copy finished but the size could not be verified (on-device: %s, "
+                "expected: %s); relying on 'install add' signature validation. Set "
+                "the image file size in Nautobot for a stricter gate.",
+                size if size is not None else "unreadable",
+                expected or "unknown",
+                extra=log,
+            )
 
     def _preflight_download_url(self, url, log):
-        """Sanity-check the download URL from the worker before firing xcopy.
+        """Sanity-check the download URL from the worker before starting the copy.
 
         The Register job validates via the worker's INTERNAL route, so the
         device-facing URL stored on the image may never have been exercised. A
@@ -949,116 +1018,6 @@ class IOSXEUpgrade(Job):
                 resp.status_code,
                 extra=log,
             )
-
-    def _watch_copy(self, client, image, expected, baseline_free, pre_size, log):
-        """Poll for copy progress; return on verified completion, abort otherwise.
-
-        ``pre_size`` is the destination file's size BEFORE the copy started (None
-        if absent): completion is only accepted after the observed size has
-        changed from it, so a stale same-name file can't satisfy the gate while
-        xcopy is still overwriting it underneath.
-        """
-        deadline = time.monotonic() + C.COPY_TIMEOUT
-        started = time.monotonic()
-        last_signal = 0
-        last_logged = 0
-        stall_polls = 0
-        settle_polls = 0
-        last_size = None
-        overwrite_seen = pre_size is None
-        while time.monotonic() < deadline:
-            time.sleep(C.POLL_INTERVAL)
-            data = self._read_q_filesystem(client, retries=1) or {}
-            size = _file_size_bytes(data, image.image_file_name)
-            free = _free_bytes_for_fs(data, C.TARGET_FS_NAMES)
-            consumed = None
-            if baseline_free is not None and free is not None:
-                consumed = max(0, baseline_free - free)
-            elapsed = int(time.monotonic() - started)
-            if size is not None and size != pre_size:
-                overwrite_seen = True
-
-            # Completion: exact size match when the expected size is known — but
-            # only once the pre-existing file (if any) has been observed changing.
-            if (
-                expected
-                and overwrite_seen
-                and size is not None
-                and abs(size - expected) <= C.SIZE_MATCH_TOLERANCE_BYTES
-            ):
-                self.logger.info(
-                    "Copy complete and size verified (%s bytes, %ss).",
-                    size,
-                    elapsed,
-                    extra=log,
-                )
-                return
-            if expected and size is not None and size > expected + C.SIZE_MATCH_TOLERANCE_BYTES:
-                raise UpgradeAbort(
-                    f"Copied file is larger than expected ({size} > {expected} "
-                    "bytes) — wrong file on the server or stale metadata in "
-                    "Nautobot."
-                )
-            # Completion without an expected size: file present and stable.
-            if (
-                not expected
-                and overwrite_seen
-                and size is not None
-                and size > 0
-                and size == last_size
-            ):
-                settle_polls += 1
-                if settle_polls >= C.COPY_SETTLE_POLLS:
-                    self.logger.warning(
-                        "Copy appears complete (%s bytes, stable for %d polls), but "
-                        "no expected size is set in Nautobot so the transfer cannot "
-                        "be size-verified — relying on 'install add' signature "
-                        "validation. Set the image file size for a stricter gate.",
-                        size,
-                        settle_polls,
-                        extra=log,
-                    )
-                    return
-            else:
-                settle_polls = 0
-            last_size = size
-
-            # Progress + stall bookkeeping (best available signal). Small
-            # free-space jitter must not count as progress or reset the stall
-            # counter, and progress lines are rate-limited to meaningful steps.
-            signal = size if size is not None else consumed
-            if signal is not None and abs(signal - last_signal) >= C.PROGRESS_MIN_DELTA_BYTES:
-                last_signal = signal
-                stall_polls = 0
-                step = max((expected or 0) // 20, 25_000_000)  # ~5% or 25 MB
-                if abs(signal - last_logged) >= step:
-                    last_logged = signal
-                    self.logger.info(
-                        "Copy progress: %s (elapsed %ss).",
-                        _progress_label(size, consumed, expected),
-                        elapsed,
-                        extra=log,
-                    )
-            else:
-                stall_polls += 1
-                if stall_polls in (2, 6) or stall_polls % 10 == 0:
-                    self.logger.info(
-                        "Copy running, no progress visible yet (%s, elapsed %ss, "
-                        "stall %d/%d polls).",
-                        _progress_label(size, consumed, expected),
-                        elapsed,
-                        stall_polls,
-                        C.COPY_STALL_POLLS,
-                        extra=log,
-                    )
-                if stall_polls >= C.COPY_STALL_POLLS:
-                    raise UpgradeAbort(
-                        f"Copy stalled: no progress for {stall_polls} polls "
-                        f"(~{stall_polls * C.POLL_INTERVAL}s). " + _fetch_hints(image.download_url)
-                    )
-        raise UpgradeAbort(
-            f"Copy did not complete within {C.COPY_TIMEOUT}s. " + _fetch_hints(image.download_url)
-        )
 
     def _install_add(self, client, image, op_uuid, log):
         path = f"{C.TARGET_FS}{image.image_file_name}"
@@ -1383,23 +1342,16 @@ class IOSXEUpgrade(Job):
 # --------------------------------------------------------- module utilities --
 
 
-def _progress_label(size, consumed, expected):
-    """Human progress string from the best available copy signal.
-
-    ``size`` is the on-device file size, ``consumed`` the free-space delta since
-    the copy started (fallback when the growing file isn't listed yet), and
-    ``expected`` the size recorded in Nautobot (enables a percentage).
-    """
+def _progress_label(size, expected):
+    """Human progress string for the copy watcher."""
     mb = 1_000_000
-    signal = size if size is not None else consumed
-    if signal is None:
+    if size is None:
         return "no size data"
-    label = f"{signal // mb} MB"
-    source = "file size" if size is not None else "space used"
+    label = f"{size // mb} MB"
     if expected:
-        pct = min(100, round(signal * 100 / expected))
-        return f"{label} / {expected // mb} MB ({pct}%, {source})"
-    return f"{label} ({source}, expected size unknown)"
+        pct = min(100, round(size * 100 / expected))
+        return f"{label} / {expected // mb} MB ({pct}%)"
+    return f"{label} (expected size unknown)"
 
 
 def _fetch_hints(url):
@@ -1415,24 +1367,22 @@ def _fetch_hints(url):
             "MOST LIKELY: the device does not trust the firmware server's TLS "
             "certificate (self-signed). Fix: use the HTTP URL on the "
             "mgmt-restricted network (edit the image's download_url to "
-            "http://<host>:9080/images/...), install the server's CA in a device "
-            "trustpoint (crypto pki trustpoint + authenticate) and set "
-            "XCOPY_TRUSTPOINT in constants.py"
+            "http://<host>:9080/images/...), or install the server's CA in a "
+            "device trustpoint (crypto pki trustpoint + authenticate)"
         )
     hints.append(
-        "check the device can actually reach the URL host (if via a VRF, set "
-        "XCOPY_VRF in constants.py), and test from the device CLI: "
+        "check the device can actually reach the URL host (VRF/source-interface: "
+        "'ip http client source-interface ...'), and test from the device CLI: "
         "copy " + url + " null:"
     )
     return f"Likely causes: {'; '.join(hints)}."
 
 
 def _interpret_copy_failure(exc, url):
-    """Turn an xcopy-RPC rejection into an actionable message.
+    """Turn a copy-RPC failure into an actionable message.
 
     The device reports fetch failures as an opaque '%Error opening ... (I/O
-    error)' inside an HTTP 400; some immediate failures surface synchronously
-    even though the transfer itself is asynchronous.
+    error)' inside an HTTP 400.
     """
     text = str(exc)
     lowered = text.lower()
@@ -1441,7 +1391,7 @@ def _interpret_copy_failure(exc, url):
             f"Image copy failed — device could not fetch {url}. "
             f"{_fetch_hints(url)} Device said: {text}"
         )
-    return f"Image copy failed — the device rejected the xcopy request: {text}"
+    return f"Image copy failed — the device rejected the copy request: {text}"
 
 
 def _auth_hint(status_code):
@@ -1698,21 +1648,6 @@ def _flash_frees(data, fs_names):
                     out.append((name, free))
                 break
     return out
-
-
-def _free_bytes_for_fs(data, fs_names):
-    """Free bytes on the PRIMARY (active member's) target filesystem.
-
-    Used by the copy watcher for its consumed-space fallback signal: the image
-    lands on the active's flash, so member filesystems must not dilute the
-    delta. Prefers the exact configured name ('flash'); falls back to the first
-    match. Returns None when nothing matches (callers treat as unconfirmed).
-    """
-    frees = _flash_frees(data, fs_names)
-    for name, free in frees:
-        if name in fs_names:
-            return free
-    return frees[0][1] if frees else None
 
 
 def _file_size_bytes(data, image_file_name):
