@@ -171,9 +171,9 @@
 <polygon points="400,2222.0 525.0,2264 400,2306.0 275.0,2264" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
 <text x="400" y="2257" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Target version</tspan><tspan x="400" dy="14">stably confirmed?</tspan></text>
 <rect x="250" y="2332" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
-<text x="400" y="2353" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Check auto-rollback timer armed</tspan><tspan x="400" dy="14">(warn if not confirmable)</tspan></text>
+<text x="400" y="2353" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Report auto-rollback timer status</tspan><tspan x="400" dy="14">(informational; commit follows)</tspan></text>
 <rect x="250" y="2428" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
-<text x="400" y="2449" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">install commit → verify</tspan><tspan x="400" dy="14">(scoped to target version)</tspan></text>
+<text x="400" y="2449" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">install commit → poll until confirmed</tspan><tspan x="400" dy="14">committed (scoped to target version)</tspan></text>
 <polygon points="400,2510.0 525.0,2552 400,2594.0 275.0,2552" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
 <text x="400" y="2545" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Commit</tspan><tspan x="400" dy="14">succeeded?</tspan></text>
 <rect x="250" y="2620" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
