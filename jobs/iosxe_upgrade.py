@@ -22,8 +22,9 @@ Upgrade flow (per device):
      resolution + compatibility, free-space
   3. Async express copy (xcopy) with progress/stall polling, completed by an
      on-device size match against the expected size
-  4. install add (wait for add-COMPLETE state) -> install activate (auto-rollback
-     timer armed; activation start verified, not just the RPC 2xx) -> reload
+  4. install add (wait for add-COMPLETE state) -> install activate (explicitly
+     non-ISSU, by version; activation start verified, not just the RPC 2xx;
+     rollback timer checked after reload) -> reload
   5. Poll until the target version actually booted -> install commit
   6. Post-checks + sync Nautobot's Device.software_version
   7. Optional: install remove inactive (off by default)
@@ -974,20 +975,17 @@ class IOSXEUpgrade(Job):
         )
 
     def _install_activate(self, client, image, op_uuid, log):
-        self.logger.info(
-            "install activate → device reloads (auto-rollback timer: %s min)...",
-            C.AUTO_ABORT_MINUTES,
-            extra=log,
-        )
-        # 'activate' requires the mandatory choice (version/path/name); supply the
-        # image path. Arm the auto-abort timer EXPLICITLY so the rollback window is
-        # deterministic — if we never commit, the device reverts when it expires.
-        # (auto-abort-timer-val is research-derived; verify the leaf per release.)
+        self.logger.info("install activate (explicitly non-ISSU) → device reloads...", extra=log)
+        # A real 17.15.4 fatally failed our activation on an "ISSU compatibility
+        # check", so make the request impossible to misread: issu=false explicitly,
+        # activate by VERSION (what 'install add' staged), and no
+        # auto-abort-timer-val — the platform's default rollback timer applies and
+        # is verified after reload by _log_rollback_state.
         payload = {
             "Cisco-IOS-XE-install-rpc:input": {
                 "uuid": op_uuid,
-                "path": f"{C.TARGET_FS}{image.image_file_name}",
-                "auto-abort-timer-val": C.AUTO_ABORT_MINUTES,
+                "version": image.software_version.version,
+                "issu": False,
             }
         }
         response = client.post_rpc(

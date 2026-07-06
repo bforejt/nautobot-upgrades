@@ -41,9 +41,10 @@ stopping on the first failure for a device:
    intentionally not used as a gate — it is asynchronous and returns no
    synchronous pass/fail.
 4. **Install** — `install add` (the job waits for the add-**complete** state,
-   not mere presence) → `install activate` (arms the device's **auto-rollback
-   timer**; the job verifies activation actually **started** — the RPC returns
-   2xx even when the install engine rejects it) → reload.
+   not mere presence) → `install activate` (**explicitly non-ISSU**, by version;
+   the job verifies activation actually **started** — the RPC returns 2xx even
+   when the install engine rejects it — and checks the device's **auto-rollback
+   timer** after reload) → reload.
 5. **Verify, then commit** — reconnect, confirm the device actually booted the
    target version, and **only then** `install commit`. If it didn't come back or
    booted the wrong version, the job does **not** commit and the device
