@@ -1585,18 +1585,24 @@ def _is_committed(tokens):
 def _full_version_string(data, version_str):
     """The device's full internal version for ``version_str`` (or None).
 
-    install-oper rows carry the complete identifier (e.g. '17.15.04.0.6839')
-    while Nautobot stores the human form ('17.15.04'). Returns the longest
-    version-leaf value whose numeric tuple matches, so the activate RPC can
-    reference the image exactly the way the install DB indexes it.
+    install-oper rows carry the complete identifier the install DB indexes by
+    (e.g. '17.15.04.0.6839') — but OTHER rows carry junk composites like
+    '17.15.04.0.6839.1754352873..IOSXE' (version + transaction epoch + suffix),
+    which the engine does NOT accept (field-verified: activating by such a
+    string hangs exactly like the bare form). Selection rules:
+
+      * candidates must be pure dotted-numeric (junk suffixes disqualify);
+      * must extend beyond the bare major.minor.patch (>3 components);
+      * prefer the FEWEST components, then the shortest string — the tightest
+        identifier fuller than bare, e.g. '17.15.04.0.6839' beats both the
+        bare '17.15.04' and any longer transaction-stamped composite.
     """
     target = _version_tuple(version_str)
     if target is None:
         return None
-    best = None
+    candidates = []
 
     def _walk(node):
-        nonlocal best
         if isinstance(node, dict):
             for key, value in node.items():
                 key_l = key.lower()
@@ -1606,9 +1612,11 @@ def _full_version_string(data, version_str):
                     and "state" not in key_l
                     and _version_tuple(value) == target
                 ):
-                    candidate = value.strip()
-                    if best is None or len(candidate) > len(best):
-                        best = candidate
+                    text = value.strip()
+                    if re.fullmatch(r"\d+(?:\.\d+)*", text):
+                        components = text.split(".")
+                        if len(components) > 3:
+                            candidates.append((len(components), len(text), text))
                 else:
                     _walk(value)
         elif isinstance(node, list):
@@ -1616,7 +1624,9 @@ def _full_version_string(data, version_str):
                 _walk(item)
 
     _walk(data)
-    return best
+    if not candidates:
+        return None
+    return min(candidates)[2]
 
 
 def _rpc_error_text(response):
