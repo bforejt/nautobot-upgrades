@@ -1032,6 +1032,17 @@ class IOSXEUpgrade(Job):
         response = client.post_rpc(C.OP_INSTALL, payload, timeout=C.RPC_TIMEOUT)
         if response:
             self.logger.info("install add RPC response: %s", response, extra=log)
+        # The RPC returns 2xx even when the engine refuses the add (real-device
+        # pattern); if the response body itself carries the failure, abort now —
+        # do NOT let a residual state row vouch for a failed add.
+        error_text = _rpc_error_text(response)
+        if error_text:
+            raise UpgradeAbort(
+                f"install add was rejected by the install engine: {error_text} — "
+                "check 'show install log' and flash:.installer logs. If leftover "
+                "packages from a prior life of this version exist, run 'install "
+                "remove inactive' and re-run this job."
+            )
         self._wait_for_added(client, version_str, log)
 
     def _wait_for_added(self, client, version_str, log):
@@ -1042,9 +1053,11 @@ class IOSXEUpgrade(Job):
             # States that mean the add has finished (verified on a real 17.15.4):
             # 'pending' (install-version-state-in-progress = "marked for
             # activation") is the NORMAL resting state of an added image, and
-            # installed/present/added or beyond likewise count. While the add is
-            # still extracting, the version is absent or sits at 'invalid'
-            # ("complete image is not available") → keep waiting.
+            # installed/added or beyond likewise count. 'present' does NOT — it
+            # means files-on-disk without DB staging (residual from a prior life
+            # of this version) and must never confirm an add. While the add is
+            # still extracting, the version is absent or sits at 'invalid' →
+            # keep waiting.
             tokens = self._state_tokens(client, version_str)
             states = {_classify_state(t) for t in tokens}
             if states & {"pending", "added", "activated", "uncommitted", "committed"}:
@@ -1065,8 +1078,9 @@ class IOSXEUpgrade(Job):
         final_tokens = self._state_tokens(client, version_str)
         self.logger.warning(
             "Could not confirm 'install add' completion for %s from install-oper "
-            "within %ss (state: %s); proceeding to activate (activation start is "
-            "verified).",
+            "within %ss (state: %s); the add may have failed silently — check "
+            "flash:.installer logs if activation does not start. Proceeding to "
+            "activate (activation start is verified).",
             version_str,
             C.ADD_TIMEOUT,
             sorted(final_tokens) or "none",
@@ -1096,6 +1110,13 @@ class IOSXEUpgrade(Job):
         # below is the actual gate.
         if response and not response.get("_disconnected"):
             self.logger.info("activate RPC response: %s", response, extra=log)
+            error_text = _rpc_error_text(response)
+            if error_text:
+                raise UpgradeAbort(
+                    f"install activate was rejected by the install engine: "
+                    f"{error_text} — check 'show install log' and flash:.installer "
+                    "logs; the device is unchanged."
+                )
 
     def _confirm_activation(self, client, version_str, log):
         """Verify the activation actually started before waiting out a reload.
@@ -1492,13 +1513,18 @@ def _classify_state(token):
     if t in ("i", "inactive", "added"):
         return "added"
     # install-version-state family (verified against the 17.15 YANG):
-    # 'installed' = added & available for activation; 'present' = on device but
-    # not used; 'in-progress' = MARKED FOR ACTIVATION — an open install
-    # transaction (not "add still running"), classified as its own state.
+    # 'installed' = added & available for activation; 'in-progress' = MARKED FOR
+    # ACTIVATION (the normal resting state of an added image — real-device
+    # verified). 'present' = files on device but NOT staged in the install DB —
+    # a real 17.15.4 downgrade proved a residual 'present' row can exist while
+    # the engine insists "perform an install add before activating", so it gets
+    # its own class and never satisfies staged/added gates.
     if "progress" in t:
         return "pending"
-    if "installed" in t or t == "present":
+    if "installed" in t:
         return "added"
+    if t == "present":
+        return "present"
     if "uncommitted" in t:
         return "uncommitted"
     if "committed" in t:
@@ -1523,6 +1549,24 @@ def _is_committed(tokens):
     return "committed" in classes and not any(
         c in ("activated", "uncommitted", "pending") for c in classes
     )
+
+
+def _rpc_error_text(response):
+    """Failure text from an install RPC response body, or "" if it looks clean.
+
+    Install RPCs return HTTP 2xx even when the engine refuses the operation
+    (verified repeatedly on a real 17.15.4); the refusal text rides in the
+    response body. Bodies are short acks (uuid/output), so marker scanning is
+    safe here — unlike the big oper blobs, where substring matching burned us.
+    """
+    if not response or not isinstance(response, dict):
+        return ""
+    text = str(response)
+    lowered = text.lower()
+    markers = ("fail", "error", "not allowed", "cannot", "reject", "invalid")
+    if any(marker in lowered for marker in markers):
+        return text
+    return ""
 
 
 def _find_inventory_entries(data):
