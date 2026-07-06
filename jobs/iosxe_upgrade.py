@@ -19,13 +19,14 @@ Upgrade flow (per device):
   1. Idempotency: if already on target, commit it if it is merely activated
      (cancelling a pending rollback), else no-op
   2. Pre-flight gates: version floor, install-mode (fail-closed), image
-     resolution + compatibility, free-space
+     resolution + compatibility, free-space (minimum across stack members)
   3. Async express copy (xcopy) with progress/stall polling, completed by an
      on-device size match against the expected size
   4. install add (wait for add-COMPLETE state) -> install activate (explicitly
      non-ISSU, by version; activation start verified, not just the RPC 2xx;
      rollback timer checked after reload) -> reload
-  5. Poll until the target version actually booted -> install commit
+  5. Poll until the target version actually booted AND every pre-upgrade
+     stack member rejoined -> install commit
   6. Post-checks + sync Nautobot's Device.software_version
   7. Optional: install remove inactive (off by default)
 
@@ -351,13 +352,24 @@ class IOSXEUpgrade(Job):
         self._copy_image(client, image, log)
 
         # -- 4. install add / activate (verified started) / reload -----------
+        # Capture the stack member roster first: after the reload, every member
+        # must rejoin before we commit.
+        roster = self._member_roster(client)
+        if roster:
+            self.logger.info(
+                "Stack roster captured: %d member(s) (%s).",
+                len(roster),
+                sorted(roster),
+                extra=log,
+            )
         op_uuid = str(uuid_lib.uuid4())
         self._install_add(client, image, op_uuid, log)
         self._install_activate(client, image, op_uuid, log)
         self._confirm_activation(client, target_str, log)
 
-        # -- 5. Confirm booted, verify rollback net, commit, then sync -------
+        # -- 5. Confirm booted + all members back, rollback net, commit, sync --
         self._wait_for_target(client, target_str, log)
+        self._verify_members(client, roster, log)
         self._log_rollback_state(client, log)
         try:
             self._install_commit(client, op_uuid, log)
@@ -703,13 +715,24 @@ class IOSXEUpgrade(Job):
         return None if require_default else images[0]
 
     def _gate_free_space(self, client, image, log):
-        free = self._read_free_space(client)
-        if free is None:
+        # 'install add' distributes packages to EVERY stack member, so the gate
+        # is the MINIMUM free space across all matching flash partitions (one
+        # per member on a stack; exactly one on a standalone switch).
+        data = self._read_q_filesystem(client)
+        frees = _flash_frees(data or {}, C.TARGET_FS_NAMES)
+        if not frees:
             raise UpgradeAbort(
                 "Could not confirm free space on the target filesystem over "
                 "RESTCONF. The partition name or path may differ on this release / "
                 "platform — adjust TARGET_FS_NAMES / DATA_Q_FILESYSTEM in "
                 "constants.py. Refusing to copy without confirming space."
+            )
+        free = min(f for _, f in frees)
+        if len(frees) > 1:
+            self.logger.info(
+                "Flash free space per member: %s — gating on the minimum.",
+                {name: f for name, f in frees},
+                extra=log,
             )
         size = image.image_file_size
         if size:
@@ -724,8 +747,9 @@ class IOSXEUpgrade(Job):
             )
         if free < needed:
             raise UpgradeAbort(
-                f"Insufficient free space: {free} bytes free, need {needed} "
-                f"({label}). Run 'install remove inactive' or clean up flash."
+                f"Insufficient free space: {free} bytes free "
+                f"({'minimum across members' if len(frees) > 1 else 'flash'}), need "
+                f"{needed} ({label}). Run 'install remove inactive' or clean up flash."
             )
         self.logger.info(
             "Free-space gate passed (%s bytes free, need %s).", free, needed, extra=log
@@ -749,11 +773,69 @@ class IOSXEUpgrade(Job):
                 time.sleep(C.POLL_INTERVAL)
         return None
 
-    def _read_free_space(self, client):
-        data = self._read_q_filesystem(client)
-        if not data:
+    def _member_roster(self, client):
+        """Stack member roster: {(hw-dev-index, serial)} for chassis entries.
+
+        Returns None when the inventory is unreadable or carries no chassis
+        entries (the caller then skips the completeness check rather than
+        guessing).
+        """
+        try:
+            data = client.get(C.DATA_DEVICE_INVENTORY, ok_404=True) or {}
+        except RestconfError:
             return None
-        return _free_bytes_for_fs(data, C.TARGET_FS_NAMES)
+        roster = set()
+        for entry in _find_inventory_entries(data):
+            if "chassis" in str(entry.get("hw-type", "")).lower():
+                roster.add(
+                    (
+                        str(entry.get("hw-dev-index", "?")),
+                        str(entry.get("serial-number", "")).strip(),
+                    )
+                )
+        return roster or None
+
+    def _verify_members(self, client, roster, log):
+        """Require every pre-upgrade stack member to rejoin before committing.
+
+        Without this, a member that fails to boot after the reload would go
+        unnoticed: the active reports the target version, the job commits, and
+        the stack silently loses a member. Members can come up staggered, so
+        poll up to MEMBER_CHECK_TIMEOUT before refusing.
+        """
+        if not roster:
+            self.logger.info(
+                "Stack member roster was not readable before the upgrade; "
+                "skipping the member-completeness check.",
+                extra=log,
+            )
+            return
+        deadline = time.monotonic() + C.MEMBER_CHECK_TIMEOUT
+        polls = 0
+        current = set()
+        while time.monotonic() < deadline:
+            current = self._member_roster(client) or set()
+            if current >= roster:
+                self.logger.info(
+                    "All %d stack member(s) rejoined after the reload.",
+                    len(roster),
+                    extra=log,
+                )
+                return
+            polls += 1
+            if polls % 4 == 0:  # heartbeat every ~2 minutes
+                self.logger.info(
+                    "Waiting for stack members to rejoin (missing: %s)...",
+                    sorted(roster - current),
+                    extra=log,
+                )
+            time.sleep(C.POLL_INTERVAL)
+        raise UpgradeAbort(
+            f"Stack member(s) missing after the reload: {sorted(roster - current)} "
+            f"(present: {sorted(current) or 'none readable'}). NOT committing — the "
+            "auto-rollback timer should revert the stack; investigate the missing "
+            "member(s) before re-running."
+        )
 
     # ------------------------------------------------- helpers: device writes --
 
@@ -1443,6 +1525,21 @@ def _is_committed(tokens):
     )
 
 
+def _find_inventory_entries(data):
+    """Collect device-inventory entries (dicts carrying an 'hw-type' key)."""
+    found = []
+    if isinstance(data, dict):
+        if "hw-type" in data:
+            found.append(data)
+        else:
+            for value in data.values():
+                found.extend(_find_inventory_entries(value))
+    elif isinstance(data, list):
+        for item in data:
+            found.extend(_find_inventory_entries(item))
+    return found
+
+
 def _find_timer_entries(data):
     """Collect auto-abort-timer containers ({'state':…, 'end-time':…}) anywhere.
 
@@ -1486,23 +1583,39 @@ def _partition_free(partition):
     return (total - used) * 1024
 
 
-def _free_bytes_for_fs(data, fs_names):
-    """Free bytes on the target filesystem from q-filesystem data (KB -> bytes).
+def _flash_frees(data, fs_names):
+    """(name, free-bytes) for EVERY matching flash partition, stack members too.
 
-    Matches a partition whose name equals a configured name OR is that name with a
-    stack-member suffix ('flash-1', 'flash:1') — but never 'bootflash'/'usbflash',
-    and never an unrelated single partition. Returns None when the target
-    filesystem can't be found, which makes the caller abort rather than validate
-    space on the wrong filesystem.
+    Matches a partition whose name equals a configured name OR is that name with
+    a stack-member suffix ('flash-1', 'flash:1') — but never 'bootflash'/
+    'usbflash'. On a stack, one entry per member is returned; 'install add'
+    distributes packages to every member, so all of them matter.
     """
+    out = []
     for partition in _find_partitions(data):
         name = str(partition.get("name", "")).strip().rstrip(":").lower()
         for fs in fs_names:
             if name == fs or name.startswith(fs + "-") or name.startswith(fs + ":"):
                 free = _partition_free(partition)
                 if free is not None:
-                    return free
-    return None
+                    out.append((name, free))
+                break
+    return out
+
+
+def _free_bytes_for_fs(data, fs_names):
+    """Free bytes on the PRIMARY (active member's) target filesystem.
+
+    Used by the copy watcher for its consumed-space fallback signal: the image
+    lands on the active's flash, so member filesystems must not dilute the
+    delta. Prefers the exact configured name ('flash'); falls back to the first
+    match. Returns None when nothing matches (callers treat as unconfirmed).
+    """
+    frees = _flash_frees(data, fs_names)
+    for name, free in frees:
+        if name in fs_names:
+            return free
+    return frees[0][1] if frees else None
 
 
 def _file_size_bytes(data, image_file_name):
