@@ -3,17 +3,16 @@
 A native **Nautobot Job** that reliably and cautiously upgrades **Cisco IOS-XE**
 devices — **Catalyst 9300** primarily — driven entirely over **RESTCONF**.
 
-> ### ⚠️ Status: new — installs on Nautobot 2.4; functionality not yet tested
+> ### ⚠️ Status: early — first end-to-end upgrade succeeded in the lab
 >
-> The package **installs and syncs** as a Git Repository on **Nautobot 2.4**
-> (deployed via [nautobot-composer](#sister-project-nautobot-composer)). Beyond
-> that, **nothing has been exercised**: no Job has been run end-to-end, no real
-> device has been touched, and other Nautobot versions (3.x) have not been tried.
-> The RESTCONF payloads and operational paths are **research-derived** from
-> Cisco's published YANG models, not confirmed on a device. Treat this as a
-> **lab-only first draft** and **always run with Dry-run first**. Expect to adjust
-> release-specific details in [`jobs/constants.py`](jobs/constants.py). See
-> [Status & testing](#status--testing) for what is and isn't verified.
+> A complete upgrade (Catalyst 9300, IOS-XE 17.15.04 → 17.15.05: copy → add →
+> activate → reload → commit, entirely over RESTCONF) has **succeeded on real
+> hardware**, run from a **Nautobot 2.4** nautobot-composer deployment. That is
+> one device, one version pair, one platform: stacks, batches, rollback paths,
+> Nautobot 3.x, and failure-mode coverage remain **untested**. Treat this as
+> **lab-quality** — not production-ready — and **always run with Dry-run
+> first**. See [Status & testing](#status--testing) for the verified/unverified
+> breakdown.
 
 ---
 
@@ -74,22 +73,25 @@ plus Nautobot core, so whatever ships with the supported Nautobot release suffic
 
 This project is **new and largely unverified** — be conservative with it.
 
-**Verified so far**
+**Verified so far (real hardware: one Catalyst 9300 on 17.15.4)**
 
-- ✅ The repository **installs / syncs cleanly as a Nautobot Git Repository on
-  Nautobot 2.4** (deployed via nautobot-composer): both Jobs register and appear
-  on the Jobs page.
+- ✅ Installs / syncs as a Nautobot Git Repository on **Nautobot 2.4**
+  (nautobot-composer); both Jobs register.
+- ✅ **Register IOS-XE Image**: firmware-server upload → validate → record.
+- ✅ **Full upgrade end-to-end**: reachability/auth, all pre-flight gates,
+  device-pull copy (xcopy), install add, non-ISSU activate, reload, stable-boot
+  confirm, commit, Nautobot sync — 17.15.04 → 17.15.05.
+- ✅ Real-device fixes baked in for: boot-mode leaf naming, install-oper state
+  semantics, TLS-fetch failures (HTTP fallback), premature/rejected activates,
+  and commit-confirmation timing.
 
 **Not yet tested — do not assume these work**
 
-- ❌ **End-to-end Job execution.** Neither *Cisco IOS-XE Upgrade* nor *Register
-  IOS-XE Image* has been run, even in Dry-run.
-- ❌ **Any interaction with a real device** (RESTCONF reachability, copy, install,
-  reload, commit) — every RESTCONF leaf path / RPC payload is research-derived.
-- ❌ **Nautobot 3.x** — only 2.4 has been installed against.
-- ❌ The **firmware-server integration** (upload → register → device pull).
-- ❌ The **auto-rollback timer** behavior and the `install-oper` state parsing on
-  real hardware (see [Known limitations](#known-limitations--not-yet-done)).
+- ❌ **Nautobot 3.x** — only 2.4 has been exercised.
+- ❌ **Stacks**, **multi-device batches**, and other version pairs / 9300 models.
+- ❌ **Failure paths on hardware**: auto-rollback (activate without commit),
+  `install rollback`, copy stall/corruption handling, downgrade runs.
+- ❌ The **Remove inactive** cleanup option.
 
 **Suggested test order (lab only)**
 
