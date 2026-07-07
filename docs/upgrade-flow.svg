@@ -3,7 +3,7 @@
 <rect x="0" y="0" width="980" height="3304" fill="#ffffff"/>
 <text x="20" y="28" font-size="18" font-weight="bold" fill="#111">Cisco IOS-XE Upgrade (RESTCONF) — per-device flow</text>
 <rect x="570" y="38" width="400" height="96" rx="6" ry="6" fill="#fbfbfb" stroke="#bbb" stroke-width="1.5"/>
-<text x="770" y="66" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#333"><tspan x="770" dy="0">Legend:  diamonds = decisions</tspan><tspan x="770" dy="14">· red = ABORT this device (logs the reason and continues with the next selected device)</tspan><tspan x="770" dy="14">· amber = warn &amp; continue</tspan><tspan x="770" dy="14">· green = successful end state.</tspan></text>
+<text x="770" y="66" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#333"><tspan x="770" dy="0">Legend:  diamonds = decisions</tspan><tspan x="770" dy="14">· red = ABORT this device (logs the reason, continues with the next device; ANY abort marks the whole Job Result FAILED at the end)</tspan><tspan x="770" dy="14">· amber = warn &amp; continue</tspan><tspan x="770" dy="14">· green = successful end state.</tspan></text>
 <path d="M 400 81 L 400 124" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
 <path d="M 400 180 L 400 206" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
 <path d="M 400 290 L 400 316" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>

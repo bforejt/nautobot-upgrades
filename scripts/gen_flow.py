@@ -119,7 +119,8 @@ WIDTH = 980
 HEIGHT = CY[ORDER[-1]] + 80
 
 LEGEND = ("Legend:  diamonds = decisions  ·  red = ABORT this device "
-          "(logs the reason and continues with the next selected device)  ·  "
+          "(logs the reason, continues with the next device; ANY abort marks "
+          "the whole Job Result FAILED at the end)  ·  "
           "amber = warn & continue  ·  green = successful end state.")
 
 # ---------------------------------------------------------------- SVG output --

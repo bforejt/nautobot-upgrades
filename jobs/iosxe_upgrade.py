@@ -271,6 +271,7 @@ class IOSXEUpgrade(Job):
         # self.logger.success() exists only on Nautobot >= 2.4; fall back to info.
         log_success = getattr(self.logger, "success", self.logger.info)
         results = {}
+        failed = []
         self.logger.info(
             "Starting IOS-XE upgrade to **%s** for %d selected device(s)%s.",
             target_version,
@@ -322,14 +323,36 @@ class IOSXEUpgrade(Job):
                 raise
             except UpgradeAbort as exc:
                 results[device.name] = f"ABORTED: {exc}"
+                failed.append(device.name)
                 self.logger.error("Upgrade aborted: %s", exc, extra={"object": device})
             except RestconfError as exc:
                 hint = _auth_hint(exc.status_code)
                 results[device.name] = f"RESTCONF error: {exc}{hint}"
+                failed.append(device.name)
                 self.logger.error("RESTCONF error: %s%s", exc, hint, extra={"object": device})
             except Exception as exc:  # noqa: BLE001 - surface anything unexpected
                 results[device.name] = f"UNEXPECTED error: {exc}"
+                failed.append(device.name)
                 self.logger.error("Unexpected error: %s", exc, extra={"object": device})
+        if failed:
+            # Per-device isolation is deliberate (one bad device must not stop
+            # the batch), but the JOB must not report green when any device
+            # failed — Nautobot marks a job FAILED only when run() raises, so
+            # raise after the batch completes. The full per-device breakdown is
+            # logged above (a raised failure replaces the return value).
+            succeeded = [name for name in results if name not in failed]
+            self.logger.error(
+                "Run finished: %d succeeded (%s), %d FAILED (%s).",
+                len(succeeded),
+                ", ".join(sorted(succeeded)) or "none",
+                len(failed),
+                ", ".join(sorted(failed)),
+            )
+            raise RuntimeError(
+                f"{len(failed)} of {len(device_list)} device(s) failed: "
+                f"{', '.join(sorted(failed))} — see the per-device errors in the "
+                "job log. Devices that succeeded are committed and unaffected."
+            )
         return results
 
     # ----------------------------------------------------------- orchestrate --
