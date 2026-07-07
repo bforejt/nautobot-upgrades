@@ -62,6 +62,9 @@ stopping on the first failure for a device:
 
 Feedback is mandatory and built in: every gate logs to the Job Result with the
 device attached, and a **Debug** toggle logs every RESTCONF request/response.
+Per-device failures don't stop the batch (the remaining devices still run),
+but **any device failure marks the whole Job Result FAILED** at the end — a
+green job means every selected device succeeded.
 
 See **[docs/upgrade-flow.md](docs/upgrade-flow.md)** for a flowchart of the
 per-device decision logic (editable [`upgrade-flow.drawio`](docs/upgrade-flow.drawio)).
