@@ -112,6 +112,25 @@ COMMIT_CONFIRM_TIMEOUT = 300
 #: The RPC returns 2xx even when the install engine rejects it — e.g. 'add in
 #: progress' — so the state change is the real gate.
 ACTIVATE_START_TIMEOUT = 600
+
+#: Engine-activity gate before every install-engine write. The oper-state
+#: 'sys-activity' leaf (typedef install-system-activity: install-no-activity /
+#: install-install-in-progress / install-issu-in-progress) is the engine's own
+#: busy indicator; requests that arrive while it is busy are SILENTLY dropped
+#: (field-verified: an activate landing inside the add's ~66s add-postchk phase
+#: never started an operation). Wait for every member to report no-activity.
+ENGINE_IDLE_TIMEOUT = 300
+
+#: Fallback settle delay before activate when sys-activity is not reported by
+#: the release AND the add could not be ledger-confirmed (the add's post-check
+#: phase measured ~66s on a real 17.15.x; padded for stacks). Used ONLY when
+#: no positive signal is available — state over inference, timers as last resort.
+ACTIVATE_SETTLE_DELAY = 120
+
+#: How many ledger polls with our op-uuid absent before concluding the engine
+#: dropped the request (activate → re-send the same request) or the release
+#: does not populate the operation ledger (add/commit → legacy state inference).
+LEDGER_ABSENT_POLLS = 3
 #: After "install activate" the device reloads; how long to wait before it
 #: starts responding to RESTCONF again.
 RELOAD_INITIAL_SLEEP = 120

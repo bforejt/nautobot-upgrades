@@ -69,8 +69,15 @@ SPINE = [
       "warn": ("size unknown", "No expected size → settle-detect,\nrely on install add signature"),
       "passlabel": "match"}),
     ("roster", "proc", "Capture stack member roster\n(chassis serials from inventory)", {}),
-    ("add", "proc", "install add (poll until staged: pending/\nadded or beyond; warn if unconfirmed)", {}),
-    ("act", "proc", "install activate (non-ISSU, by FULL\ninternal version from install-oper)", {}),
+    ("add", "proc",
+     "install add → track our op-uuid in the\noperation ledger to op-complete\n"
+     "(state inference only as fallback)", {}),
+    ("idle", "proc",
+     "Engine-idle gate: sys-activity =\nno-activity on every member\n"
+     "(settle delay only if no signal)", {}),
+    ("act", "proc",
+     "install activate (non-ISSU, by full internal\nversion; ledger-tracked,\n"
+     "re-sent on ledger-absent evidence)", {}),
     ("d_act", "dec", "Activation started?\n(state moves or device drops)",
      {"abort": ("No", "State never moved & device still up —\nengine rejected activate; device unchanged"),
       "passlabel": "Yes"}),
@@ -83,7 +90,8 @@ SPINE = [
       "warn": ("roster unknown", "Roster unreadable pre-upgrade →\nskip completeness check"),
       "passlabel": "Yes / standalone"}),
     ("rollbackchk", "proc", "Report auto-rollback timer status\n(informational; commit follows)", {}),
-    ("commit", "proc", "install commit → poll until confirmed\ncommitted (scoped to target version)", {}),
+    ("commit", "proc",
+     "install commit → ledger-confirmed,\ncross-checked against committed state", {}),
     ("d_commit", "dec", "Commit\nsucceeded?",
      {"abort": ("No", "Commit failed — ACTIVATED but NOT\ncommitted; manual intervention / re-run"),
       "passlabel": "Yes"}),

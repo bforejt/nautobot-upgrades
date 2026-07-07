@@ -22,11 +22,13 @@ Upgrade flow (per device):
      resolution + compatibility, free-space (minimum across stack members)
   3. Classic copy RPC in a worker thread, with the on-device file size polled
      for progress reporting and a size verification on completion
-  4. install add (wait for add-COMPLETE state) -> install activate (explicitly
-     non-ISSU, by version; activation start verified, not just the RPC 2xx;
-     rollback timer checked after reload) -> reload
+  4. install add -> tracked to COMPLETION in the engine's operation ledger
+     (install-oper / install-oper-hist records keyed by our RPC uuid; install
+     state inference only as a fallback) -> engine-idle gate (sys-activity) ->
+     install activate (non-ISSU, by full internal version; re-sent on
+     ledger-absent evidence; rollback timer checked after reload) -> reload
   5. Poll until the target version actually booted AND every pre-upgrade
-     stack member rejoined -> install commit
+     stack member rejoined -> install commit (ledger-tracked)
   6. Post-checks + sync Nautobot's Device.software_version
   7. Optional: install remove inactive (off by default)
 
@@ -71,6 +73,14 @@ _VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 
 class UpgradeAbort(Exception):
     """A safety gate failed; abort this device's upgrade (not the whole job)."""
+
+
+class LedgerOpFailure(UpgradeAbort):
+    """The device's operation ledger RECORDED a failure for our operation.
+
+    Distinct from a refusal/transport error so callers that treat commit errors
+    as benign (already-on-target) can still surface a real recorded failure.
+    """
 
 
 def _version_tuple(text):
@@ -364,18 +374,23 @@ class IOSXEUpgrade(Job):
                 sorted(roster),
                 extra=log,
             )
-        op_uuid = str(uuid_lib.uuid4())
-        self._install_add(client, image, op_uuid, log)
-        self._install_activate(client, image, op_uuid, log)
-        self._confirm_activation(client, target_str, log)
+        # Each write gets its OWN correlation uuid: the engine's operation
+        # ledger is keyed by it, so per-operation uuids keep the tracking exact
+        # (one shared uuid would make add records vouch for the commit).
+        ledger_confirmed_add = self._install_add(client, image, str(uuid_lib.uuid4()), log)
+        self._wait_for_engine_idle(
+            client, log, "install activate", settle_fallback=not ledger_confirmed_add
+        )
+        act_uuid = str(uuid_lib.uuid4())
+        resend = self._install_activate(client, image, act_uuid, log)
+        self._confirm_activation(client, target_str, act_uuid, log, resend)
 
         # -- 5. Confirm booted + all members back, rollback net, commit, sync --
         self._wait_for_target(client, target_str, log)
         self._verify_members(client, roster, log)
         self._log_rollback_state(client, log)
         try:
-            self._install_commit(client, op_uuid, log)
-            committed = self._verify_committed(client, target_str, log)
+            committed = self._install_commit(client, target_str, log)
         except Exception as exc:  # noqa: BLE001 - real rollback risk if commit fails
             raise UpgradeAbort(
                 f"Device booted {target_str} but COMMIT failed ({exc}). The device "
@@ -400,7 +415,7 @@ class IOSXEUpgrade(Job):
         # -- 6. Optional cleanup ---------------------------------------------
         if remove_inactive:
             if committed:
-                self._remove_inactive(client, op_uuid, log)
+                self._remove_inactive(client, log)
             else:
                 self.logger.warning(
                     "Skipping 'install remove inactive': commit not yet confirmed.",
@@ -450,12 +465,22 @@ class IOSXEUpgrade(Job):
             tokens or "unknown",
             extra=log,
         )
-        op_uuid = str(uuid_lib.uuid4())
         try:
-            self._install_commit(client, op_uuid, log)
-        except RestconfError as exc:
-            # Committing when nothing is pending can error on some releases; the
-            # device is already on the target version, so treat this as benign.
+            self._install_commit(client, target_str, log)
+        except LedgerOpFailure as exc:
+            # The engine RECORDED a commit failure — device-published state, not
+            # a benign "nothing to commit" refusal. The image is uncommitted and
+            # an auto-rollback timer may be ticking: surface it loudly.
+            raise UpgradeAbort(
+                f"Device is on {target_str} but NOT committed, and the install "
+                f"engine recorded a commit FAILURE: {exc} — intervene before any "
+                "auto-rollback timer expires ('show install summary', 'install "
+                "commit' from the CLI)."
+            ) from exc
+        except (RestconfError, UpgradeAbort) as exc:
+            # Committing when nothing is pending can error on some releases (an
+            # HTTP error or a refusal body); the device is already on the target
+            # version, so treat this as benign.
             self.logger.warning(
                 "install commit on an already-on-target device returned an error "
                 "(%s); it is likely already committed. Verify with 'show install "
@@ -467,7 +492,6 @@ class IOSXEUpgrade(Job):
                 f"On target {target_str}; commit returned an error (likely already "
                 "committed — verify)."
             )
-        self._verify_committed(client, target_str, log)
         try:
             self._sync_nautobot(device, target_version, log)
         except Exception as exc:  # noqa: BLE001 - committed; only Nautobot metadata lagged
@@ -1038,7 +1062,12 @@ class IOSXEUpgrade(Job):
                 sorted(pre_tokens),
                 extra=log,
             )
-            return
+            # The staged row can belong to an add still in its final phase (a
+            # killed prior run / CLI add — version rows appear ~60-70s early),
+            # so do NOT claim ledger-grade confidence: keep the settle tier
+            # armed for releases without sys-activity.
+            return False
+        self._wait_for_engine_idle(client, log, "install add")
         self.logger.info("install add %s ...", path, extra=log)
         payload = {"Cisco-IOS-XE-install-rpc:input": {"uuid": op_uuid, "path": path}}
         response = client.post_rpc(C.OP_INSTALL, payload, timeout=C.RPC_TIMEOUT)
@@ -1055,7 +1084,30 @@ class IOSXEUpgrade(Job):
                 "packages from a prior life of this version exist, run 'install "
                 "remove inactive' and re-run this job."
             )
+        # Ledger-primary completion: the add op is DONE only when every record
+        # for our uuid completes (the version-state row appears at extract-done,
+        # ~60-70s BEFORE the add's post-check phase finishes — gating on it
+        # fired activates into a still-running add, which the engine drops).
+        outcome = self._await_op(client, op_uuid, C.ADD_TIMEOUT, log, "install add")
+        if outcome == "success":
+            return True
+        if outcome == "absent":
+            self.logger.warning(
+                "The operation ledger never listed the install add (uuid %s) — "
+                "this release may not populate operation records. Falling back "
+                "to install-state inference.",
+                op_uuid,
+                extra=log,
+            )
+        else:  # timeout with records still running — legacy check, then proceed
+            self.logger.warning(
+                "install add records did not complete in time; cross-checking "
+                "via install state before proceeding (activation start is "
+                "verified independently).",
+                extra=log,
+            )
         self._wait_for_added(client, version_str, log)
+        return False
 
     def _wait_for_added(self, client, version_str, log):
         deadline = time.monotonic() + C.ADD_TIMEOUT
@@ -1099,6 +1151,164 @@ class IOSXEUpgrade(Job):
             extra=log,
         )
 
+    def _await_op(self, client, op_uuid, timeout, log, context):
+        """Track an install RPC by its uuid in the engine's operation ledger.
+
+        Primary completion signal (state over inference): the engine records
+        every operation under the RPC-supplied uuid with per-phase statuses.
+        Returns 'success' when every record for the uuid completes successfully,
+        'absent' when the ledger never lists the uuid within LEDGER_ABSENT_POLLS
+        polls (a silently dropped request, or a release that does not populate
+        the ledger — the caller picks the fallback), or 'timeout' when records
+        exist but never complete in time (the caller decides how fatal that is).
+        A ledger-RECORDED failure raises with the engine's own phase detail.
+        RestconfError propagates (reload-tolerant callers interpret it).
+        """
+        deadline = time.monotonic() + timeout
+        started = time.monotonic()
+        polls = 0
+        absent_streak = 0
+        success_count = None
+        detail = ""
+        while time.monotonic() < deadline:
+            data = client.get(C.DATA_INSTALL_OPER, ok_404=True) or {}
+            records = _find_op_records(data, op_uuid)
+            status, detail = _classify_ops(records)
+            if status == "success":
+                # Corroborate before trusting it: one RPC yields MULTIPLE records
+                # created moments apart (field-verified), so a poll can land after
+                # record N completes but before record N+1 exists. Require the
+                # engine to CONFIRM: sys-activity idle in the SAME read (when the
+                # release reports it), plus a stable record count across two
+                # consecutive polls.
+                activities = [
+                    str(v).strip().lower() for v in _find_all_values(data, "sys-activity")
+                ]
+                busy = sorted({a for a in activities if not a.endswith("no-activity")})
+                if busy:
+                    status, detail = "running", f"records complete but engine busy ({busy})"
+                elif success_count == len(records):
+                    self.logger.info(
+                        "%s confirmed by the operation ledger (%s, stable across polls, %ds).",
+                        context,
+                        detail,
+                        int(time.monotonic() - started),
+                        extra=log,
+                    )
+                    return "success"
+                else:
+                    success_count = len(records)
+            if status != "success":
+                success_count = None
+            if status == "failure":
+                raise LedgerOpFailure(
+                    f"{context} FAILED per the device's operation ledger: {detail} — "
+                    "check 'show install log' and the flash:.installer logs for the "
+                    "phase named above."
+                )
+            polls += 1
+            if status == "absent":
+                # CONSECUTIVE absences only: a single stale/empty read mid-run
+                # (e.g. the record migrating between the running and history
+                # lists) must not abandon ledger tracking.
+                absent_streak += 1
+                if absent_streak >= C.LEDGER_ABSENT_POLLS:
+                    return "absent"
+            else:
+                absent_streak = 0
+            if polls % 4 == 0:  # heartbeat every ~2 minutes
+                self.logger.info(
+                    "%s running (ledger phase: %s, elapsed %ds of up to %ds)...",
+                    context,
+                    detail,
+                    int(time.monotonic() - started),
+                    int(timeout),
+                    extra=log,
+                )
+            time.sleep(C.POLL_INTERVAL)
+        self.logger.warning(
+            "%s not ledger-confirmed within %ds (last ledger state: %s).",
+            context,
+            int(timeout),
+            detail or "unknown",
+            extra=log,
+        )
+        return "timeout"
+
+    def _wait_for_engine_idle(self, client, log, context, settle_fallback=False):
+        """Positive coast-is-clear gate before every install-engine write.
+
+        The engine SILENTLY drops requests that arrive while it is busy
+        (field-verified: an activate landing inside the add's post-check phase
+        never started an operation). The oper-state 'sys-activity' leaf reports
+        exactly this (install-no-activity vs install-/issu-in-progress), so wait
+        until EVERY member reports idle. When the release does not report the
+        leaf: pre-activate with an unconfirmed add gets the fixed settle delay
+        (the one place the drop is proven); other writes proceed immediately —
+        their ledger tracking remains the arbiter. Still-busy at timeout also
+        proceeds with a warning for the same reason.
+        """
+        deadline = time.monotonic() + C.ENGINE_IDLE_TIMEOUT
+        started = time.monotonic()
+        polls = 0
+        empty_streak = 0
+        last_seen = []
+        while time.monotonic() < deadline:
+            try:
+                data = client.get(C.DATA_INSTALL_OPER, ok_404=True) or {}
+            except RestconfError:
+                data = {}  # transient read blip — treated like an empty read below
+            activities = [str(v).strip().lower() for v in _find_all_values(data, "sys-activity")]
+            if not activities:
+                # One empty read proves nothing (transient 404/blip); conclude
+                # "leaf not reported" only after two CONSECUTIVE empty reads.
+                empty_streak += 1
+                if empty_streak >= 2:
+                    if settle_fallback:
+                        self.logger.info(
+                            "Engine activity (sys-activity) not reported by this "
+                            "release; using the fixed settle delay (%ss) before %s.",
+                            C.ACTIVATE_SETTLE_DELAY,
+                            context,
+                            extra=log,
+                        )
+                        time.sleep(C.ACTIVATE_SETTLE_DELAY)
+                    return
+                time.sleep(C.POLL_INTERVAL)
+                continue
+            empty_streak = 0
+            last_seen = sorted(set(activities))
+            if all(a.endswith("no-activity") for a in activities):
+                if polls:
+                    self.logger.info(
+                        "Install engine idle after %ds — clear for %s.",
+                        int(time.monotonic() - started),
+                        context,
+                        extra=log,
+                    )
+                return
+            polls += 1
+            if polls % 4 == 0:  # heartbeat every ~2 minutes
+                self.logger.info(
+                    "Waiting for the install engine to go idle before %s "
+                    "(sys-activity: %s, elapsed %ds of up to %ds)...",
+                    context,
+                    last_seen,
+                    int(time.monotonic() - started),
+                    C.ENGINE_IDLE_TIMEOUT,
+                    extra=log,
+                )
+            time.sleep(C.POLL_INTERVAL)
+        # The device POSITIVELY reported busy the whole window: writing now would
+        # be silently dropped (field-verified). State says do not write — refuse.
+        raise UpgradeAbort(
+            f"The install engine reported busy (sys-activity: {last_seen}) for "
+            f"{C.ENGINE_IDLE_TIMEOUT}s before {context} — another install "
+            "operation (CLI, or another job run) appears to be in progress. "
+            "Refusing to write into a busy engine; re-run after it settles "
+            "('show install summary')."
+        )
+
     def _install_activate(self, client, image, op_uuid, log):
         # Resolve the FULL internal version identifier from install-oper (e.g.
         # '17.15.04.0.6839'): activate-by-bare-version hangs the RPC when the
@@ -1125,15 +1335,12 @@ class IOSXEUpgrade(Job):
         # "ISSU compatibility check" when the request was ambiguous); no
         # auto-abort-timer-val — the platform's default rollback timer applies and
         # is verified after reload by _log_rollback_state.
-        payload = {
-            "Cisco-IOS-XE-install-rpc:input": {
-                "uuid": op_uuid,
-                "version": version,
-                "issu": False,
-            }
-        }
+        payload_input = {"uuid": op_uuid, "version": version, "issu": False}
         response = client.post_rpc(
-            C.OP_ACTIVATE, payload, timeout=C.RPC_TIMEOUT, tolerate_disconnect=True
+            C.OP_ACTIVATE,
+            {"Cisco-IOS-XE-install-rpc:input": dict(payload_input)},
+            timeout=C.RPC_TIMEOUT,
+            tolerate_disconnect=True,
         )
         # The RPC returns 2xx even when the install engine rejects the request
         # (e.g. 'add in progress' — seen on a real 17.15.4), so surface whatever
@@ -1142,9 +1349,8 @@ class IOSXEUpgrade(Job):
         if response and response.get("_timeout"):
             self.logger.warning(
                 "activate RPC did not return within %ss — the connection stayed "
-                "open, so this is a STUCK engine call, not a reload (seen when the "
-                "activation target is ambiguous). Verifying activation state "
-                "anyway...",
+                "open, so this is a STUCK engine call, not a reload. The ledger "
+                "tracking below decides what actually happened.",
                 C.RPC_TIMEOUT,
                 extra=log,
             )
@@ -1158,51 +1364,139 @@ class IOSXEUpgrade(Job):
                     "logs; the device is unchanged."
                 )
 
-    def _confirm_activation(self, client, version_str, log):
-        """Verify the activation actually started before waiting out a reload.
+        def resend():
+            # Re-issue with the SAME uuid: it is the ledger tracking key, and a
+            # duplicate is harmless — a rejection body ('already in progress')
+            # means an earlier request finally took; the ledger stays the arbiter.
+            try:
+                retry_response = client.post_rpc(
+                    C.OP_ACTIVATE,
+                    {"Cisco-IOS-XE-install-rpc:input": dict(payload_input)},
+                    timeout=C.RPC_TIMEOUT,
+                    tolerate_disconnect=True,
+                )
+            except RestconfError as exc:
+                self.logger.warning("activate re-send failed: %s", exc, extra=log)
+                return
+            if retry_response and not (
+                retry_response.get("_disconnected") or retry_response.get("_timeout")
+            ):
+                self.logger.info("activate re-send RPC response: %s", retry_response, extra=log)
 
-        Success signals: the target version's install state turns activated/
-        uncommitted (or committed), or the device stops answering (reload under
-        way). If the state never moves and the device stays reachable, the
-        install engine silently rejected the activate — abort with the device
-        unchanged rather than waiting RELOAD_TIMEOUT for a reload that will
-        never come.
+        return resend
+
+    def _confirm_activation(self, client, version_str, op_uuid, log, resend):
+        """Verify the activation actually started, tracking it in the ledger.
+
+        Evidence, in order of authority (state over inference):
+          * the device drops offline -> the reload is under way (success);
+          * the ledger records a FAILURE for our uuid -> abort with the phase;
+          * install state turns activated/uncommitted/committed -> confirmed;
+          * the ledger lists our op -> engaged; keep waiting for the reload;
+          * the ledger stays ABSENT for LEDGER_ABSENT_POLLS polls -> the engine
+            dropped the request (field-verified failure mode) -> re-send the
+            SAME request and keep tracking. If nothing ever registers, abort
+            with the device unchanged.
         """
         deadline = time.monotonic() + C.ACTIVATE_START_TIMEOUT
         started = time.monotonic()
         polls = 0
+        absent_streak = 0
+        resends = 0
+        engaged = False
+        last_detail = ""
         last_tokens = []
         while time.monotonic() < deadline:
             time.sleep(C.POLL_INTERVAL)
             try:
-                tokens = self._state_tokens(client, version_str)
+                data = client.get(C.DATA_INSTALL_OPER, ok_404=True) or {}
             except RestconfError:
                 self.logger.info(
                     "Device stopped answering — reload appears to have started.",
                     extra=log,
                 )
                 return
+            status, detail = _classify_ops(_find_op_records(data, op_uuid))
+            last_detail = detail
+            tokens = _version_state_tokens(data, version_str)
+            last_tokens = tokens
+            if status == "failure":
+                raise UpgradeAbort(
+                    f"install activate FAILED per the device's operation ledger: "
+                    f"{detail} — the device did not reload; check 'show install "
+                    "log'. The device is otherwise unchanged."
+                )
             states = {_classify_state(t) for t in tokens}
             if states & {"activated", "uncommitted", "committed"}:
                 self.logger.info("Activation confirmed (state: %s).", sorted(tokens), extra=log)
                 return
-            last_tokens = tokens
+            if status in ("running", "success"):
+                absent_streak = 0
+                if not engaged:
+                    engaged = True
+                    self.logger.info(
+                        "Activate operation registered in the ledger (%s); "
+                        "waiting for the reload...",
+                        detail,
+                        extra=log,
+                    )
+            else:
+                absent_streak += 1
+                # Only re-send while there is still time to OBSERVE the result:
+                # a resend fired just before the abort deadline could engage
+                # after the job walks away claiming nothing happened.
+                observable = (
+                    time.monotonic() + C.POLL_INTERVAL * C.LEDGER_ABSENT_POLLS + C.RPC_TIMEOUT
+                ) < deadline
+                if not engaged and absent_streak >= C.LEDGER_ABSENT_POLLS and observable:
+                    absent_streak = 0
+                    resends += 1
+                    self.logger.warning(
+                        "The ledger never registered the activate after %d polls "
+                        "— the engine dropped the request (field-verified failure "
+                        "mode); re-sending the same activate...",
+                        C.LEDGER_ABSENT_POLLS,
+                        extra=log,
+                    )
+                    resend()
             polls += 1
             if polls % 4 == 0:  # heartbeat every ~2 minutes
                 self.logger.info(
-                    "Waiting for activation to start (state: %s, elapsed %ds of up to %ds)...",
+                    "Waiting for activation (ledger: %s / install state: %s, "
+                    "elapsed %ds of up to %ds)...",
+                    detail,
                     sorted(tokens) or "none",
                     int(time.monotonic() - started),
                     C.ACTIVATE_START_TIMEOUT,
                     extra=log,
                 )
+        if engaged:
+            # The ledger POSITIVELY recorded our activate running — this is an
+            # in-flight operation that outlived the window (plausible on a large
+            # stack), NOT a no-op. The device may still reload at any moment.
+            raise UpgradeAbort(
+                f"The activate is IN FLIGHT per the operation ledger (last phase: "
+                f"{last_detail}) but did not produce a reload within "
+                f"{C.ACTIVATE_START_TIMEOUT}s. DO NOT re-run or modify the device "
+                "until it settles — watch 'show install summary'; the reload may "
+                "still occur. If this is a large stack, raise "
+                "ACTIVATE_START_TIMEOUT in constants.py."
+            )
+        if resends:
+            raise UpgradeAbort(
+                f"Activation never registered in the operation ledger within "
+                f"{C.ACTIVATE_START_TIMEOUT}s despite {resends} re-send(s) "
+                f"(install state: {sorted(last_tokens) or 'unknown'}). The device "
+                "SHOULD be unchanged, but verify 'show install log' before "
+                "re-running — a late-engaging activate would reload it "
+                "uncommitted (a re-run of this job commits it)."
+            )
         raise UpgradeAbort(
-            f"Activation did not start within {C.ACTIVATE_START_TIMEOUT}s (install "
-            f"state still: {sorted(last_tokens) or 'unknown'}). The install engine "
-            "rejected or ignored the activate — see the 'activate RPC response' "
-            "line above and 'show install log' on the device for the reason. The "
-            "device is UNCHANGED (image added, not activated, no reload pending); "
-            "re-run this job after addressing the cause."
+            f"Activation did not start within {C.ACTIVATE_START_TIMEOUT}s "
+            f"(ledger: {last_detail or 'no record'}; install state: "
+            f"{sorted(last_tokens) or 'unknown'}). See 'show install log' on the "
+            "device. The device is UNCHANGED (image added, not activated, no "
+            "reload pending); re-run this job after addressing the cause."
         )
 
     def _wait_for_target(self, client, target_str, log):
@@ -1310,10 +1604,33 @@ class IOSXEUpgrade(Job):
                 extra=log,
             )
 
-    def _install_commit(self, client, op_uuid, log):
+    def _install_commit(self, client, version_str, log):
+        """POST install-commit and confirm it via the operation ledger.
+
+        Returns True when positively confirmed (ledger success AND the version's
+        committed state cross-checks), False when confirmation is still pending
+        (the caller reports it for manual verification). A ledger-recorded
+        failure or a refusal body raises.
+        """
+        self._wait_for_engine_idle(client, log, "install commit")
         self.logger.info("install commit (making the new image permanent)...", extra=log)
+        op_uuid = str(uuid_lib.uuid4())
         payload = {"Cisco-IOS-XE-install-rpc:input": {"uuid": op_uuid}}
-        client.post_rpc(C.OP_COMMIT, payload, timeout=C.RPC_TIMEOUT)
+        response = client.post_rpc(C.OP_COMMIT, payload, timeout=C.RPC_TIMEOUT)
+        error_text = _rpc_error_text(response)
+        if error_text:
+            raise UpgradeAbort(f"install commit was rejected by the install engine: {error_text}")
+        outcome = self._await_op(client, op_uuid, C.COMMIT_CONFIRM_TIMEOUT, log, "install commit")
+        if outcome == "absent":
+            self.logger.warning(
+                "The operation ledger never listed the commit (uuid %s); falling "
+                "back to install-state confirmation.",
+                op_uuid,
+                extra=log,
+            )
+        # Cross-check the version's own committed state in all cases: on ledger
+        # success it confirms within a poll; on absent/timeout it IS the check.
+        return self._verify_committed(client, version_str, log)
 
     def _verify_committed(self, client, version_str, log):
         """Poll until install-oper reports the target committed. Returns bool.
@@ -1347,16 +1664,36 @@ class IOSXEUpgrade(Job):
         )
         return False
 
-    def _remove_inactive(self, client, op_uuid, log):
+    def _remove_inactive(self, client, log):
         self.logger.info("install remove inactive (reclaiming space)...", extra=log)
         # The 'inactive' leaf may be named 'remove-use-inactive' on some releases;
         # this step is optional and non-fatal.
+        op_uuid = str(uuid_lib.uuid4())
         payload = {"Cisco-IOS-XE-install-rpc:input": {"uuid": op_uuid, "inactive": True}}
         try:
-            client.post_rpc(C.OP_REMOVE, payload, timeout=C.RPC_TIMEOUT)
-            self.logger.info("Inactive images removed.", extra=log)
-        except RestconfError as exc:
+            self._wait_for_engine_idle(client, log, "install remove inactive")
+            response = client.post_rpc(C.OP_REMOVE, payload, timeout=C.RPC_TIMEOUT)
+            error_text = _rpc_error_text(response)
+            if error_text:
+                self.logger.warning(
+                    "remove inactive was refused (non-fatal): %s", error_text, extra=log
+                )
+                return
+            outcome = self._await_op(
+                client, op_uuid, C.COMMIT_CONFIRM_TIMEOUT, log, "install remove inactive"
+            )
+        except (RestconfError, UpgradeAbort) as exc:
             self.logger.warning("remove inactive failed (non-fatal): %s", exc, extra=log)
+            return
+        if outcome == "success":
+            self.logger.info("Inactive images removed (ledger-confirmed).", extra=log)
+        else:
+            self.logger.warning(
+                "remove inactive issued but not ledger-confirmed (%s); verify "
+                "with 'show install summary'.",
+                outcome,
+                extra=log,
+            )
 
     def _sync_nautobot(self, device, target_version, log):
         with transaction.atomic():
@@ -1660,6 +1997,87 @@ def _find_inventory_entries(data):
         for item in data:
             found.extend(_find_inventory_entries(item))
     return found
+
+
+def _find_op_records(data, op_uuid):
+    """Every install operation record (running or history) for ``op_uuid``.
+
+    The install engine keeps a LEDGER of operations keyed by the RPC-supplied
+    uuid: install-oper-data/install-oper (under execution) and install-oper-hist
+    (completed) — verified populated on a real 17.15.x. One RPC can yield
+    MULTIPLE records (a real add produced op-id 1 'download' + op-id 2 'add'),
+    so completion means EVERY record for the uuid is complete.
+    """
+    found = []
+    if isinstance(data, dict):
+        if str(data.get("op-uuid", "")).strip().lower() == str(op_uuid).strip().lower():
+            found.append(data)
+        else:
+            for value in data.values():
+                found.extend(_find_op_records(value, op_uuid))
+    elif isinstance(data, list):
+        for item in data:
+            found.extend(_find_op_records(item, op_uuid))
+    return found
+
+
+def _classify_ops(records):
+    """Reduce a uuid's ledger records to (status, detail).
+
+    status: 'absent' | 'running' | 'success' | 'failure'. detail names the
+    failing/current phase (from the per-transaction txn-cmd/txn-status rows,
+    e.g. 'install-txn-add-postchk') so aborts and heartbeats quote the engine's
+    own account instead of an inference. Field-verified value shapes: op-done
+    'op-complete'/'op-not-complete' (suffix test would confuse them — check for
+    'not' explicitly), op-status 'install-op-succ', txn-status
+    'install-txn-sts-succ'/'-fail'/'-dep-fail'/'-timeout'/'-cancel'/...
+    """
+    if not records:
+        return ("absent", "no ledger record for this operation uuid")
+    failures = []
+    running_phase = ""
+    all_done = True
+    all_succ = True
+    for record in records:
+        done_token = str(record.get("op-done", "")).strip().lower()
+        done = "complete" in done_token and "not" not in done_token
+        status_token = str(record.get("op-status", "")).strip().lower()
+        txns = []
+        for key, value in record.items():
+            if str(key).startswith("install-txn-sum") and isinstance(value, list):
+                txns.extend(t for t in value if isinstance(t, dict))
+        failed_txns = [
+            t
+            for t in txns
+            if any(
+                marker in str(t.get("txn-status", "")).lower()
+                for marker in ("fail", "timeout", "cancel", "disconnect")
+            )
+        ]
+        if failed_txns or any(m in status_token for m in ("fail", "timeout", "cancel", "abort")):
+            phases = [
+                f"{t.get('txn-cmd', '?')} -> {t.get('txn-status', '?')}" for t in failed_txns
+            ] or [status_token or "unknown"]
+            sub_states = [
+                entry.get("txn-sub-state")
+                for t in failed_txns
+                for entry in (t.get("install-txn-sub-sts-log") or [])
+                if isinstance(entry, dict) and entry.get("txn-sub-state")
+            ]
+            suffix = f" (sub-states: {sub_states})" if sub_states else ""
+            failures.append("; ".join(phases) + suffix)
+            continue
+        if not done:
+            all_done = False
+            if txns:
+                running_phase = str(txns[-1].get("txn-cmd", "")) or running_phase
+        if "succ" not in status_token:
+            all_succ = False
+    if failures:
+        return ("failure", "; ".join(failures))
+    if all_done and all_succ:
+        return ("success", f"{len(records)} ledger record(s) complete")
+    return ("running", running_phase or "phase not yet reported")
 
 
 def _find_timer_entries(data):
