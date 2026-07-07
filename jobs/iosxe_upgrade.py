@@ -1069,6 +1069,9 @@ class IOSXEUpgrade(Job):
             return False
         self._wait_for_engine_idle(client, log, "install add")
         self.logger.info("install add %s ...", path, extra=log)
+        # INVARIANT (26.1.1+): 'path' sits inside the now-mandatory choice
+        # install-type-by-choice (path | name) — an install without one of them
+        # is rejected. Never send a uuid-only install.
         payload = {"Cisco-IOS-XE-install-rpc:input": {"uuid": op_uuid, "path": path}}
         response = client.post_rpc(C.OP_INSTALL, payload, timeout=C.RPC_TIMEOUT)
         if response:
@@ -1669,6 +1672,9 @@ class IOSXEUpgrade(Job):
         # The 'inactive' leaf may be named 'remove-use-inactive' on some releases;
         # this step is optional and non-fatal.
         op_uuid = str(uuid_lib.uuid4())
+        # INVARIANT (26.1.1+): 'inactive' sits inside the now-mandatory choice
+        # remove-type-by-choice (version | path | inactive | name) — a uuid-only
+        # remove is rejected. Always send exactly one of the choice members.
         payload = {"Cisco-IOS-XE-install-rpc:input": {"uuid": op_uuid, "inactive": True}}
         try:
             self._wait_for_engine_idle(client, log, "install remove inactive")
@@ -1901,6 +1907,10 @@ def _classify_state(token):
         return "added"
     if "activ" in t:
         return "activated"
+    # 17.18.1+ adds install-version-state-unknown (the engine cannot classify
+    # the version). Deliberately 'other': it never satisfies a staged/committed
+    # gate and never counts as pending, so a stuck-unknown device fails loudly
+    # at a gate timeout instead of silently passing or blocking a commit.
     return "other"
 
 
@@ -2040,8 +2050,21 @@ def _classify_ops(records):
     all_succ = True
     for record in records:
         done_token = str(record.get("op-done", "")).strip().lower()
-        done = "complete" in done_token and "not" not in done_token
         status_token = str(record.get("op-status", "")).strip().lower()
+        if "revert" in done_token:
+            # 17.18.1+/26.1.1: op-done gains 'op-reverted' — the engine ran the
+            # operation and then AUTO-REVERTED it after detecting failures. The
+            # model's when-clauses hide the txn rows for reverted ops, so this
+            # token IS the whole story: a terminal failure — never 'running'
+            # (which would poll to timeout) and never 'absent' (which would
+            # re-send an activate the engine just rolled back).
+            failures.append(
+                f"operation reverted by the engine (op-done: {done_token}"
+                + (f", op-status: {status_token}" if status_token else "")
+                + ")"
+            )
+            continue
+        done = "complete" in done_token and "not" not in done_token
         txns = []
         for key, value in record.items():
             if str(key).startswith("install-txn-sum") and isinstance(value, list):
