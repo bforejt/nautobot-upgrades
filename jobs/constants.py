@@ -43,12 +43,20 @@ TARGET_FS_NAMES = ("flash",)
 #: (>= 17.12.1) has it, so assume_install_mode exists only for naming/model drift.
 BOOT_MODE_KEYS = ("boot-mode", "install-mode")
 
-#: Minimum IOS-XE release the job supports. History (verified against Cisco's
-#: published YANG models): install-rpc appears in 17.2.1, install-oper in 17.3.1,
-#: and the oper-state boot-mode leaf in 17.5.1. The floor is set at 17.12.1 —
-#: the tested fleet baseline (extended-maintenance train). 17.5.1-17.11 would
-#: likely work but is untested and unsupported.
-MIN_IOSXE_VERSION = (17, 12, 1)
+#: Minimum IOS-XE release the job supports. Boundaries (verified against
+#: Cisco's published YANG models for every train 16.12.1-17.11.1):
+#:   * install-rpc appears 17.2.1, install-oper 17.3.1 (16.12 = hard wall);
+#:   * boot-mode + sys-activity leaves appear together at 17.5.1;
+#:   * the operation ledger (install-oper/-hist, op-uuid keyed) at 17.8.1;
+#:   * per-file sizes become unambiguously BYTES at 17.9.1 (platform-software
+#:     rev 2022-07-01) — on 17.5-17.8 the partition-content size leaf is
+#:     described as KILOBYTES, which would false-abort the byte-exact copy
+#:     verification, so those trains are refused.
+#: 17.9.1 is therefore the lowest release where the PRIMARY tier (ledger
+#: tracking + sys-activity gate + byte-exact verify) is fully model-complete.
+#: Hardware-validated baseline remains 17.15.x; run one supervised upgrade per
+#: new train before fleet use.
+MIN_IOSXE_VERSION = (17, 9, 1)
 
 # --- RESTCONF resource paths (relative to /restconf/) ------------------------
 

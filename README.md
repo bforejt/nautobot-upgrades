@@ -27,7 +27,7 @@ stopping on the first failure for a device:
 1. **Connect** — resolve the device's primary IP and credentials (from core
    Secrets), confirm RESTCONF is reachable.
 2. **Pre-flight gates** — read the running version; skip if already on target;
-   confirm the device is **≥ 17.12.1** and in **install mode**; resolve the image
+   confirm the device is **≥ 17.9.1** and in **install mode**; resolve the image
    from Nautobot and confirm device-type compatibility; **confirm enough free
    space** before copying anything.
 3. **Transfer + integrity** — the device pulls the image via the **classic
@@ -62,7 +62,7 @@ per-device decision logic (editable [`upgrade-flow.drawio`](docs/upgrade-flow.dr
 | --- | --- | --- |
 | **Nautobot** | **2.4 LTM** and **3.1+** | Installs/syncs verified on **2.4 and 3.1**; the end-to-end upgrade has run from **3.1**. **3.0 is untested and will stay that way** — it no longer receives maintenance now that 3.1 (the 3.x LTM designation) has shipped. Earlier 2.x (≥ 2.2) *may* work but is not tested or supported. |
 | **Deployment** | [nautobot-composer](#sister-project-nautobot-composer) | The sister Docker-Compose installer this Job is built to run on; it currently ships Nautobot 2.4 and 3.x. |
-| **Device OS** | Cisco IOS-XE **≥ 17.12.1** (incl. 26.x) | Hardware-validated on **17.15.x**. Every YANG model the job touches was verified against Cisco's published **17.12.1, 17.18.1, and 26.1.1** models: 17.12.1 is identical to the validated baseline (incl. the operation ledger and sys-activity); 17.18.1/26.1.1 add `op-reverted` and `install-version-state-unknown` (both handled) and 26.1.1 restructures install/remove inputs into mandatory choices the job's payloads already satisfy. Model presence ≠ runtime behavior — run one supervised upgrade per new train before fleet use. 17.5.1–17.11 *may* work but is **not tested or supported**; below 17.5.1 the required models don't exist. Note: rebuild letters (e.g. 17.15.4**a**) compare equal to the base version. |
+| **Device OS** | Cisco IOS-XE **≥ 17.9.1** (incl. 26.x) | Hardware-validated on **17.15.x**. Every YANG model the job touches was verified against Cisco's published models for **every train 16.12.1–17.11.1 plus 17.12.1, 17.18.1, and 26.1.1**: 17.9.1–17.12.1 are model-identical to the validated baseline (operation ledger, sys-activity, byte-exact file sizes all present); 17.18.1/26.1.1 add `op-reverted` and `install-version-state-unknown` (both handled) and 26.1.1 restructures install/remove inputs into mandatory choices the job's payloads already satisfy. **17.5–17.8 are refused**: their per-file sizes are kilobyte-described, which would false-abort the byte-exact copy verification. Below 17.5.1 key leaves are missing; below 17.3.1 the install models don't exist at all (16.12 is a hard wall). Model presence ≠ runtime behavior — run one supervised upgrade per new train before fleet use. Note: rebuild letters (e.g. 17.15.4**a**) compare equal to the base version. |
 | **Platform** | Catalyst **9300** (install mode) | Primary target, booted from `flash:packages.conf`. |
 
 There is no separate Python dependency matrix: the Job imports only `requests`
@@ -104,7 +104,7 @@ This project is **new and largely unverified** — be conservative with it.
    enable both Jobs; upload a `.bin` to the firmware server and run **Register
    IOS-XE Image** with Dry-run, then for real; confirm the resulting
    `SoftwareImageFile` / `SoftwareVersion` look correct.
-2. **Upgrade Dry-run.** Against one lab Catalyst 9300 (≥ 17.12.1, RESTCONF enabled,
+2. **Upgrade Dry-run.** Against one lab Catalyst 9300 (≥ 17.9.1, RESTCONF enabled,
    a Secrets Group assigned): run **Cisco IOS-XE Upgrade** with Dry-run on and
    confirm the reachability/auth, version-floor, install-mode, image-resolution,
    and free-space gates all read correctly. Fix any release-specific leaf paths in
@@ -129,7 +129,7 @@ project's constraints. The key findings that shaped it:
   can poll copy **progress** from the on-device file size. None of this exists
   on 16.12.x (verified against Cisco's published YANG models: install-rpc
   appears in 17.2.1, install-oper in 17.3.1, the boot-mode leaf in 17.5.1). The
-  support floor is **17.12.1** — the tested fleet baseline; the job refuses
+  support floor is **17.9.1** — the lowest model-complete release; the job refuses
   lower releases with guidance. (The async `xcopy` transfer was tried and
   abandoned: 17.15.05 silently broke it in the field.)
 - **Software version/image data is now Nautobot _core_, not a plugin.**
@@ -166,7 +166,7 @@ project's constraints. The key findings that shaped it:
 
 **Device side**
 
-- Cisco IOS-XE **≥ 17.12.1**, Catalyst 9300, booted in **install mode**
+- Cisco IOS-XE **≥ 17.9.1**, Catalyst 9300, booted in **install mode**
   (`flash:packages.conf`).
 - **RESTCONF enabled** (`restconf` + `ip http secure-server`). Enabling RESTCONF
   on devices that lack it is intentionally **out of scope** for now.

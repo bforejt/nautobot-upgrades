@@ -6,9 +6,12 @@ engineer: every step is a PASS/FAIL gate, and the job stops on the first failed
 gate for a device rather than pushing forward.
 
 Scope (kept deliberately small):
-  * IOS-XE Catalyst 9300, devices currently running >= 17.12.1 (tested fleet
-    baseline; the async express-copy RPC and boot-mode leaf exist from 17.5.1,
-    but 17.5-17.11 is untested and unsupported). Lower releases are refused.
+  * IOS-XE Catalyst 9300, devices currently running >= 17.9.1 — the lowest
+    release where every model the job relies on is complete (operation ledger
+    17.8.1+, sys-activity/boot-mode 17.5.1+, byte-exact file sizes 17.9.1+).
+    17.5-17.8 are refused (their file sizes are kilobyte-described, which
+    would false-abort the copy verification); below 17.5.1 the models are
+    missing outright. Hardware-validated baseline: 17.15.x.
   * Reads target version + image metadata from CORE Nautobot
     (dcim.SoftwareVersion / dcim.SoftwareImageFile). No Device Lifecycle app
     dependency.
@@ -204,7 +207,7 @@ class IOSXEUpgrade(Job):
         description = (
             "Conservative, gate-driven IOS-XE install-mode upgrade for Catalyst "
             "9300 devices, driven entirely over RESTCONF. Requires devices running "
-            "IOS-XE >= 17.12.1 with RESTCONF enabled."
+            "IOS-XE >= 17.9.1 with RESTCONF enabled."
         )
         has_sensitive_variables = False
         dryrun_default = True
