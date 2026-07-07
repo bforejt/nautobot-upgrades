@@ -47,11 +47,19 @@ import re
 import threading
 import time
 import uuid as uuid_lib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 from celery.exceptions import SoftTimeLimitExceeded
-from django.db import transaction
-from nautobot.apps.jobs import BooleanVar, DryRunVar, Job, MultiObjectVar, ObjectVar
+from django.db import close_old_connections, transaction
+from nautobot.apps.jobs import (
+    BooleanVar,
+    DryRunVar,
+    IntegerVar,
+    Job,
+    MultiObjectVar,
+    ObjectVar,
+)
 from nautobot.dcim.models import (
     Device,
     DeviceType,
@@ -84,6 +92,18 @@ class LedgerOpFailure(UpgradeAbort):
     Distinct from a refusal/transport error so callers that treat commit errors
     as benign (already-on-target) can still surface a real recorded failure.
     """
+
+
+def _fmt_duration(seconds):
+    """Human duration for planning logs: '47s', '14m32s', '1h02m'."""
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, secs = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m{secs:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes:02d}m"
 
 
 def _version_key(text):
@@ -205,6 +225,17 @@ class IOSXEUpgrade(Job):
             "space. Off by default so the previous image is kept for a soak period."
         ),
     )
+    parallelism = IntegerVar(
+        default=C.DEFAULT_PARALLELISM,
+        min_value=1,
+        max_value=C.MAX_PARALLELISM,
+        description=(
+            "Devices upgraded concurrently (1 = one at a time). Each device is "
+            "fully independent; per-device logs interleave in time order but stay "
+            "attributed to their device. Size to your firmware server's capacity "
+            "for simultaneous image pulls."
+        ),
+    )
     debug = BooleanVar(
         default=False,
         description="Verbose logging of every RESTCONF request/response.",
@@ -225,10 +256,11 @@ class IOSXEUpgrade(Job):
         )
         has_sensitive_variables = False
         dryrun_default = True
-        # One worst-case device (copy 3600 + add 1200 + reload 120+1800 + slack)
-        # must fit inside the soft limit; large batches should be split across
-        # runs. SoftTimeLimitExceeded is re-raised (never swallowed) so no new
-        # device upgrade starts after the budget is gone.
+        # With parallel batches the makespan is ~ceil(devices / parallelism) x
+        # one worst-case device (copy 3600 + add 1200 + reload 120+1800 + slack);
+        # size batches so that fits inside the soft limit. SoftTimeLimitExceeded
+        # is re-raised (never swallowed); queued devices are cancelled and named,
+        # in-flight devices are recovered by an idempotent re-run.
         soft_time_limit = 7200
         time_limit = 8400
         field_order = [
@@ -244,6 +276,7 @@ class IOSXEUpgrade(Job):
             "secrets_group_override",
             "assume_install_mode",
             "remove_inactive",
+            "parallelism",
             "debug",
             "dryrun",
         ]
@@ -265,6 +298,7 @@ class IOSXEUpgrade(Job):
         secrets_group_override,
         assume_install_mode,
         remove_inactive,
+        parallelism,
         debug,
         dryrun,
     ):
@@ -272,6 +306,9 @@ class IOSXEUpgrade(Job):
         log_success = getattr(self.logger, "success", self.logger.info)
         results = {}
         failed = []
+        # Cooperative-stop signal for the time-budget path: worker threads
+        # check it at every polling loop and halt at a safe boundary.
+        self._stop = threading.Event()
         self.logger.info(
             "Starting IOS-XE upgrade to **%s** for %d selected device(s)%s.",
             target_version,
@@ -295,7 +332,17 @@ class IOSXEUpgrade(Job):
         if filter_summary:
             self.logger.info("Filters applied: %s.", filter_summary)
         device_list = list(devices)
-        for index, device in enumerate(device_list):
+
+        def _one_device(device):
+            """Full per-device upgrade in a worker thread.
+
+            Returns (device, summary, failed_bool); never raises for per-device
+            problems (batch isolation). Django opens ORM connections per thread
+            (the job logger and the Nautobot sync both hit the DB), so stale
+            connections are closed on entry and exit.
+            """
+            close_old_connections()
+            device_started = time.monotonic()
             try:
                 summary = self._upgrade_device(
                     device,
@@ -306,34 +353,91 @@ class IOSXEUpgrade(Job):
                     dryrun,
                     assume_install_mode,
                 )
-                results[device.name] = summary
-                log_success(summary, extra={"object": device})
-            except SoftTimeLimitExceeded:
-                # Never swallow the time budget: report where we stopped and fail
-                # the run rather than starting more upgrades against the hard-kill.
-                remaining = [d.name for d in device_list[index + 1 :]]
-                self.logger.error(
-                    "Job soft time limit reached while processing %s. Not attempted: "
-                    "%s. Check this device's state manually ('show install summary') "
-                    "and re-run for the remaining devices.",
-                    device.name,
-                    remaining or "none",
-                    extra={"object": device},
-                )
-                raise
+                # Total wall-clock per device — the number change windows are
+                # planned around.
+                summary = f"{summary} [total: {_fmt_duration(time.monotonic() - device_started)}]"
+                return device, summary, False
             except UpgradeAbort as exc:
-                results[device.name] = f"ABORTED: {exc}"
-                failed.append(device.name)
-                self.logger.error("Upgrade aborted: %s", exc, extra={"object": device})
+                elapsed = _fmt_duration(time.monotonic() - device_started)
+                self.logger.error(
+                    "Upgrade aborted after %s: %s", elapsed, exc, extra={"object": device}
+                )
+                return device, f"ABORTED after {elapsed}: {exc}", True
             except RestconfError as exc:
                 hint = _auth_hint(exc.status_code)
-                results[device.name] = f"RESTCONF error: {exc}{hint}"
-                failed.append(device.name)
-                self.logger.error("RESTCONF error: %s%s", exc, hint, extra={"object": device})
+                elapsed = _fmt_duration(time.monotonic() - device_started)
+                self.logger.error(
+                    "RESTCONF error after %s: %s%s", elapsed, exc, hint, extra={"object": device}
+                )
+                return device, f"RESTCONF error after {elapsed}: {exc}{hint}", True
             except Exception as exc:  # noqa: BLE001 - surface anything unexpected
-                results[device.name] = f"UNEXPECTED error: {exc}"
-                failed.append(device.name)
-                self.logger.error("Unexpected error: %s", exc, extra={"object": device})
+                elapsed = _fmt_duration(time.monotonic() - device_started)
+                self.logger.error(
+                    "Unexpected error after %s: %s", elapsed, exc, extra={"object": device}
+                )
+                return device, f"UNEXPECTED error after {elapsed}: {exc}", True
+            finally:
+                close_old_connections()
+
+        # Each device is fully independent (own RESTCONF sessions, own operation
+        # uuids, own gates), so a batch runs up to 'parallelism' devices
+        # concurrently. Threads suit the workload: it is almost entirely waiting
+        # on the network (copy, install, reload).
+        workers = max(1, min(int(parallelism or 1), C.MAX_PARALLELISM, len(device_list) or 1))
+        if workers > 1:
+            self.logger.info(
+                "Running up to %d device upgrade(s) in parallel (per-device logs "
+                "interleave in time order; each entry stays attributed to its "
+                "device).",
+                workers,
+            )
+        executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="iosxe-upgrade")
+        futures = {executor.submit(_one_device, device): device for device in device_list}
+        try:
+            for future in as_completed(futures):
+                device, summary, device_failed = future.result()
+                results[device.name] = summary
+                if device_failed:
+                    failed.append(device.name)
+                else:
+                    log_success(summary, extra={"object": device})
+            executor.shutdown(wait=True)
+        except SoftTimeLimitExceeded:
+            # Never swallow the time budget — but NEVER leave worker threads
+            # running behind a finished task either: Celery raises this in the
+            # MAIN thread only, and completing the task CANCELS the hard limit,
+            # so an immediate re-raise would orphan live threads still driving
+            # switches (and invite a re-run to race them). Instead: signal the
+            # cooperative stop, wait for in-flight devices to halt at their
+            # next safe checkpoint (bounded by one poll interval + one RPC —
+            # well inside the soft->hard grace), then account for EVERY device.
+            self._stop.set()
+            self.logger.error(
+                "Job soft time limit reached — stopping in-flight device "
+                "upgrades at their next safe checkpoint..."
+            )
+            executor.shutdown(wait=True, cancel_futures=True)
+            never_started = []
+            for future, device in futures.items():
+                if future.cancelled():
+                    never_started.append(device.name)
+                elif future.done() and device.name not in results:
+                    # Completed while the signal was in flight — never drop a
+                    # finished device's outcome.
+                    _, summary, device_failed = future.result()
+                    results[device.name] = summary
+                    if device_failed:
+                        failed.append(device.name)
+            self.logger.error(
+                "Time-budget post-mortem — completed: %s; failed or stopped "
+                "mid-flight (each entry above has its reason; stopped devices "
+                "are at safe boundaries and safe to re-run): %s; never "
+                "started: %s.",
+                ", ".join(sorted(n for n in results if n not in failed)) or "none",
+                ", ".join(sorted(failed)) or "none",
+                ", ".join(sorted(never_started)) or "none",
+            )
+            raise
         if failed:
             # Per-device isolation is deliberate (one bad device must not stop
             # the batch), but the JOB must not report green when any device
@@ -897,6 +1001,7 @@ class IOSXEUpgrade(Job):
         polls = 0
         current = set()
         while time.monotonic() < deadline:
+            self._check_stop()
             current = self._member_roster(client) or set()
             if current >= roster:
                 self.logger.info(
@@ -996,6 +1101,7 @@ class IOSXEUpgrade(Job):
         last_logged = 0
         polls = 0
         while copy_thread.is_alive():
+            self._check_stop()
             if time.monotonic() > deadline:
                 raise UpgradeAbort(
                     f"Copy did not complete within {C.COPY_TIMEOUT}s. "
@@ -1174,6 +1280,7 @@ class IOSXEUpgrade(Job):
         started = time.monotonic()
         polls = 0
         while time.monotonic() < deadline:
+            self._check_stop()
             # States that mean the add has finished (verified on a real 17.15.4):
             # 'pending' (install-version-state-in-progress = "marked for
             # activation") is the NORMAL resting state of an added image, and
@@ -1211,6 +1318,22 @@ class IOSXEUpgrade(Job):
             extra=log,
         )
 
+    def _check_stop(self):
+        """Cooperative stop checkpoint (set when the job's time budget expires).
+
+        Every polling loop calls this each iteration, so an in-flight device
+        stops at a SAFE boundary — between steps, never mid-decision — within
+        about one poll interval. The install gates (copy/add skip-if-done,
+        commit-to-be-safe) make an idempotent re-run pick the device back up.
+        """
+        stop = getattr(self, "_stop", None)
+        if stop is not None and stop.is_set():
+            raise UpgradeAbort(
+                "stopped by the job's time budget before the next step — the "
+                "device was left at a safe boundary; re-run this job for it "
+                "(the gates make re-runs safe)"
+            )
+
     def _await_op(self, client, op_uuid, timeout, log, context):
         """Track an install RPC by its uuid in the engine's operation ledger.
 
@@ -1231,6 +1354,7 @@ class IOSXEUpgrade(Job):
         success_count = None
         detail = ""
         while time.monotonic() < deadline:
+            self._check_stop()
             data = client.get(C.DATA_INSTALL_OPER, ok_404=True) or {}
             records = _find_op_records(data, op_uuid)
             status, detail = _classify_ops(records)
@@ -1314,6 +1438,7 @@ class IOSXEUpgrade(Job):
         empty_streak = 0
         last_seen = []
         while time.monotonic() < deadline:
+            self._check_stop()
             try:
                 data = client.get(C.DATA_INSTALL_OPER, ok_404=True) or {}
             except RestconfError:
@@ -1468,6 +1593,7 @@ class IOSXEUpgrade(Job):
         last_detail = ""
         last_tokens = []
         while time.monotonic() < deadline:
+            self._check_stop()
             time.sleep(C.POLL_INTERVAL)
             try:
                 data = client.get(C.DATA_INSTALL_OPER, ok_404=True) or {}
@@ -1582,6 +1708,7 @@ class IOSXEUpgrade(Job):
         consecutive = 0
         polls = 0
         while time.monotonic() < deadline:
+            self._check_stop()
             try:
                 booted = self._current_version(client)
             except RestconfError:
@@ -1590,14 +1717,25 @@ class IOSXEUpgrade(Job):
                 went_down = True  # observed the reboot (unreachable at least once)
             elif not online:
                 online = True
-                self.logger.info("Device is back online.", extra=log)
+                # The OUTAGE number for maintenance planning: this clock starts
+                # when the reload was confirmed to begin (activation confirmed /
+                # device dropped), so it includes the full dark window.
+                self.logger.info(
+                    "Device is back online — unreachable for ~%s from reload start.",
+                    _fmt_duration(time.monotonic() - started + C.RELOAD_INITIAL_SLEEP),
+                    extra=log,
+                )
             # Only accept the target AFTER we've seen the device go down, so a box
             # that never actually reloaded cannot satisfy the confirmation.
             if went_down and _version_key(booted) == target:
                 consecutive += 1
                 if consecutive >= 2:
                     self.logger.info(
-                        "Confirmed booted target version **%s** (stable).", booted, extra=log
+                        "Confirmed booted target version **%s** (stable; reload-to-"
+                        "confirmed: ~%s).",
+                        booted,
+                        _fmt_duration(time.monotonic() - started + C.RELOAD_INITIAL_SLEEP),
+                        extra=log,
                     )
                     return
             else:
@@ -1707,6 +1845,7 @@ class IOSXEUpgrade(Job):
         deadline = started + C.COMMIT_CONFIRM_TIMEOUT
         tokens = []
         while time.monotonic() < deadline:
+            self._check_stop()
             tokens = self._state_tokens(client, version_str)
             if _is_committed(tokens):
                 self.logger.info(

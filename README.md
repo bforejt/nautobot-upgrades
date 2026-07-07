@@ -63,9 +63,20 @@ stopping on the first failure for a device:
 
 Feedback is mandatory and built in: every gate logs to the Job Result with the
 device attached, and a **Debug** toggle logs every RESTCONF request/response.
+Batches run **in parallel** (default 4 devices at a time, tunable 1–16 via the
+**Parallelism** input) — each device is fully independent, and per-device log
+entries interleave in time order while staying attributed to their device. If
+the job's time budget expires mid-batch, in-flight devices are **stopped at
+safe step boundaries** (never mid-decision), every device's outcome is
+accounted for, and the post-mortem names what completed, what stopped, and
+what never started — all safe to re-run.
 Per-device failures don't stop the batch (the remaining devices still run),
 but **any device failure marks the whole Job Result FAILED** at the end — a
-green job means every selected device succeeded.
+green job means every selected device succeeded. **Durations are logged for
+change-window planning**: each device's result carries its total wall-clock
+time, and the reload reports the outage window (unreachable-for and
+reload-to-confirmed times), alongside the existing copy and install phase
+timings.
 
 See **[docs/upgrade-flow.md](docs/upgrade-flow.md)** for a flowchart of the
 per-device decision logic (editable [`upgrade-flow.drawio`](docs/upgrade-flow.drawio)).
@@ -370,6 +381,7 @@ RESTCONF polling.
 | Secrets group override | no | Force one Secrets Group for the whole run; by default each device uses its own assigned group. |
 | Assume install mode | no | Proceed when boot mode can't be confirmed over RESTCONF (default **off** = fail closed; confirmed BUNDLE always aborts). Only needed for model drift — verify install mode manually first. |
 | Remove inactive | no | After commit, reclaim space (default **off** — keeps the rollback image for a soak period). |
+| Parallelism | no | Devices upgraded concurrently (default **4**, max 16; 1 = serial). Size to the firmware server's capacity for simultaneous image pulls. |
 | Debug | no | Verbose RESTCONF request/response logging. |
 | Dry-run | — | Read-only pre-flight only (default **on**). |
 

@@ -152,6 +152,17 @@ RELOAD_TIMEOUT = 1800
 #: "ISSU compatibility check" with the timer leaf supplied. The platform's
 #: default auto-abort timer applies instead and is verified after reload.
 
+# --- Batch parallelism --------------------------------------------------------
+
+#: Default number of devices upgraded CONCURRENTLY in a batch run (the job's
+#: Parallelism input). Each device is fully independent (own RESTCONF session,
+#: own operation uuids, own gates); the practical limits are firmware-server
+#: bandwidth during simultaneous copies and log readability.
+DEFAULT_PARALLELISM = 4
+
+#: Hard ceiling for the Parallelism input.
+MAX_PARALLELISM = 16
+
 # --- Safety thresholds ------------------------------------------------------
 
 #: Require at least this multiple of the image size free on the target
