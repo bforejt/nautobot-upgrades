@@ -180,6 +180,19 @@ project's constraints. The key findings that shaped it:
   support floor is **17.9.1** — the lowest model-complete release; the job
   refuses anything older (see the support posture above). (The async `xcopy` transfer was tried and
   abandoned: 17.15.05 silently broke it in the field.)
+- **Image-file integrity is deliberately covered without the on-device
+  `verify` RPC.** Three layers: the Register job can download and
+  **hash-verify** the image server-side at registration (md5…sha512); every
+  copy ends with a **byte-exact size match** against Nautobot's recorded size
+  (tolerance 0); and `install add` performs Cisco's **mandatory signature
+  validation** of the signed image before anything can activate — strictly
+  stronger than an MD5 self-check, since it catches corruption *and*
+  tampering. The `Cisco-IOS-XE-verify-rpc:verify` RPC does exist (17.12+,
+  md5/sha512) but returns only a correlation UUID, with results delivered via
+  **event notifications** and no pollable operational state — the same
+  async-invisible shape as the abandoned `xcopy` — so it was considered and
+  deliberately not adopted. If Cisco ever exposes a pollable verify result,
+  it becomes a small, clean addition.
 - **Software version/image data is now Nautobot _core_, not a plugin.**
   `dcim.SoftwareVersion` and `dcim.SoftwareImageFile` moved into core in
   **Nautobot 2.2** (image file name, checksum + hashing algorithm, file size,
