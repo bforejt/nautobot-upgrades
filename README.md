@@ -72,7 +72,7 @@ per-device decision logic (editable [`upgrade-flow.drawio`](docs/upgrade-flow.dr
 | --- | --- | --- |
 | **Nautobot** | **2.4 LTM** and **3.1+** | Installs/syncs verified on **2.4 and 3.1**; the end-to-end upgrade has run from **3.1**. **3.0 is untested and will stay that way** — it no longer receives maintenance now that 3.1 (the 3.x LTM designation) has shipped. Earlier 2.x (≥ 2.2) *may* work but is not tested or supported. |
 | **Deployment** | [nautobot-composer](#sister-project-nautobot-composer) | The sister Docker-Compose installer this Job is built to run on; it currently ships Nautobot 2.4 and 3.x. |
-| **Device OS** | Cisco IOS-XE **≥ 17.9.1** (incl. 26.x) | Hardware-validated on **17.15.x**; every YANG model the job touches verified against Cisco's published models from 17.9.1 through 26.1.1. See the [support posture](#support-posture) for the per-train breakdown. Model presence ≠ runtime behavior — run one supervised upgrade per new train before fleet use. Note: rebuild letters (e.g. 17.15.4**a**) compare equal to the base version. |
+| **Device OS** | Cisco IOS-XE **≥ 17.9.1** (incl. 26.x) | Hardware-validated on **17.15.x**; every YANG model the job touches verified against Cisco's published models from 17.9.1 through 26.1.1. See the [support posture](#support-posture) for the per-train breakdown. Model presence ≠ runtime behavior — run one supervised upgrade per new train before fleet use. Rebuild letters (e.g. 17.15.4**d**) are **distinct versions** — base → rebuild upgrades (and rebuild rollbacks) are supported. |
 | **Platform** | Catalyst **9300** (install mode) | Primary target, booted from `flash:packages.conf`. |
 
 ### Support posture
@@ -392,8 +392,6 @@ Everything actually depended on (`requests`, Nautobot core) is permissive
   triggered a fatal ISSU compatibility check on real hardware); the platform's
   default rollback timer applies instead and is confirmed after reload
   (observed arming at 7200 s on 17.15.x).
-- **Rebuild letters compare equal to the base version** (a device on 17.15.4a
-  targeted at 17.15.4 is treated as already-on-target).
 - Free-space and file-size reads use **release-dependent** q-filesystem paths
   (exact/stack-suffix partition match) — tunable via `constants.py` if a
   platform names its flash differently.
