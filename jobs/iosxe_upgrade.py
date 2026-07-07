@@ -71,7 +71,7 @@ from .restconf import RestconfClient, RestconfError
 
 name = "IOS-XE Upgrades"
 
-_VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+_VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)([a-z])?", re.IGNORECASE)
 
 
 class UpgradeAbort(Exception):
@@ -86,16 +86,30 @@ class LedgerOpFailure(UpgradeAbort):
     """
 
 
-def _version_tuple(text):
-    """Extract a (major, minor, patch) tuple from any IOS-XE version string.
+def _version_key(text):
+    """((major, minor, patch), rebuild-letter) from any IOS-XE version string.
 
-    Handles both '17.3.1' and Cisco's zero-padded '17.09.04' forms, and full
-    banner strings like 'Cisco IOS-XE Software, Version 17.06.03'.
+    Handles '17.3.1', Cisco's zero-padded '17.09.04', REBUILD letters
+    ('17.15.4d' / device-form '17.15.04D' -> ((17,15,4), 'd')), full banner
+    strings, image filenames, and internal identifiers ('17.15.04d.0.6839').
+    Rebuild letters are DISTINCT versions: 17.15.4d != 17.15.4 — the letter is
+    part of the identity, so base->rebuild (and back) are real upgrades.
     """
     match = _VERSION_RE.search(str(text or ""))
     if not match:
         return None
-    return tuple(int(part) for part in match.groups())
+    numbers = tuple(int(part) for part in match.groups()[:3])
+    return (numbers, (match.group(4) or "").lower())
+
+
+def _version_tuple(text):
+    """Numeric (major, minor, patch) only — for ORDERING (the version floor).
+
+    Rebuild letters never affect ordering against the floor; equality checks
+    must use _version_key so letters count.
+    """
+    key = _version_key(text)
+    return key[0] if key else None
 
 
 class IOSXEUpgrade(Job):
@@ -345,7 +359,9 @@ class IOSXEUpgrade(Job):
         current = self._extract_version(data)
         self.logger.info("Current version: **%s**.", current or "unknown", extra=log)
         target_str = target_version.version
-        if _version_tuple(current) and _version_tuple(current) == _version_tuple(target_str):
+        # _version_key: rebuild letters count (17.15.4d is NOT 17.15.4), so a
+        # base->rebuild upgrade (or a rebuild rollback) proceeds as a real run.
+        if _version_key(current) and _version_key(current) == _version_key(target_str):
             return self._handle_already_on_target(client, device, target_version, dryrun, log)
 
         # -- 2. Pre-flight gates ---------------------------------------------
@@ -728,6 +744,21 @@ class IOSXEUpgrade(Job):
             raise UpgradeAbort(
                 f"Image '{image.image_file_name}' has no download URL; the device "
                 "needs a URL to pull the image from."
+            )
+        # Version/image consistency gate: rebuild letters are identity, so a
+        # SoftwareVersion of '17.15.4' mapped to a 17.15.04a image would key
+        # every downstream gate on the WRONG variant — worst case activating a
+        # stale base image and reporting success while the registered rebuild
+        # was never installed. Catch the mismatch BEFORE any device write.
+        image_key = _version_key(image.image_file_name)
+        target_key = _version_key(target_version.version)
+        if image_key and target_key and image_key != target_key:
+            raise UpgradeAbort(
+                f"Version/image mismatch: target SoftwareVersion is "
+                f"'{target_version.version}' but the resolved image file "
+                f"'{image.image_file_name}' embeds a different version — rebuild "
+                "letters count (17.15.4a is not 17.15.4). Fix the SoftwareVersion "
+                "string or map the correct image, then re-run."
             )
         self.logger.info(
             "Resolved image '%s' (%s).", image.image_file_name, image.download_url, extra=log
@@ -1316,11 +1347,12 @@ class IOSXEUpgrade(Job):
         )
 
     def _install_activate(self, client, image, op_uuid, log):
-        # Resolve the FULL internal version identifier from install-oper (e.g.
-        # '17.15.04.0.6839'): activate-by-bare-version hangs the RPC when the
-        # target is a previously-tracked image (re-activation/rollback), while the
-        # full string works — verified by direct RPC experiments on a real
-        # 17.15.x. Fresh adds work either way, so the full form is used always.
+        # Resolve the FULL internal version identifier from the documented
+        # install-version-state-info rows (e.g. '17.15.04.0.6839'):
+        # activate-by-bare-version hangs the RPC when the target is a
+        # previously-tracked image (re-activation/rollback), while the full
+        # string works — verified by direct RPC experiments on a real 17.15.x.
+        # Fresh adds work either way, so the full form is used always.
         data = client.get(C.DATA_INSTALL_OPER, ok_404=True) or {}
         bare = image.software_version.version
         full = _full_version_string(data, bare)
@@ -1516,7 +1548,9 @@ class IOSXEUpgrade(Job):
         """
         self.logger.info("Waiting for reload and the target version to come up...", extra=log)
         time.sleep(C.RELOAD_INITIAL_SLEEP)
-        target = _version_tuple(target_str)
+        # Exact-variant match: booting base 17.15.4 must NOT confirm a 17.15.4d
+        # target (or vice versa) — the rebuild letter is part of the identity.
+        target = _version_key(target_str)
         started = time.monotonic()
         deadline = started + C.RELOAD_TIMEOUT
         went_down = False
@@ -1536,7 +1570,7 @@ class IOSXEUpgrade(Job):
                 self.logger.info("Device is back online.", extra=log)
             # Only accept the target AFTER we've seen the device go down, so a box
             # that never actually reloaded cannot satisfy the confirmation.
-            if went_down and _version_tuple(booted) == target:
+            if went_down and _version_key(booted) == target:
                 consecutive += 1
                 if consecutive >= 2:
                     self.logger.info(
@@ -1545,7 +1579,7 @@ class IOSXEUpgrade(Job):
                     return
             else:
                 consecutive = 0
-                if _version_tuple(booted):
+                if _version_key(booted):
                     last_seen = booted
             polls += 1
             if polls % 4 == 0:  # heartbeat every ~2 minutes
@@ -1835,86 +1869,71 @@ def _collect_oper_state_modes(node, out):
             _collect_oper_state_modes(item, out)
 
 
-def _version_state_tokens(data, version_str):
-    """All install-oper state tokens (lowercased) for entries matching version_str.
+def _find_version_rows(data):
+    """Every install-version-state-info row anywhere in install-oper data.
 
-    Collects EVERY state of the target version (per-member rows, and historical
-    rows for the same version), not just the first match, so a stale lower-priority
-    entry cannot mask the live state. Callers reduce these with _is_committed().
+    This is the DOCUMENTED list for version state (key 'version-state', leaves
+    'version-state' + 'version' — YANG-verified structurally identical across
+    every supported release, 17.9.1 through 26.1.1, and field-verified on real
+    17.15.x where its 'version' leaf carries the engine's own full internal
+    identifier, e.g. '17.15.05.0.8370'). Scoping to this list — instead of
+    matching any 'version'-named key anywhere — excludes the module's OTHER
+    version-bearing leaves (rollback labels, txn echoes) whose junk composites
+    ('17.15.04.0.6839.<epoch>..IOSXE') previously had to be filtered out by
+    pattern heuristics.
     """
-    target = _version_tuple(version_str)
+    rows = []
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if key == "install-version-state-info" and isinstance(value, list):
+                rows.extend(row for row in value if isinstance(row, dict))
+            else:
+                rows.extend(_find_version_rows(value))
+    elif isinstance(data, list):
+        for item in data:
+            rows.extend(_find_version_rows(item))
+    return rows
+
+
+def _version_state_tokens(data, version_str):
+    """All version-state tokens (lowercased) for rows matching version_str.
+
+    Exact-variant matching via _version_key: on a device where 17.15.4 and
+    17.15.4d coexist (guaranteed mid-rebuild-upgrade), only the requested
+    variant's rows count — the other variant's committed/pending rows must
+    never satisfy this variant's gates.
+    """
+    target = _version_key(version_str)
     if target is None:
         return []
-    tokens = []
-    _collect_states(data, target, tokens)
-    return tokens
-
-
-def _collect_states(node, target, out):
-    if isinstance(node, dict):
-        has_version = any(
-            "version" in key.lower()
-            and isinstance(value, (str, int, float))
-            and _version_tuple(value) == target
-            for key, value in node.items()
-        )
-        if has_version:
-            for key, value in node.items():
-                # Collect any non-empty string under a state-named key; the VALUE
-                # may be a full enum ('install-state-committed') OR a short code
-                # ('C'/'A'/'U'/'I') OR a plain word — do not require it to contain
-                # the literal 'state'. _classify_state() normalizes all of these.
-                if "state" in key.lower() and isinstance(value, str) and value.strip():
-                    out.append(value.strip().lower())
-        for value in node.values():
-            _collect_states(value, target, out)
-    elif isinstance(node, list):
-        for item in node:
-            _collect_states(item, target, out)
+    return [
+        str(row.get("version-state", "")).strip().lower()
+        for row in _find_version_rows(data)
+        if str(row.get("version-state", "")).strip() and _version_key(row.get("version")) == target
+    ]
 
 
 def _classify_state(token):
-    """Normalize an install-oper state value to a canonical state.
+    """Map a version-state value to the job's state classes.
 
-    Handles full enums ('install-state-committed'), short codes ('C'/'A'/'U'/'I'),
-    and plain words ('committed'/'activated'/'inactive'). Ordered so 'uncommitted'
-    is never misread as 'committed' and 'inactive' is never misread as 'activated'.
+    The leaf is the CLOSED typedef install-version-state (RESTCONF encodes
+    enums by name; family verified across 17.9.1-26.1.1): in-progress =
+    "marked for activation", the NORMAL resting state of an added image
+    (real-device verified); provisioned-{committed,uncommitted} = commit
+    state; installed = added; present = files on disk WITHOUT install-DB
+    staging (must never satisfy staged gates — real-device verified);
+    invalid (mid-extraction) and unknown (17.18.1+) and anything
+    unrecognized classify as 'other', which never satisfies any gate —
+    unclassifiable states fail safe.
     """
-    t = token.strip().lower().rsplit("state-", 1)[-1]
-    if t in ("c", "committed"):
-        return "committed"
-    if t in ("u", "uncommitted"):
-        return "uncommitted"
-    if t in ("a", "activated", "active"):
-        return "activated"
-    if t in ("i", "inactive", "added"):
-        return "added"
-    # install-version-state family (verified against the 17.15 YANG):
-    # 'installed' = added & available for activation; 'in-progress' = MARKED FOR
-    # ACTIVATION (the normal resting state of an added image — real-device
-    # verified). 'present' = files on device but NOT staged in the install DB —
-    # a real 17.15.4 downgrade proved a residual 'present' row can exist while
-    # the engine insists "perform an install add before activating", so it gets
-    # its own class and never satisfies staged/added gates.
-    if "progress" in t:
-        return "pending"
-    if "installed" in t:
-        return "added"
-    if t == "present":
-        return "present"
-    if "uncommitted" in t:
-        return "uncommitted"
-    if "committed" in t:
-        return "committed"
-    if "inactive" in t or "added" in t:
-        return "added"
-    if "activ" in t:
-        return "activated"
-    # 17.18.1+ adds install-version-state-unknown (the engine cannot classify
-    # the version). Deliberately 'other': it never satisfies a staged/committed
-    # gate and never counts as pending, so a stuck-unknown device fails loudly
-    # at a gate timeout instead of silently passing or blocking a commit.
-    return "other"
+    suffix = token.strip().lower().rsplit("state-", 1)[-1]
+    return {
+        "provisioned-committed": "committed",
+        "provisioned-uncommitted": "uncommitted",
+        "in-progress": "pending",
+        "installed": "added",
+        "present": "present",
+    }.get(suffix, "other")
 
 
 def _is_committed(tokens):
@@ -1935,48 +1954,23 @@ def _is_committed(tokens):
 def _full_version_string(data, version_str):
     """The device's full internal version for ``version_str`` (or None).
 
-    install-oper rows carry the complete identifier the install DB indexes by
-    (e.g. '17.15.04.0.6839') — but OTHER rows carry junk composites like
-    '17.15.04.0.6839.1754352873..IOSXE' (version + transaction epoch + suffix),
-    which the engine does NOT accept (field-verified: activating by such a
-    string hangs exactly like the bare form). Selection rules:
-
-      * candidates must be pure dotted-numeric (junk suffixes disqualify);
-      * must extend beyond the bare major.minor.patch (>3 components);
-      * prefer the FEWEST components, then the shortest string — the tightest
-        identifier fuller than bare, e.g. '17.15.04.0.6839' beats both the
-        bare '17.15.04' and any longer transaction-stamped composite.
+    Read directly from the documented install-version-state-info rows, whose
+    'version' leaf carries the identifier the install DB indexes by (e.g.
+    '17.15.05.0.8370', '17.15.04d.0.6839' for rebuilds) — the exact form the
+    activate RPC requires for re-activations (bare strings hang the engine;
+    field-verified). Exact-variant matching; the shortest matching value wins
+    as a cheap defense should a release ever duplicate rows.
     """
-    target = _version_tuple(version_str)
+    target = _version_key(version_str)
     if target is None:
         return None
-    candidates = []
-
-    def _walk(node):
-        if isinstance(node, dict):
-            for key, value in node.items():
-                key_l = key.lower()
-                if (
-                    isinstance(value, str)
-                    and "version" in key_l
-                    and "state" not in key_l
-                    and _version_tuple(value) == target
-                ):
-                    text = value.strip()
-                    if re.fullmatch(r"\d+(?:\.\d+)*", text):
-                        components = text.split(".")
-                        if len(components) > 3:
-                            candidates.append((len(components), len(text), text))
-                else:
-                    _walk(value)
-        elif isinstance(node, list):
-            for item in node:
-                _walk(item)
-
-    _walk(data)
-    if not candidates:
-        return None
-    return min(candidates)[2]
+    best = None
+    for row in _find_version_rows(data):
+        value = str(row.get("version", "")).strip()
+        if value and _version_key(value) == target:
+            if best is None or len(value) < len(best):
+                best = value
+    return best
 
 
 def _rpc_error_text(response):

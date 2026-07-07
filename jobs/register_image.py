@@ -37,6 +37,7 @@ from nautobot.dcim.models import DeviceType, Platform, SoftwareImageFile, Softwa
 from nautobot.extras.models import Status
 
 from . import constants as C
+from .iosxe_upgrade import _version_key
 
 name = "IOS-XE Upgrades"
 
@@ -232,6 +233,24 @@ class RegisterImage(Job):
                 "field (and the Platform / Version status)."
             )
         self._check_status(image_status, SoftwareImageFile, "Software Image Files")
+
+        # Consistency warning: rebuild letters are identity to the upgrade job
+        # (17.15.4a != 17.15.4), so registering a lettered image under an
+        # unlettered version string (or vice versa) produces records the
+        # upgrade job will refuse at its version/image gate. Warn here, at the
+        # source, while it is one click to fix.
+        version_text = str(software_version.version if software_version else new_version or "")
+        file_key = _version_key(file_name)
+        version_key = _version_key(version_text)
+        if file_key and version_key and file_key != version_key:
+            self.logger.warning(
+                "The image file name '%s' embeds version %s but the Software "
+                "Version is '%s' — rebuild letters count. The upgrade job will "
+                "REFUSE this pairing; fix one side unless this is intentional.",
+                file_name,
+                f"{file_key[0][0]}.{file_key[0][1]}.{file_key[0][2]}{file_key[1]}",
+                version_text,
+            )
 
         device_url = self._device_url(file_name, firmware_base_url, download_url_override)
         candidates = self._validation_candidates(file_name, device_url, download_url_override)
