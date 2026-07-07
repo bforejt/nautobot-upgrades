@@ -3,16 +3,18 @@
 A native **Nautobot Job** that reliably and cautiously upgrades **Cisco IOS-XE**
 devices — **Catalyst 9300** primarily — driven entirely over **RESTCONF**.
 
-> ### ⚠️ Status: early — first end-to-end upgrade succeeded in the lab
+> ### ⚠️ Status: lab-validated on 17.15.x — single-switch flow proven, wider scope pending
 >
-> A complete upgrade (Catalyst 9300, IOS-XE 17.15.04 → 17.15.05: copy → add →
-> activate → reload → commit, entirely over RESTCONF) has **succeeded on real
-> hardware**, run from a **Nautobot 3.1** nautobot-composer deployment. That is
-> one device, one version pair, one platform: stacks, batches, rollback paths,
-> Nautobot 3.x, and failure-mode coverage remain **untested**. Treat this as
-> **lab-quality** — not production-ready — and **always run with Dry-run
-> first**. See [Status & testing](#status--testing) for the verified/unverified
-> breakdown.
+> Complete upgrades **and downgrades** (Catalyst 9300, IOS-XE 17.15.04 ↔
+> 17.15.05: copy → add → activate → reload → commit, entirely over RESTCONF)
+> have **succeeded repeatedly on real hardware**, run from a **Nautobot 3.1**
+> nautobot-composer deployment — including the operation-ledger tracking and
+> engine-idle gating the job now decides by, and the interrupted-run recovery
+> path (commit-to-be-safe). That is still one device model and one version
+> pair: **stacks, multi-device batches, other trains (17.9/17.12/17.18/26.1),
+> and Nautobot 2.4 job execution remain untested.** Treat wider scope as
+> lab-quality and **always run with Dry-run first**. See the
+> [support matrix](#support-matrix) and [Status & testing](#status--testing).
 
 ---
 
@@ -38,11 +40,19 @@ stopping on the first failure for a device:
    the exact file is already on flash, the copy is skipped (idempotent re-runs).
    The fancier async `xcopy` RPC was deliberately abandoned after a real
    17.15.05 silently broke it while the classic path kept working.
-4. **Install** — `install add` (the job waits for the add-**complete** state,
-   not mere presence) → `install activate` (**explicitly non-ISSU**, by version;
-   the job verifies activation actually **started** — the RPC returns 2xx even
-   when the install engine rejects it — and checks the device's **auto-rollback
-   timer** after reload) → reload.
+4. **Install** — every engine write follows one pattern: **gate → submit →
+   track**. The job waits for the engine to report **idle** (`sys-activity`),
+   submits with a per-operation uuid, then tracks that uuid in the device's own
+   **operation ledger** (`install-oper`/`install-oper-hist`) to true
+   op-completion — never trusting the RPC's 2xx, which the engine returns even
+   when it refuses. `install add` → engine-idle gate → `install activate`
+   (**explicitly non-ISSU**, by the device's **full internal version
+   identifier**; silently-dropped requests are detected via the ledger and
+   re-sent) → reload, with the **auto-rollback timer** checked after boot.
+   Ledger-recorded failures abort quoting the engine's own failing phase; on
+   releases that don't populate these signals, the job degrades to
+   version-state inference and a settle timer — labeled as fallbacks in the
+   logs.
 5. **Verify, then commit** — reconnect, confirm the device actually booted the
    target version, and **only then** `install commit`. If it didn't come back or
    booted the wrong version, the job does **not** commit and the device
@@ -65,38 +75,65 @@ per-device decision logic (editable [`upgrade-flow.drawio`](docs/upgrade-flow.dr
 | **Device OS** | Cisco IOS-XE **≥ 17.9.1** (incl. 26.x) | Hardware-validated on **17.15.x**. Every YANG model the job touches was verified against Cisco's published models for **every train 16.12.1–17.11.1 plus 17.12.1, 17.18.1, and 26.1.1**: 17.9.1–17.12.1 are model-identical to the validated baseline (operation ledger, sys-activity, byte-exact file sizes all present); 17.18.1/26.1.1 add `op-reverted` and `install-version-state-unknown` (both handled) and 26.1.1 restructures install/remove inputs into mandatory choices the job's payloads already satisfy. **17.5–17.8 are refused**: their per-file sizes are kilobyte-described, which would false-abort the byte-exact copy verification. Below 17.5.1 key leaves are missing; below 17.3.1 the install models don't exist at all (16.12 is a hard wall). Model presence ≠ runtime behavior — run one supervised upgrade per new train before fleet use. Note: rebuild letters (e.g. 17.15.4**a**) compare equal to the base version. |
 | **Platform** | Catalyst **9300** (install mode) | Primary target, booted from `flash:packages.conf`. |
 
+### Support matrix
+
+Per IOS-XE train, spelled out — **Tested** means real Catalyst 9300 hardware:
+
+| IOS-XE train | Status | Basis |
+| --- | --- | --- |
+| **17.15** | ✅ **Tested on real equipment** | Repeated full upgrades **and** downgrades (17.15.04 ↔ 17.15.05) on a Catalyst 9300, run from Nautobot 3.1: ledger-tracked add/activate/commit, engine-idle gating, copy progress + byte-exact verification, interrupted-run recovery. The behavioral baseline. |
+| **17.12** (EM) | 🔬 **May work — research-verified** | Cisco's published models are **identical to the tested baseline** in every area the job touches (operation ledger, sys-activity, byte units, all RPCs). No hardware run yet — do one supervised upgrade before fleet use. |
+| **17.9 / 17.10 / 17.11** | 🔬 **May work — research-verified** | Model-complete for the job's primary tier (ledger 17.8.1+, sys-activity 17.5.1+, byte-exact sizes 17.9.1+). 17.9 is the support floor. No hardware runs yet — supervised first upgrade required; note these trains snapshot older model revisions on early rebuilds. |
+| **17.18** | ⏳ **Pending** | Models verified; additive changes (`op-reverted`, `install-version-state-unknown`) already handled in code. Awaiting a hardware run. |
+| **26.1** | ⏳ **Pending** | New unified numbering; install-oper is byte-identical to 17.18.1 and the restructured rpc inputs (mandatory choices) are satisfied by the job's payloads. Version logic verified for 26.x forms. Awaiting a hardware run. |
+| **17.5 – 17.8** | 🚫 **Refused by the job** | Their per-file sizes are kilobyte-described — the byte-exact copy verification would false-abort every transfer. (A KB-tolerant accommodation is analyzed, not built.) |
+| **≤ 17.4** | 🚫 **Refused / impossible** | 17.3–17.4 lack the boot-mode/sys-activity leaves and the ledger; below 17.3.1 the install models don't exist; **16.12 is a hard wall**. |
+
+**Nautobot**: installed and synced successfully on **3.1 and 2.4**; **most
+testing — including every hardware upgrade — was done on 3.1**. Job execution
+from 2.4 is untested.
+
 There is no separate Python dependency matrix: the Job imports only `requests`
 plus Nautobot core, so whatever ships with the supported Nautobot release suffices.
 
 ## Status & testing
 
-This project is **new and largely unverified** — be conservative with it.
+The single-switch flow is **hardware-validated on 17.15.x**; wider scope is not.
 
-**Verified so far (real hardware: one Catalyst 9300 on 17.15.4)**
+**Verified on real hardware (Catalyst 9300, 17.15.04 ↔ 17.15.05, from Nautobot 3.1)**
 
-- ✅ Installs / syncs as a Nautobot Git Repository on **Nautobot 2.4 and 3.1**
-  (nautobot-composer); both Jobs register.
-- ✅ **Register IOS-XE Image**: firmware-server upload → validate → record.
-- ✅ **Full upgrade end-to-end** (run from **Nautobot 3.1**): reachability/auth,
-  all pre-flight gates, device-pull copy, install add, non-ISSU
-  activate, reload, stable-boot confirm, commit, Nautobot sync —
-  17.15.04 → 17.15.05.
-- ✅ Real-device fixes baked in for: boot-mode leaf naming, install-oper state
-  semantics, TLS-fetch failures (HTTP fallback), premature/rejected activates,
-  and commit-confirmation timing.
+- ✅ **Full upgrade AND downgrade end-to-end, repeatedly**: reachability/auth,
+  all pre-flight gates, threaded classic copy with live progress and
+  **byte-exact size verification**, ledger-tracked `install add`, engine-idle
+  gate, full-internal-version activate (with drop detection + re-send), reload,
+  stable-boot confirm, ledger-confirmed commit, Nautobot sync.
+- ✅ **Operation-ledger tracking live on-device**: op records keyed by the
+  job's own uuids, per-phase engine statuses driving the gates.
+- ✅ **Interrupted-run recovery** (commit-to-be-safe): a re-run against an
+  already-on-target, uncommitted device commits it and re-syncs Nautobot.
+- ✅ **Idempotent re-runs**: copy skipped when the exact file is on flash;
+  add skipped when already staged.
+- ✅ **Rollback timer** confirmed arming on real activations.
+- ✅ Installs / syncs as a Git Repository on **Nautobot 2.4 and 3.1**; both Jobs
+  register. **Register IOS-XE Image**: upload → validate → record.
+- ✅ A long list of real-device truths encoded and regression-tested: boot-mode
+  leaf naming, version-state semantics, silent RPC drops during the post-add
+  compatibility probe, junk version identifiers, KB-vs-byte size units.
 
 **Not yet tested — do not assume these work**
 
-- ❌ **Job execution on Nautobot 2.4** — it installs/syncs there, but the
-  end-to-end upgrade has only been run from 3.1. (**Nautobot 3.0** is untested
-  by choice: it stopped receiving maintenance when 3.1 shipped.)
-- ❌ **Stacks** — stack-aware gates are implemented (free space checked on
-  EVERY member; all members must rejoin after the reload before commit) but
+- ❌ **Job execution from Nautobot 2.4** — installs/syncs verified there, but
+  every hardware upgrade so far ran from 3.1. (**Nautobot 3.0** is untested by
+  choice: unmaintained since 3.1 shipped.)
+- ❌ **Other IOS-XE trains**: 17.9/17.10/17.11/17.12 (research-verified),
+  17.18/26.1 (pending) — see the [support matrix](#support-matrix).
+- ❌ **Stacks** — stack-aware gates are implemented (free space on EVERY
+  member; all members must rejoin before commit; idle gate spans members) but
   have not run against a real stack. Also untested: **multi-device batches**
-  and other version pairs / 9300 models.
-- ❌ **Failure paths on hardware**: auto-rollback (activate without commit),
-  `install rollback`, copy stall/corruption handling, downgrade runs.
-- ❌ The **Remove inactive** cleanup option.
+  and other 9300 models.
+- ❌ **Failure paths on hardware**: auto-rollback expiry (activate without
+  commit), a genuinely corrupt image, a member failing to rejoin.
+- ❌ The **Remove inactive** cleanup option (now ledger-tracked, still unrun).
 
 **Suggested test order (lab only)**
 
@@ -112,7 +149,8 @@ This project is **new and largely unverified** — be conservative with it.
 3. **Single real upgrade.** One non-production device — watch the Job Result log
    through copy → add → activate → reload → confirm → commit, and verify the
    auto-rollback timer actually arms.
-4. **Broaden.** Repeat on **Nautobot 3.x** and on a **stack** before any wider use.
+4. **Broaden.** Run one execution from **Nautobot 2.4**, then a **stack**, then
+   one supervised run per additional IOS-XE train, before any wider use.
 
 Until at least steps 1–3 pass in a lab, treat every run as experimental and keep
 Dry-run on.
@@ -335,25 +373,28 @@ Everything actually depended on (`requests`, Nautobot core) is permissive
 
 ## Known limitations / not yet done
 
-- **Untested against hardware.** RESTCONF payload field names, operational leaf
-  paths, and the install-state polling are research-derived and need lab
-  validation. The following specifically require confirmation against a real
-  device's `install-oper` data before production use:
-  - **Auto-rollback timer:** the job arms it explicitly on `activate`
-    (`auto-abort-timer-val`, research-derived leaf) and best-effort checks it is
-    pending after reload, warning loudly if it can't confirm one. Whether a bare
-    `activate` arms a timer, and the exact leaf name, are release-specific — the
-    failure paths rely on this safety net, so verify it actually arms.
-  - **Install-state classification:** `_classify_state` normalizes full enums and
-    short codes (C/A/U/I), but the real `install-oper` state leaf names/values
-    should be confirmed; commit/idempotency gates fail *safe* (commit-to-be-safe)
-    if a state can't be classified.
-- **16.12.x is not supported** (no RESTCONF install model on that train).
-- Free-space and on-device file-size reads use **best-effort, release-dependent**
-  paths (q-filesystem; exact/stack-suffix partition match) and may need tuning per
-  release via `constants.py`.
-- Stack/SVL handling checks that **all members** report install mode and that the
-  system booted the target version; per-member deep health checks are minimal.
+- **Hardware validation covers 17.15.x only** — every other train is admitted
+  on model evidence (see the [support matrix](#support-matrix)); do one
+  supervised upgrade per new train. On releases whose devices don't populate
+  the operation ledger or `sys-activity` at runtime, the job degrades to
+  version-state inference and a settle timer — clearly labeled in the logs.
+- **The activate deliberately does NOT send `auto-abort-timer-val`** (the leaf
+  triggered a fatal ISSU compatibility check on real hardware); the platform's
+  default rollback timer applies instead and is confirmed after reload
+  (observed arming at 7200 s on 17.15.x).
+- **Rebuild letters compare equal to the base version** (a device on 17.15.4a
+  targeted at 17.15.4 is treated as already-on-target).
+- **17.5–17.8 are refused** because of kilobyte-described file sizes; a
+  KB-tolerant copy-verification accommodation could unlock the 17.6 EM cohort
+  if ever needed (analyzed, not built).
+- Free-space and file-size reads use **release-dependent** q-filesystem paths
+  (exact/stack-suffix partition match) — tunable via `constants.py` if a
+  platform names its flash differently.
+- Stack/SVL handling checks that **all members** report install mode, have the
+  free space, and rejoin after reload; per-member deep health checks are
+  minimal. **17.15.x devices emit an SELinux AVC log flood** during
+  q-filesystem polling (Cisco policy defect, cosmetic — suppressible with a
+  `logging discriminator`; see the run notes above).
 
 ## Deferred (by agreement — not built yet)
 

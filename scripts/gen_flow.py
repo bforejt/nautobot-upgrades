@@ -63,25 +63,29 @@ SPINE = [
     ("d_dry", "dec", "Dry-run?",
      {"okright": ("Yes", "DONE: DRY-RUN — pre-flight\npassed, no changes made"),
       "passlabel": "No"}),
-    ("copy", "proc", "URL preflight (404 aborts) → classic copy\nin worker thread + size-poll progress", {}),
+    ("copy", "proc",
+     "URL preflight (404 aborts) → classic copy in\nworker thread + size-poll progress\n"
+     "(skipped if the exact file is already on flash)", {}),
     ("d_size", "dec", "Transfer complete\n& size matches?",
-     {"abort": ("stall / timeout /\noversize", "No progress, timeout, or file\nlarger than expected — abort"),
-      "warn": ("size unknown", "No expected size → settle-detect,\nrely on install add signature"),
+     {"abort": ("error / timeout /\nmismatch", "Copy RPC failed/refused, timed out,\nor on-device size ≠ expected — abort"),
+      "warn": ("size unknown", "No expected size → warn; rely on\ninstall add signature validation"),
       "passlabel": "match"}),
     ("roster", "proc", "Capture stack member roster\n(chassis serials from inventory)", {}),
     ("add", "proc",
-     "install add → track our op-uuid in the\noperation ledger to op-complete\n"
-     "(state inference only as fallback)", {}),
+     "install add (skipped if already staged) →\ntrack our op-uuid in the operation ledger\n"
+     "to op-complete (state inference fallback)", {}),
     ("idle", "proc",
-     "Engine-idle gate: sys-activity =\nno-activity on every member\n"
-     "(settle delay only if no signal)", {}),
+     "Engine-idle gate before EVERY install write:\nsys-activity = no-activity on all members\n"
+     "(settle delay only pre-activate w/o signal)", {}),
     ("act", "proc",
      "install activate (non-ISSU, by full internal\nversion; ledger-tracked,\n"
      "re-sent on ledger-absent evidence)", {}),
-    ("d_act", "dec", "Activation started?\n(state moves or device drops)",
-     {"abort": ("No", "State never moved & device still up —\nengine rejected activate; device unchanged"),
+    ("d_act", "dec", "Activation started?\n(ledger / state / device drop)",
+     {"abort": ("No", "Ledger-recorded failure, or never\nregistered despite re-sends — abort"),
       "passlabel": "Yes"}),
-    ("waitc", "proc", "Wait for reload; poll booted version\nuntil stable (2 consecutive matches)", {}),
+    ("waitc", "proc",
+     "Wait for reload: must observe the device\ngo DOWN, then boot the target stably\n"
+     "(2 consecutive matching polls)", {}),
     ("d_confirm", "dec", "Target version\nstably confirmed?",
      {"abort": ("No", "Not confirmed before timeout — NOT\ncommitted; auto-rollback should revert"),
       "passlabel": "Yes"}),
@@ -93,12 +97,13 @@ SPINE = [
     ("commit", "proc",
      "install commit → ledger-confirmed,\ncross-checked against committed state", {}),
     ("d_commit", "dec", "Commit\nsucceeded?",
-     {"abort": ("No", "Commit failed — ACTIVATED but NOT\ncommitted; manual intervention / re-run"),
+     {"abort": ("failed", "Commit failed — ACTIVATED but NOT\ncommitted; manual intervention / re-run"),
+      "warn": ("unconfirmed", "Not confirmed in time → warn;\nverify manually (remove-inactive\nis skipped)"),
       "passlabel": "Yes"}),
     ("sync", "proc", "Sync Nautobot software_version\n(warn on fail; already committed)", {}),
     ("d_remove", "dec", "remove_inactive\nenabled?",
      {"passlabel": "Yes", "bypass": ("No", "skip")}),
-    ("remove", "proc", "install remove inactive\n(warn on fail)", {}),
+    ("remove", "proc", "install remove inactive (idle-gated,\nledger-tracked; warn on fail)", {}),
     ("ok", "end", "DONE: UPGRADED & COMMITTED ✓", {}),
 ]
 
