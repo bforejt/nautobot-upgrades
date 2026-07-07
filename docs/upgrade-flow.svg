@@ -144,7 +144,7 @@
 <path d="M 140 2870 L 140 2936 L 250 2936" fill="none" stroke="#D79B00" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
 <rect x="165" y="2917" width="60" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="195.0" y="2930" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B7791f"><tspan x="195.0" dy="0">continue</tspan></text>
 <rect x="250" y="31" width="300" height="50" rx="24" ry="24" fill="#DAE8FC" stroke="#6C8EBF" stroke-width="1.5"/>
-<text x="400" y="56" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#1b3a6b"><tspan x="400" dy="0">FOR EACH selected device</tspan></text>
+<text x="400" y="48" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#1b3a6b"><tspan x="400" dy="0">FOR EACH selected device</tspan><tspan x="400" dy="15">(up to &#x27;Parallelism&#x27; concurrently)</tspan></text>
 <rect x="250" y="124" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
 <text x="400" y="145" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Resolve mgmt host</tspan><tspan x="400" dy="14">(primary_ip4 / primary_ip)</tspan></text>
 <polygon points="400,206.0 525.0,248 400,290.0 275.0,248" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>

@@ -5,7 +5,7 @@
       <root>
         <mxCell id="0"/>
         <mxCell id="1" parent="0"/>
-        <mxCell id="start" value="FOR EACH selected device" style="rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;" vertex="1" parent="1"><mxGeometry x="250" y="31" width="300" height="50" as="geometry"/></mxCell>
+        <mxCell id="start" value="FOR EACH selected device&amp;#10;(up to &#x27;Parallelism&#x27; concurrently)" style="rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;" vertex="1" parent="1"><mxGeometry x="250" y="31" width="300" height="50" as="geometry"/></mxCell>
         <mxCell id="host" value="Resolve mgmt host&amp;#10;(primary_ip4 / primary_ip)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5B6B7B;" vertex="1" parent="1"><mxGeometry x="250" y="124" width="300" height="56" as="geometry"/></mxCell>
         <mxCell id="d_ip" value="Primary IP set?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#E8EEF6;strokeColor=#3C6CA8;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="275" y="206" width="250" height="84" as="geometry"/></mxCell>
         <mxCell id="cred" value="Resolve credentials&amp;#10;(job override OR device Secrets Group)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5B6B7B;" vertex="1" parent="1"><mxGeometry x="250" y="316" width="300" height="56" as="geometry"/></mxCell>

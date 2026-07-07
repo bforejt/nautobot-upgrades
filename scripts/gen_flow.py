@@ -29,7 +29,7 @@ LEFT_RX = 250     # right edge of left-column (warn) boxes
 #   passlabel="..."                     -> label on the downward (continue) edge
 #   bypass=(condlabel, note)            -> edge that skips the NEXT node down to the one after
 SPINE = [
-    ("start", "start", "FOR EACH selected device", {}),
+    ("start", "start", "FOR EACH selected device\n(up to 'Parallelism' concurrently)", {}),
     ("host", "proc", "Resolve mgmt host\n(primary_ip4 / primary_ip)", {}),
     ("d_ip", "dec", "Primary IP set?",
      {"abort": ("No", "No primary IP set")}),
