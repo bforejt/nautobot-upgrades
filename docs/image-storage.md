@@ -124,6 +124,30 @@ when the server presents a CA-trusted cert.
 
 ## Management & lifecycle
 
+## How checksum verification works (the Register job's three fields)
+
+Common point of confusion — the exact mechanics:
+
+- **When:** ONE time, at registration, and only if **Verify download** is
+  ticked. Nothing is re-verified later, and nothing happens during upgrades.
+- **Where:** on the **Nautobot Celery worker**. It downloads the image
+  **streamed** (1 MB chunks fed straight into the hash — the file is never
+  written to the Nautobot server's disk), preferring the internal
+  `firmware-download` route so the transfer stays on the Docker network.
+- **Never on the switch.** IOS-XE's `verify` RPC is deliberately not used (its
+  results are notification-only — see the README's design choices). Device-side
+  integrity during an upgrade is the byte-exact size match plus `install add`'s
+  mandatory Cisco signature validation.
+- **Field combinations:**
+  - `Expected checksum` + `Hashing algorithm`, Verify OFF → recorded on the
+    `SoftwareImageFile` verbatim, **unverified** (paste Cisco's published hash).
+  - Verify ON + expected checksum → worker computes and compares; a
+    **mismatch aborts the registration** (corrupt upload or wrong file).
+  - Verify ON, **no** expected checksum → the computed hash is **recorded as
+    the baseline**.
+  - An algorithm the worker can't compute (outside Python's hashlib set) →
+    warns and records the provided value without verifying.
+
 - **Integrity, layered:** verify at download → verify at upload → (optionally)
   re-verify in the Register job → the upgrade job size-checks the copied file on
   the device → `install add` validates the image signature and aborts on a corrupt

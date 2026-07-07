@@ -137,18 +137,30 @@ class RegisterImage(Job):
     )
     expected_checksum = StringVar(
         required=False,
-        description="Cisco-published checksum to record (and verify if requested).",
+        description=(
+            "Cisco-published checksum, recorded on the Software Image File as "
+            "metadata. It is only actually VERIFIED if 'Verify download' is "
+            "ticked; otherwise it is stored as-is."
+        ),
     )
     hashing_algorithm = ChoiceVar(
         choices=SoftwareImageFileHashingAlgorithmChoices.CHOICES,
         required=False,
-        description="Algorithm for the checksum (required if a checksum is given).",
+        description=(
+            "Algorithm for the checksum (required if a checksum is given or "
+            "Verify download is ticked)."
+        ),
     )
     verify_download = BooleanVar(
         default=False,
         description=(
-            "Download the full image and verify its hash. Bandwidth/time "
-            "intensive; requires a checksum + algorithm."
+            "ONE-TIME verification at registration: the Nautobot worker "
+            "downloads the image (streamed and hashed on the fly — never stored) "
+            "from the repo's internal route and computes the hash. A mismatch "
+            "with the expected checksum aborts; with no expected checksum the "
+            "computed hash is recorded as the baseline. Requires an algorithm. "
+            "The switch itself never checksums — device-side integrity during "
+            "upgrades is the exact size match + install add signature validation."
         ),
     )
     verify_repo_tls = BooleanVar(
