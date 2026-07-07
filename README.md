@@ -72,22 +72,33 @@ per-device decision logic (editable [`upgrade-flow.drawio`](docs/upgrade-flow.dr
 | --- | --- | --- |
 | **Nautobot** | **2.4 LTM** and **3.1+** | Installs/syncs verified on **2.4 and 3.1**; the end-to-end upgrade has run from **3.1**. **3.0 is untested and will stay that way** — it no longer receives maintenance now that 3.1 (the 3.x LTM designation) has shipped. Earlier 2.x (≥ 2.2) *may* work but is not tested or supported. |
 | **Deployment** | [nautobot-composer](#sister-project-nautobot-composer) | The sister Docker-Compose installer this Job is built to run on; it currently ships Nautobot 2.4 and 3.x. |
-| **Device OS** | Cisco IOS-XE **≥ 17.9.1** (incl. 26.x) | Hardware-validated on **17.15.x**. Every YANG model the job touches was verified against Cisco's published models for **every train 16.12.1–17.11.1 plus 17.12.1, 17.18.1, and 26.1.1**: 17.9.1–17.12.1 are model-identical to the validated baseline (operation ledger, sys-activity, byte-exact file sizes all present); 17.18.1/26.1.1 add `op-reverted` and `install-version-state-unknown` (both handled) and 26.1.1 restructures install/remove inputs into mandatory choices the job's payloads already satisfy. **17.5–17.8 are refused**: their per-file sizes are kilobyte-described, which would false-abort the byte-exact copy verification. Below 17.5.1 key leaves are missing; below 17.3.1 the install models don't exist at all (16.12 is a hard wall). Model presence ≠ runtime behavior — run one supervised upgrade per new train before fleet use. Note: rebuild letters (e.g. 17.15.4**a**) compare equal to the base version. |
+| **Device OS** | Cisco IOS-XE **≥ 17.9.1** (incl. 26.x) | Hardware-validated on **17.15.x**; every YANG model the job touches verified against Cisco's published models from 17.9.1 through 26.1.1. See the [support posture](#support-posture) for the per-train breakdown. Model presence ≠ runtime behavior — run one supervised upgrade per new train before fleet use. Note: rebuild letters (e.g. 17.15.4**a**) compare equal to the base version. |
 | **Platform** | Catalyst **9300** (install mode) | Primary target, booted from `flash:packages.conf`. |
 
-### Support matrix
+### Support posture
 
-Per IOS-XE train, spelled out — **Tested** means real Catalyst 9300 hardware:
+The posture is deliberate, in priority order:
+
+1. **17.15 first** — stable mainline code, hardware-tested; the platform this
+   job is built and validated against. (17.18 and 26.1 join this tier as they
+   are validated — the code is already prepared for both.)
+2. **17.12** — aging but still supportable mainline; research-verified as
+   model-identical to the tested baseline. Do one supervised upgrade before
+   fleet use.
+3. **17.9** — a *maybe*: the job accepts it as the floor so parked fleets can
+   be lifted off it, but there is **no intention to test or support it** —
+   escape source only, never a target.
+4. **Older than 17.9** — **not supported, and never will be.** The job refuses
+   these releases.
 
 | IOS-XE train | Status | Basis |
 | --- | --- | --- |
-| **17.15** | ✅ **Tested on real equipment** | Repeated full upgrades **and** downgrades (17.15.04 ↔ 17.15.05) on a Catalyst 9300, run from Nautobot 3.1: ledger-tracked add/activate/commit, engine-idle gating, copy progress + byte-exact verification, interrupted-run recovery. The behavioral baseline. |
-| **17.12** (EM) | 🔬 **May work — research-verified** | Cisco's published models are **identical to the tested baseline** in every area the job touches (operation ledger, sys-activity, byte units, all RPCs). No hardware run yet — do one supervised upgrade before fleet use. |
-| **17.9 / 17.10 / 17.11** | 🔬 **May work — research-verified** | Model-complete for the job's primary tier (ledger 17.8.1+, sys-activity 17.5.1+, byte-exact sizes 17.9.1+). 17.9 is the support floor. No hardware runs yet — supervised first upgrade required; note these trains snapshot older model revisions on early rebuilds. **Lifecycle**: 17.9 exited software maintenance in Aug 2025 — supported here strictly as an *escape source* (upgrade FROM it), never a target. |
-| **17.18** | ⏳ **Pending** | Models verified; additive changes (`op-reverted`, `install-version-state-unknown`) already handled in code. Awaiting a hardware run. |
-| **26.1** | ⏳ **Pending** | New unified numbering; install-oper is byte-identical to 17.18.1 and the restructured rpc inputs (mandatory choices) are satisfied by the job's payloads. Version logic verified for 26.x forms. Awaiting a hardware run. |
-| **17.5 – 17.8** | 🚫 **Refused by the job** | Their per-file sizes are kilobyte-described — the byte-exact copy verification would false-abort every transfer. A KB-tolerant accommodation was analyzed and **deliberately not built**: every train it would unlock has been past Cisco software maintenance for a year or more. |
-| **≤ 17.4** | 🚫 **Refused / impossible** | 17.3–17.4 lack the boot-mode/sys-activity leaves and the ledger; below 17.3.1 the install models don't exist; **16.12 is a hard wall**. |
+| **17.15** | ✅ **Primary — tested on real equipment** | Repeated full upgrades **and** downgrades (17.15.04 ↔ 17.15.05) on a Catalyst 9300, run from Nautobot 3.1: ledger-tracked add/activate/commit, engine-idle gating, copy progress + byte-exact verification, interrupted-run recovery. The behavioral baseline. |
+| **17.18** | ⏳ **Pending — future primary** | Models verified; additive changes (`op-reverted`, `install-version-state-unknown`) already handled in code. Awaiting a hardware run. |
+| **26.1** | ⏳ **Pending — future primary** | New unified numbering; install-oper is byte-identical to 17.18.1 and the restructured rpc inputs (mandatory choices) are satisfied by the job's payloads. Version logic verified for 26.x forms. Awaiting a hardware run. |
+| **17.12** (EM) | ✔️ **Supported — aging mainline** | Cisco's published models are **identical to the tested baseline** in every area the job touches (operation ledger, sys-activity, byte units, all RPCs). No hardware run yet — one supervised upgrade before fleet use. |
+| **17.9 / 17.10 / 17.11** | ⚠️ **Maybe — will not be tested or supported** | Model-complete on paper (17.9 is the floor), accepted strictly as an *escape source*: 17.9 exited Cisco software maintenance in Aug 2025. Upgrade FROM these, never to them; runs here are entirely at your own risk. |
+| **< 17.9** | 🚫 **Not supported — and never will be** | The job refuses these releases. |
 
 **Nautobot**: installed and synced successfully on **3.1 and 2.4**; **most
 testing — including every hardware upgrade — was done on 3.1**. Job execution
@@ -165,11 +176,9 @@ project's constraints. The key findings that shaped it:
   workflow is exposed via the `Cisco-IOS-XE-install-rpc` YANG model
   (`install` / `activate` / `install-commit` / `remove`), and the image transfer
   via the classic `Cisco-IOS-XE-rpc:copy` — run in a worker thread so the job
-  can poll copy **progress** from the on-device file size. None of this exists
-  on 16.12.x (verified against Cisco's published YANG models: install-rpc
-  appears in 17.2.1, install-oper in 17.3.1, the boot-mode leaf in 17.5.1). The
-  support floor is **17.9.1** — the lowest model-complete release; the job refuses
-  lower releases with guidance. (The async `xcopy` transfer was tried and
+  can poll copy **progress** from the on-device file size. The
+  support floor is **17.9.1** — the lowest model-complete release; the job
+  refuses anything older (see the support posture above). (The async `xcopy` transfer was tried and
   abandoned: 17.15.05 silently broke it in the field.)
 - **Software version/image data is now Nautobot _core_, not a plugin.**
   `dcim.SoftwareVersion` and `dcim.SoftwareImageFile` moved into core in
@@ -385,9 +394,6 @@ Everything actually depended on (`requests`, Nautobot core) is permissive
   (observed arming at 7200 s on 17.15.x).
 - **Rebuild letters compare equal to the base version** (a device on 17.15.4a
   targeted at 17.15.4 is treated as already-on-target).
-- **17.5–17.8 are refused** because of kilobyte-described file sizes; a
-  KB-tolerant copy-verification accommodation could unlock the 17.6 EM cohort
-  if ever needed (analyzed, not built).
 - Free-space and file-size reads use **release-dependent** q-filesystem paths
   (exact/stack-suffix partition match) — tunable via `constants.py` if a
   platform names its flash differently.
@@ -406,7 +412,6 @@ separate, agreed features:
   non-RESTCONF channel to bootstrap).
 - **Device Lifecycle Management** integration for **validated/approved-software
   gating** and CVE/EoL/contract context.
-- **16.12.x support** via a NETCONF/CLI path for the install step.
 - User-based **authorization/gating** of who may run upgrades.
 - Deeper stack/redundancy and post-upgrade interface/protocol health checks.
 
