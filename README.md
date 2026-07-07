@@ -83,10 +83,10 @@ Per IOS-XE train, spelled out — **Tested** means real Catalyst 9300 hardware:
 | --- | --- | --- |
 | **17.15** | ✅ **Tested on real equipment** | Repeated full upgrades **and** downgrades (17.15.04 ↔ 17.15.05) on a Catalyst 9300, run from Nautobot 3.1: ledger-tracked add/activate/commit, engine-idle gating, copy progress + byte-exact verification, interrupted-run recovery. The behavioral baseline. |
 | **17.12** (EM) | 🔬 **May work — research-verified** | Cisco's published models are **identical to the tested baseline** in every area the job touches (operation ledger, sys-activity, byte units, all RPCs). No hardware run yet — do one supervised upgrade before fleet use. |
-| **17.9 / 17.10 / 17.11** | 🔬 **May work — research-verified** | Model-complete for the job's primary tier (ledger 17.8.1+, sys-activity 17.5.1+, byte-exact sizes 17.9.1+). 17.9 is the support floor. No hardware runs yet — supervised first upgrade required; note these trains snapshot older model revisions on early rebuilds. |
+| **17.9 / 17.10 / 17.11** | 🔬 **May work — research-verified** | Model-complete for the job's primary tier (ledger 17.8.1+, sys-activity 17.5.1+, byte-exact sizes 17.9.1+). 17.9 is the support floor. No hardware runs yet — supervised first upgrade required; note these trains snapshot older model revisions on early rebuilds. **Lifecycle**: 17.9 exited software maintenance in Aug 2025 — supported here strictly as an *escape source* (upgrade FROM it), never a target. |
 | **17.18** | ⏳ **Pending** | Models verified; additive changes (`op-reverted`, `install-version-state-unknown`) already handled in code. Awaiting a hardware run. |
 | **26.1** | ⏳ **Pending** | New unified numbering; install-oper is byte-identical to 17.18.1 and the restructured rpc inputs (mandatory choices) are satisfied by the job's payloads. Version logic verified for 26.x forms. Awaiting a hardware run. |
-| **17.5 – 17.8** | 🚫 **Refused by the job** | Their per-file sizes are kilobyte-described — the byte-exact copy verification would false-abort every transfer. (A KB-tolerant accommodation is analyzed, not built.) |
+| **17.5 – 17.8** | 🚫 **Refused by the job** | Their per-file sizes are kilobyte-described — the byte-exact copy verification would false-abort every transfer. A KB-tolerant accommodation was analyzed and **deliberately not built**: every train it would unlock has been past Cisco software maintenance for a year or more. |
 | **≤ 17.4** | 🚫 **Refused / impossible** | 17.3–17.4 lack the boot-mode/sys-activity leaves and the ledger; below 17.3.1 the install models don't exist; **16.12 is a hard wall**. |
 
 **Nautobot**: installed and synced successfully on **3.1 and 2.4**; **most
@@ -137,10 +137,11 @@ The single-switch flow is **hardware-validated on 17.15.x**; wider scope is not.
 
 **Suggested test order (lab only)**
 
-1. **Install + register.** Sync the repo on a 2.4 nautobot-composer instance and
-   enable both Jobs; upload a `.bin` to the firmware server and run **Register
-   IOS-XE Image** with Dry-run, then for real; confirm the resulting
-   `SoftwareImageFile` / `SoftwareVersion` look correct.
+1. **Install + register.** Sync the repo on a **Nautobot 3.1** nautobot-composer
+   instance (the platform all hardware testing ran from) and enable both Jobs;
+   upload a `.bin` to the firmware server and run **Register IOS-XE Image** with
+   Dry-run, then for real; confirm the resulting `SoftwareImageFile` /
+   `SoftwareVersion` look correct.
 2. **Upgrade Dry-run.** Against one lab Catalyst 9300 (≥ 17.9.1, RESTCONF enabled,
    a Secrets Group assigned): run **Cisco IOS-XE Upgrade** with Dry-run on and
    confirm the reachability/auth, version-floor, install-mode, image-resolution,
@@ -149,8 +150,8 @@ The single-switch flow is **hardware-validated on 17.15.x**; wider scope is not.
 3. **Single real upgrade.** One non-production device — watch the Job Result log
    through copy → add → activate → reload → confirm → commit, and verify the
    auto-rollback timer actually arms.
-4. **Broaden.** Run one execution from **Nautobot 2.4**, then a **stack**, then
-   one supervised run per additional IOS-XE train, before any wider use.
+4. **Broaden.** A **stack** next, then one supervised run per additional IOS-XE
+   train, before any wider use.
 
 Until at least steps 1–3 pass in a lab, treat every run as experimental and keep
 Dry-run on.
