@@ -64,7 +64,11 @@ Feedback is mandatory and built in: every gate logs to the Job Result with the
 device attached, and a **Debug** toggle logs every RESTCONF request/response.
 Per-device failures don't stop the batch (the remaining devices still run),
 but **any device failure marks the whole Job Result FAILED** at the end — a
-green job means every selected device succeeded.
+green job means every selected device succeeded. **Durations are logged for
+change-window planning**: each device's result carries its total wall-clock
+time, and the reload reports the outage window (unreachable-for and
+reload-to-confirmed times), alongside the existing copy and install phase
+timings.
 
 See **[docs/upgrade-flow.md](docs/upgrade-flow.md)** for a flowchart of the
 per-device decision logic (editable [`upgrade-flow.drawio`](docs/upgrade-flow.drawio)).
