@@ -274,9 +274,12 @@ the device URL), optionally downloads + hash-verifies it, and records the
 `SoftwareVersion` too if you don't pick an existing one. It does not upload
 files — publish via Filebrowser first.
 
-Configure on the Nautobot worker: `FIRMWARE_BASE_URL` (device-facing base, e.g.
-`https://<host>:9443/images/`) and `FIRMWARE_INTERNAL_URL` (worker validation,
-default `http://firmware-download/images/`). Both are overridable per run.
+Configure on the Nautobot worker: `FIRMWARE_BASE_URL` (device-facing base,
+plain HTTP by default — e.g. `http://<host>:9080/images/` — because device TLS
+clients reject the firmware server's self-signed cert), `FIRMWARE_BASE_URL_HTTPS`
+(the HTTPS variant, stored instead when the job's **Use HTTPS URL** option is
+ticked), and `FIRMWARE_INTERNAL_URL` (worker validation, default
+`http://firmware-download/images/`). The base is overridable per run.
 
 See **[docs/image-storage.md](docs/image-storage.md)** for the full design: URL
 formats, the acquire → upload → register workflow, TLS notes, and retention.

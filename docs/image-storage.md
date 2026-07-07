@@ -16,7 +16,7 @@ the storage model:
    │ Nautobot core              │      │ "nautobot-composer" `firmware` profile │
    │  dcim.SoftwareVersion      │      │  • Filebrowser UI  :8088 (engineers)   │
    │  dcim.SoftwareImageFile    │      │  • nginx firmware-download             │
-   │   • download_url ──────────┼─────▶│      :9443 https / :9080 http (devices)│
+   │   • download_url ──────────┼─────▶│      :9080 http / :9443 https (devices)│
    │   • checksum + algorithm    │      │    shared volume, read-only, ACL       │
    │   • file size               │      └──────────────────────────────────────┘
    │   • mapped device types      │                 ▲              ▲
@@ -33,7 +33,7 @@ the storage model:
 - **The bytes live on the companion `nautobot-composer` stack's `firmware`
   profile** (opt-in). Two services share one volume:
   - **Filebrowser** (`:8088`, authenticated) — engineers upload/manage images.
-  - **nginx `firmware-download`** (`:9443` HTTPS / `:9080` HTTP, read-only) —
+  - **nginx `firmware-download`** (`:9080` HTTP / `:9443` HTTPS, read-only) —
     serves the same files to devices, **unauthenticated but network/ACL
     restricted**. Directory listing off; GET/HEAD only; `Content-Type:
     application/octet-stream`; HEAD returns a correct `Content-Length`; byte-range
@@ -45,8 +45,8 @@ Device-facing (this is what gets stored in `download_url` and handed to the
 device's `copy` RPC):
 
 ```
-https://<host>:9443/images/<filename>     # default HTTPS
-http://<host>:9080/images/<filename>      # HTTP fallback (locked-down VLAN)
+http://<host>:9080/images/<filename>      # DEFAULT — device TLS clients reject the self-signed cert
+https://<host>:9443/images/<filename>     # opt-in per run ("Use HTTPS URL") once devices trust the cert
 ```
 
 - `<filename>` is the exact uploaded name, Cisco-canonical (e.g.
@@ -67,11 +67,15 @@ Set these on the **Nautobot worker** environment (the Register job reads them):
 
 | Env var | Purpose | Default |
 |---|---|---|
-| `FIRMWARE_BASE_URL` | Device-facing base; `download_url = base + filename` | **required** (no default — the job aborts if unset, unless the per-run field or a full Download URL override is given) |
+| `FIRMWARE_BASE_URL` | Device-facing base (plain **HTTP**); `download_url = base + filename` | **required** (no default — the job aborts if unset, unless the per-run field or a full Download URL override is given) |
+| `FIRMWARE_BASE_URL_HTTPS` | HTTPS variant, used instead of the above when the job's **Use HTTPS URL** option is ticked | unset (the job aborts if the option is ticked without it) |
 | `FIRMWARE_INTERNAL_URL` | Worker validation base (internal HTTP); set `""` to disable | `http://firmware-download/images/` |
 
-Both are also overridable per run on the **Register IOS-XE Image** job
-(`firmware_base_url`, or a full `download_url_override`). Defaults live in
+The base is also overridable per run on the **Register IOS-XE Image** job
+(`firmware_base_url`, or a full `download_url_override` — explicit values win
+verbatim and the HTTPS toggle is ignored for them). The companion
+nautobot-composer `setup.sh` writes both base-URL variables into its `.env`,
+which is the `env_file` for the worker. Defaults live in
 [`jobs/constants.py`](../jobs/constants.py).
 
 ## Upload + registration workflow
@@ -95,7 +99,8 @@ Both are also overridable per run on the **Register IOS-XE Image** job
      optionally tick **Verify download** (worker downloads + hashes the file)
    - run **Dry-run** first, then for real.
 
-   The job builds the device `download_url` from `FIRMWARE_BASE_URL` + filename,
+   The job builds the device `download_url` from `FIRMWARE_BASE_URL` + filename
+   (or `FIRMWARE_BASE_URL_HTTPS` + filename with **Use HTTPS URL** ticked),
    validates the file is reachable (trying `FIRMWARE_INTERNAL_URL` first, then the
    device URL), records size + checksum, creates the `SoftwareVersion` if one
    wasn't selected, creates/updates the `SoftwareImageFile`, and maps it to the
@@ -103,13 +108,14 @@ Both are also overridable per run on the **Register IOS-XE Image** job
 
 ## TLS
 
-The firmware server's HTTPS cert is **self-signed by default**. IOS-XE
-the HTTPS transfer validates the server cert against the device's trustpoints,
-so for real device pulls either (a) the firmware server presents a CA-trusted
-cert the devices trust, (b) use the **HTTP** URL on a locked-down management
-VLAN, or (c) install the firmware server's CA in a device trustpoint
-(`crypto pki trustpoint` + `authenticate`) so the device's HTTPS client trusts
-the server.
+The firmware server's HTTPS cert is **self-signed by default**, and IOS-XE's
+HTTPS transfer validates the server cert against the device's trustpoints —
+which is why the stored `download_url` defaults to the **HTTP** endpoint on a
+locked-down management VLAN. To move device pulls to HTTPS: (a) have the
+firmware server present a CA-issued cert the devices trust, or (b) install the
+firmware server's CA in a device trustpoint (`crypto pki trustpoint` +
+`authenticate`) — then tick **Use HTTPS URL** on the Register job so new images
+store the `FIRMWARE_BASE_URL_HTTPS` link.
 
 Worker-side validation avoids the issue by using the internal **HTTP**
 `firmware-download` route. If you instead validate an HTTPS URL, **Verify repo

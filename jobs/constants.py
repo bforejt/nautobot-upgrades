@@ -201,11 +201,21 @@ HASHLIB_SUPPORTED = ("md5", "sha1", "sha224", "sha256", "sha384", "sha512")
 #: DEVICE-FACING base URL stored in SoftwareImageFile.download_url as
 #: "<base>/<filename>". Must be reachable from the device management network AND
 #: the Nautobot worker, and matches the firmware server's FIRMWARE_SERVER_NAME +
-#: HTTPS port (e.g. https://firmware.lab.example:9443/images/). REQUIRED: set this
-#: env var on the worker, or use the per-run field / a full Download URL override.
-#: There is intentionally NO default — the job aborts rather than guess a host and
-#: store a download_url devices can't reach.
+#: HTTP port (e.g. http://192.0.2.10:9080/images/ — the companion stack writes
+#: this into .env, plain HTTP by default because device HTTPS clients validate
+#: the server cert against their trustpoints and reject the self-signed one).
+#: REQUIRED: set this env var on the worker, or use the per-run field / a full
+#: Download URL override. There is intentionally NO default — the job aborts
+#: rather than guess a host and store a download_url devices can't reach.
 FIRMWARE_BASE_URL_ENV = "FIRMWARE_BASE_URL"
+
+#: HTTPS variant of the base URL (e.g. https://192.0.2.10:9443/images/), used
+#: instead of FIRMWARE_BASE_URL when the Register job's "Use HTTPS URL" option
+#: is selected — appropriate once the firmware server presents a CA-issued
+#: certificate the devices trust. The two are separate variables because the
+#: HTTPS endpoint differs in scheme AND port, so neither can be derived from
+#: the other. The companion stack writes both into .env.
+FIRMWARE_BASE_URL_HTTPS_ENV = "FIRMWARE_BASE_URL_HTTPS"
 
 #: INTERNAL URL the Celery worker uses to VALIDATE an image — it reaches the nginx
 #: "firmware-download" service directly on the Docker network (plain HTTP, no cert
