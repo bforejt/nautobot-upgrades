@@ -62,7 +62,7 @@ per-device decision logic (editable [`upgrade-flow.drawio`](docs/upgrade-flow.dr
 | --- | --- | --- |
 | **Nautobot** | **2.4 LTM** and **3.1+** | Installs/syncs verified on **2.4 and 3.1**; the end-to-end upgrade has run from **3.1**. **3.0 is untested and will stay that way** — it no longer receives maintenance now that 3.1 (the 3.x LTM designation) has shipped. Earlier 2.x (≥ 2.2) *may* work but is not tested or supported. |
 | **Deployment** | [nautobot-composer](#sister-project-nautobot-composer) | The sister Docker-Compose installer this Job is built to run on; it currently ships Nautobot 2.4 and 3.x. |
-| **Device OS** | Cisco IOS-XE **≥ 17.12.1** | Tested fleet baseline. 17.5.1–17.11 *may* work but is **not tested or supported**; below 17.5.1 the required models don't exist. |
+| **Device OS** | Cisco IOS-XE **≥ 17.12.1** (incl. 26.x) | Hardware-validated on **17.15.x**. Every YANG model the job touches was verified against Cisco's published **17.12.1, 17.18.1, and 26.1.1** models: 17.12.1 is identical to the validated baseline (incl. the operation ledger and sys-activity); 17.18.1/26.1.1 add `op-reverted` and `install-version-state-unknown` (both handled) and 26.1.1 restructures install/remove inputs into mandatory choices the job's payloads already satisfy. Model presence ≠ runtime behavior — run one supervised upgrade per new train before fleet use. 17.5.1–17.11 *may* work but is **not tested or supported**; below 17.5.1 the required models don't exist. Note: rebuild letters (e.g. 17.15.4**a**) compare equal to the base version. |
 | **Platform** | Catalyst **9300** (install mode) | Primary target, booted from `flash:packages.conf`. |
 
 There is no separate Python dependency matrix: the Job imports only `requests`
