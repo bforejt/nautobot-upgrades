@@ -6,11 +6,14 @@ Filebrowser UI, and a read-only nginx "firmware-download" service serves the sam
 files to devices. Nautobot is only the index.
 
 Given the uploaded file name, this Job builds the DEVICE-FACING download URL from
-a configurable base, validates the image is reachable (preferring the worker's
-internal route to the firmware-download service), optionally downloads +
-hash-verifies it, and records it as a core ``dcim.SoftwareImageFile`` mapped to
-the compatible device types — creating the ``dcim.SoftwareVersion`` too if one
-isn't selected. It does NOT upload the file; publish it via Filebrowser first.
+a configurable base — plain HTTP by default (FIRMWARE_BASE_URL; device HTTPS
+clients reject the firmware server's self-signed cert), or the HTTPS variant
+(FIRMWARE_BASE_URL_HTTPS) when the per-run "Use HTTPS URL" option is selected —
+validates the image is reachable (preferring the worker's internal route to the
+firmware-download service), optionally downloads + hash-verifies it, and records
+it as a core ``dcim.SoftwareImageFile`` mapped to the compatible device types —
+creating the ``dcim.SoftwareVersion`` too if one isn't selected. It does NOT
+upload the file; publish it via Filebrowser first.
 
 NOTE: brand new, not yet validated end-to-end. Run with Dry-run first.
 """
@@ -105,11 +108,23 @@ class RegisterImage(Job):
             "mapping matches — check this if you leave Device types blank."
         ),
     )
+    use_https_url = BooleanVar(
+        default=False,
+        label="Use HTTPS URL",
+        description=(
+            "Store the HTTPS download URL (FIRMWARE_BASE_URL_HTTPS on the worker) "
+            "instead of the default HTTP one (FIRMWARE_BASE_URL). Only sensible "
+            "when the firmware server presents a certificate the DEVICES trust — "
+            "they validate it against their trustpoints during the copy. Ignored "
+            "when an explicit base URL or Download URL override is given below."
+        ),
+    )
     firmware_base_url = StringVar(
         required=False,
         description=(
             "Device-facing base URL; download_url is built as <base>/<filename>. "
-            "Defaults to the FIRMWARE_BASE_URL env var on the worker; required if "
+            "Defaults to the FIRMWARE_BASE_URL env var on the worker (or "
+            "FIRMWARE_BASE_URL_HTTPS with 'Use HTTPS URL' selected); required if "
             "that is unset (unless you give a full Download URL override)."
         ),
     )
@@ -168,6 +183,7 @@ class RegisterImage(Job):
             "device_types",
             "image_status",
             "default_image",
+            "use_https_url",
             "firmware_base_url",
             "download_url_override",
             "expected_checksum",
@@ -201,6 +217,9 @@ class RegisterImage(Job):
         device_types,
         image_status,
         default_image,
+        # Default needed: scheduled/approval-queued runs created BEFORE this
+        # field existed replay their saved kwargs, which lack use_https_url.
+        use_https_url=False,
         firmware_base_url,
         download_url_override,
         expected_checksum,
@@ -252,7 +271,15 @@ class RegisterImage(Job):
                 version_text,
             )
 
-        device_url = self._device_url(file_name, firmware_base_url, download_url_override)
+        if use_https_url and ((firmware_base_url or "").strip() or (download_url_override or "").strip()):
+            self.logger.warning(
+                "'Use HTTPS URL' is selected but an explicit base URL / Download "
+                "URL override is given — the explicit value wins as written; the "
+                "HTTPS toggle only chooses between the worker's env-var defaults."
+            )
+        device_url = self._device_url(
+            file_name, firmware_base_url, download_url_override, use_https_url
+        )
         candidates = self._validation_candidates(file_name, device_url, download_url_override)
         version_label = software_version or f"new version '{new_version}' on {platform}"
         self.logger.info(
@@ -325,18 +352,35 @@ class RegisterImage(Job):
     # ------------------------------------------------------------------- URLs --
 
     @staticmethod
-    def _device_url(file_name, base_override, url_override):
-        """The device-facing URL stored in download_url."""
+    def _device_url(file_name, base_override, url_override, use_https):
+        """The device-facing URL stored in download_url.
+
+        Precedence: a full URL override verbatim; then the explicit base field;
+        then the worker env var — FIRMWARE_BASE_URL_HTTPS when 'Use HTTPS URL'
+        is selected, FIRMWARE_BASE_URL (plain HTTP, the default devices can
+        actually pull from) otherwise.
+        """
         override = (url_override or "").strip()
         if override:
             return override
-        base = (base_override or "").strip() or (os.getenv(C.FIRMWARE_BASE_URL_ENV) or "").strip()
+        env_var = C.FIRMWARE_BASE_URL_HTTPS_ENV if use_https else C.FIRMWARE_BASE_URL_ENV
+        base = (base_override or "").strip() or (os.getenv(env_var) or "").strip()
         if not base:
+            example = (
+                "https://<host>:9443/images/" if use_https else "http://<host>:9080/images/"
+            )
             raise RegisterAbort(
-                "No firmware base URL configured. Set the FIRMWARE_BASE_URL "
-                "environment variable on the Nautobot worker (e.g. "
-                "https://<host>:9443/images/), fill the 'Firmware base URL' field, "
-                "or provide a full 'Download URL override'."
+                f"No firmware base URL configured. Set the {env_var} environment "
+                f"variable on the Nautobot worker (e.g. {example}), fill the "
+                "'Firmware base URL' field, or provide a full 'Download URL "
+                "override'."
+                + (
+                    " (You selected 'Use HTTPS URL' — the companion stack only "
+                    "writes FIRMWARE_BASE_URL_HTTPS from its current setup.sh; "
+                    "re-run setup.sh there or add the variable to .env.)"
+                    if use_https
+                    else ""
+                )
             )
         return f"{base.rstrip('/')}/{file_name}"
 
