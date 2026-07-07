@@ -86,6 +86,18 @@ class LedgerOpFailure(UpgradeAbort):
     """
 
 
+def _fmt_duration(seconds):
+    """Human duration for planning logs: '47s', '14m32s', '1h02m'."""
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, secs = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m{secs:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes:02d}m"
+
+
 def _version_key(text):
     """((major, minor, patch), rebuild-letter) from any IOS-XE version string.
 
@@ -296,6 +308,7 @@ class IOSXEUpgrade(Job):
             self.logger.info("Filters applied: %s.", filter_summary)
         device_list = list(devices)
         for index, device in enumerate(device_list):
+            device_started = time.monotonic()
             try:
                 summary = self._upgrade_device(
                     device,
@@ -306,6 +319,9 @@ class IOSXEUpgrade(Job):
                     dryrun,
                     assume_install_mode,
                 )
+                # Total wall-clock per device — the number change windows are
+                # planned around.
+                summary = f"{summary} [total: {_fmt_duration(time.monotonic() - device_started)}]"
                 results[device.name] = summary
                 log_success(summary, extra={"object": device})
             except SoftTimeLimitExceeded:
@@ -322,18 +338,27 @@ class IOSXEUpgrade(Job):
                 )
                 raise
             except UpgradeAbort as exc:
-                results[device.name] = f"ABORTED: {exc}"
+                elapsed = _fmt_duration(time.monotonic() - device_started)
+                results[device.name] = f"ABORTED after {elapsed}: {exc}"
                 failed.append(device.name)
-                self.logger.error("Upgrade aborted: %s", exc, extra={"object": device})
+                self.logger.error(
+                    "Upgrade aborted after %s: %s", elapsed, exc, extra={"object": device}
+                )
             except RestconfError as exc:
                 hint = _auth_hint(exc.status_code)
-                results[device.name] = f"RESTCONF error: {exc}{hint}"
+                elapsed = _fmt_duration(time.monotonic() - device_started)
+                results[device.name] = f"RESTCONF error after {elapsed}: {exc}{hint}"
                 failed.append(device.name)
-                self.logger.error("RESTCONF error: %s%s", exc, hint, extra={"object": device})
+                self.logger.error(
+                    "RESTCONF error after %s: %s%s", elapsed, exc, hint, extra={"object": device}
+                )
             except Exception as exc:  # noqa: BLE001 - surface anything unexpected
-                results[device.name] = f"UNEXPECTED error: {exc}"
+                elapsed = _fmt_duration(time.monotonic() - device_started)
+                results[device.name] = f"UNEXPECTED error after {elapsed}: {exc}"
                 failed.append(device.name)
-                self.logger.error("Unexpected error: %s", exc, extra={"object": device})
+                self.logger.error(
+                    "Unexpected error after %s: %s", elapsed, exc, extra={"object": device}
+                )
         if failed:
             # Per-device isolation is deliberate (one bad device must not stop
             # the batch), but the JOB must not report green when any device
@@ -1590,14 +1615,25 @@ class IOSXEUpgrade(Job):
                 went_down = True  # observed the reboot (unreachable at least once)
             elif not online:
                 online = True
-                self.logger.info("Device is back online.", extra=log)
+                # The OUTAGE number for maintenance planning: this clock starts
+                # when the reload was confirmed to begin (activation confirmed /
+                # device dropped), so it includes the full dark window.
+                self.logger.info(
+                    "Device is back online — unreachable for ~%s from reload start.",
+                    _fmt_duration(time.monotonic() - started + C.RELOAD_INITIAL_SLEEP),
+                    extra=log,
+                )
             # Only accept the target AFTER we've seen the device go down, so a box
             # that never actually reloaded cannot satisfy the confirmation.
             if went_down and _version_key(booted) == target:
                 consecutive += 1
                 if consecutive >= 2:
                     self.logger.info(
-                        "Confirmed booted target version **%s** (stable).", booted, extra=log
+                        "Confirmed booted target version **%s** (stable; reload-to-"
+                        "confirmed: ~%s).",
+                        booted,
+                        _fmt_duration(time.monotonic() - started + C.RELOAD_INITIAL_SLEEP),
+                        extra=log,
                     )
                     return
             else:
