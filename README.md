@@ -418,3 +418,28 @@ separate, agreed features:
 ## License
 
 Apache License 2.0 — see [`LICENSE`](LICENSE).
+
+## Disclaimer
+
+This software is provided **"AS IS"**, without warranties or conditions of any
+kind, under the terms of the [Apache License 2.0](LICENSE) — including its
+**Disclaimer of Warranty (§7)** and **Limitation of Liability (§8)**:
+
+- **No warranty.** There is no warranty of any kind, express or implied —
+  including, without limitation, any warranties of merchantability, fitness
+  for a particular purpose, title, or non-infringement. You are solely
+  responsible for determining the appropriateness of using this software and
+  assume all risks of doing so.
+- **No liability.** In no event shall the authors, contributors, or copyright
+  holders be liable for any damages of any character arising from the use or
+  inability to use this software — including, without limitation, network
+  outages, device or hardware failure, data loss, loss of profits, or any
+  other commercial damage — even if advised of the possibility of such
+  damages.
+
+Be aware of what this tool does: it **copies software to, and reloads, live
+network equipment**. If you choose to run it in your own environment, you do so
+entirely **at your own risk** — validate in a lab first, follow the
+[suggested test order](#status--testing), keep Dry-run on until proven, and
+maintain your own change-control and rollback procedures. Use of this software
+constitutes acceptance of the license terms above.
