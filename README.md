@@ -138,6 +138,11 @@ stack, and lettered rebuilds** — all from Nautobot 3.1.
 - ✅ **Idempotent re-runs**: copy skipped when the exact file is on flash;
   add skipped when already staged.
 - ✅ **Rollback timer** confirmed arming on real activations.
+- ✅ **Remove inactive**: ledger-confirmed by the job and CLI-verified on the
+  switch (nothing left to delete afterward).
+- ✅ **Register Image checksum verification**: worker-computed MD5 over the
+  internal repo route matched Cisco's published value (~3 s for a full image —
+  the transfer never leaves the Docker host).
 - ✅ Installs / syncs as a Git Repository on **Nautobot 2.4 and 3.1**; both Jobs
   register. **Register IOS-XE Image**: upload → validate → record.
 - ✅ A long list of real-device truths encoded and regression-tested: boot-mode
@@ -146,8 +151,9 @@ stack, and lettered rebuilds** — all from Nautobot 3.1.
 
 **Not yet tested — do not assume these work**
 
-- ❌ **26.1** — models verified and code prepared; awaiting a hardware run.
-  (17.9/17.10/17.11 will not be tested by policy — escape sources only.)
+- ❌ **26.1** — models verified, code prepared, and the 26.01.01 image is
+  registered; awaiting the hardware run. (17.9/17.10/17.11 will not be tested
+  by policy — escape sources only.)
 - ❌ **Job execution from Nautobot 2.4** — installs/syncs verified there, but
   every hardware upgrade so far ran from 3.1. (**Nautobot 3.0** is untested by
   choice: unmaintained since 3.1 shipped.)
@@ -155,7 +161,7 @@ stack, and lettered rebuilds** — all from Nautobot 3.1.
   larger than 2 members; 17.18 on a stack.
 - ❌ **Failure paths on hardware**: auto-rollback expiry (activate without
   commit), a genuinely corrupt image, a member failing to rejoin.
-- ❌ The **Remove inactive** cleanup option (now ledger-tracked, still unrun).
+
 
 **Suggested test order (lab only)**
 
