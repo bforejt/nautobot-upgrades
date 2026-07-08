@@ -63,13 +63,8 @@ stopping on the first failure for a device:
 
 Feedback is mandatory and built in: every gate logs to the Job Result with the
 device attached, and a **Debug** toggle logs every RESTCONF request/response.
-Batches run **in parallel** (default 4 devices at a time, tunable 1–16 via the
-**Parallelism** input) — each device is fully independent, and per-device log
-entries interleave in time order while staying attributed to their device. If
-the job's time budget expires mid-batch, in-flight devices are **stopped at
-safe step boundaries** (never mid-decision), every device's outcome is
-accounted for, and the post-mortem names what completed, what stopped, and
-what never started — all safe to re-run.
+Batches run **in parallel** — see [Parallel batches](#parallel-batches) for
+mechanics, sizing guidance, and the time-budget behavior.
 Per-device failures don't stop the batch (the remaining devices still run),
 but **any device failure marks the whole Job Result FAILED** at the end — a
 green job means every selected device succeeded. **Durations are logged for
@@ -140,6 +135,11 @@ stack, and lettered rebuilds** — all from Nautobot 3.1.
   **all-members-rejoined gate** all ran live.
 - ✅ **Cross-train moves in both directions**: 17.12 → 17.15, 17.15 ↔ 17.18
   (17.15.5 → 17.18.3 → 17.15.5 on a single switch).
+- ✅ **26.1 in both directions**: single switch 17.15.5 → 26.1.1; batch
+  downgrade 26.1.1 → 17.15.4d (a lettered rebuild as the batch target).
+- ✅ **Batch mode (serial)**: a mixed batch (single switch + 2-member stack)
+  targeting 26.1.1 — the already-on-target device short-circuited correctly
+  while the batch proceeded — and a full batch downgrade.
 - ✅ **Lettered rebuilds as distinct versions**: 17.15.4 → **17.15.4d** →
   17.15.4 — upgrade and rollback.
 - ✅ **Operation-ledger tracking live on-device**: op records keyed by the
@@ -162,9 +162,11 @@ stack, and lettered rebuilds** — all from Nautobot 3.1.
 
 **Not yet tested — do not assume these work**
 
-- ❌ **26.1** — models verified, code prepared, and the 26.01.01 image is
-  registered; awaiting the hardware run. (17.9/17.10/17.11 will not be tested
-  by policy — escape sources only.)
+- ❌ **Parallel batch execution** — the feature is new and stabilizing: the
+  first parallel run surfaced (and fixed) worker-thread log loss; awaiting a
+  clean parallel batch before it graduates to Verified. Serial batches
+  (Parallelism = 1) are validated.
+  (17.9/17.10/17.11 will not be tested by policy — escape sources only.)
 - ❌ **Job execution from Nautobot 2.4** — installs/syncs verified there, but
   every hardware upgrade so far ran from 3.1. (**Nautobot 3.0** is untested by
   choice: unmaintained since 3.1 shipped.)
@@ -370,6 +372,41 @@ don't have; our upgrade is reload-based by design), and 17.15.x emits SELinux
 `%SELINUX-1-VIOLATION` AVC-denial spam for `smand`/`yang-infra` that is unrelated
 to the upgrade. The repeated `%DMI-5-AUTH_PASSED` entries are this job's own
 RESTCONF polling.
+
+### Parallel batches
+
+Batch runs upgrade up to **Parallelism** devices concurrently (default **4**,
+range 1–16; `1` = strictly one at a time). An upgrade is ~90 % waiting — copy,
+install, reload — so parallelism collapses batch wall-clock dramatically: a
+12-device batch at parallelism 4 is ~3 waves ≈ 90 minutes instead of ~6 hours
+serial. Each device's result line carries its own `[total: …]` for the
+change-window arithmetic.
+
+**Why it's safe**: every device is fully independent by construction — its own
+RESTCONF sessions, its own per-operation correlation uuids in the device's
+install ledger, its own gates and timers. Nothing is shared between device
+threads except the read-only job inputs.
+
+**Sizing Parallelism**: the practical limit is the firmware server's capacity
+for simultaneous image pulls (each device downloads the full image during its
+copy phase) and log readability. 4 is a comfortable default for the bundled
+nginx firmware server; raise it after watching a batch's copy-progress lines
+for signs of contention (all devices' transfer rates dropping together).
+
+**Reading the logs**: per-device entries interleave in **time order**, each
+still attributed to its device — use the Job Result's per-object filtering to
+read one device's story in isolation. The final per-device results table and
+the success/failure verdict are unchanged: **green still means every device
+succeeded**, and any failure marks the whole Job Result FAILED with winners
+and losers named.
+
+**If the job's time budget expires mid-batch** (soft time limit, default
+2 hours): in-flight devices are **stopped at safe step boundaries** — between
+steps, never mid-decision — within about one poll interval; queued devices are
+cancelled; and the post-mortem names three lists: completed, stopped/failed
+(each entry carries its reason), and never started. Everything is safe to
+re-run — the idempotent gates (copy/add skip-if-done, commit-to-be-safe) pick
+each device up where it stopped.
 
 ### Job inputs
 
