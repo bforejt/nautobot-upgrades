@@ -439,6 +439,12 @@ before any code path that can reach `activate` — the only disruptive verb.
 If plans change, a staged image is inert; `install remove inactive` (or the
 Remove-inactive option on a later run) reclaims the space.
 
+**The safe step is the default**: Run scope defaults to *Step 1 - Copy
+image*, so an actual upgrade requires **two deliberate acts** — unchecking
+Dry-run *and* selecting *Full* — and a forgotten dropdown can never reload a
+device (the run just stages and says so). Anyone automating runs via the API
+should pass `run_scope` explicitly.
+
 ### Job inputs
 
 | Input | Required | Purpose |
@@ -446,7 +452,7 @@ Remove-inactive option on a later run) reclaims the space.
 | Location / Role / Status / Platform / Device type / Current version / Tags | no | Optional filters that narrow the **Devices** picker for field operations. |
 | Devices | yes | Target devices to upgrade (narrowed by the filters above). |
 | Target version | yes | Core `SoftwareVersion` to upgrade to. |
-| Run scope | no | **full** (default) = complete upgrade; **stage-add** / **stage-copy** = pre-stage ahead of the window with no activate and no reload — see [Pre-staging](#pre-staging-stage-now-activate-in-the-window). |
+| Run scope | no | Order of operations, safest first: **Step 1 - Copy image** (**default** — a forgotten dropdown can never reload a device), **Steps 1 & 2 - Copy image and prep** (`install add`, no reload), **Full - Copy, Activate, Reload** (the only choice that reloads; a real upgrade requires selecting it deliberately). See [Pre-staging](#pre-staging-stage-now-activate-in-the-window). |
 | Secrets group override | no | Force one Secrets Group for the whole run; by default each device uses its own assigned group. |
 | Assume install mode | no | Proceed when boot mode can't be confirmed over RESTCONF (default **off** = fail closed; confirmed BUNDLE always aborts). Only needed for model drift — verify install mode manually first. |
 | Remove inactive | no | After commit, reclaim space (default **off** — keeps the rollback image for a soak period). |
