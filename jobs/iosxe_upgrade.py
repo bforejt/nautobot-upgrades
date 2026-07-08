@@ -51,6 +51,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 from celery.exceptions import SoftTimeLimitExceeded
+
+try:  # Celery task-context propagation into worker threads (see run()).
+    from celery import current_task
+    from celery.app import pop_current_task, push_current_task
+except ImportError:  # pragma: no cover - non-Celery environments (tests)
+    current_task = None
+    pop_current_task = push_current_task = None
 from django.db import close_old_connections, transaction
 from nautobot.apps.jobs import (
     BooleanVar,
@@ -309,6 +316,18 @@ class IOSXEUpgrade(Job):
         # Cooperative-stop signal for the time-budget path: worker threads
         # check it at every polling loop and halt at a safe boundary.
         self._stop = threading.Event()
+        # Nautobot's job-log handler binds records to the JobResult via
+        # celery.current_task — a THREAD-LOCAL. Worker threads start with no
+        # task context, so their log records would be silently dropped at the
+        # handler's `if current_task is None: return`. Capture the real task
+        # object here (main thread) so each worker can push it onto its own
+        # thread-local stack.
+        celery_task = None
+        if current_task is not None:
+            try:
+                celery_task = current_task._get_current_object()
+            except Exception:  # noqa: BLE001 - no task context (tests, shell)
+                celery_task = None
         self.logger.info(
             "Starting IOS-XE upgrade to **%s** for %d selected device(s)%s.",
             target_version,
@@ -341,6 +360,11 @@ class IOSXEUpgrade(Job):
             (the job logger and the Nautobot sync both hit the DB), so stale
             connections are closed on entry and exit.
             """
+            # Bind this thread to the Celery task so Nautobot's DB log
+            # handler can resolve the JobResult — without this, every log
+            # line from a worker thread is silently dropped.
+            if celery_task is not None and push_current_task is not None:
+                push_current_task(celery_task)
             close_old_connections()
             device_started = time.monotonic()
             try:
@@ -378,6 +402,8 @@ class IOSXEUpgrade(Job):
                 return device, f"UNEXPECTED error after {elapsed}: {exc}", True
             finally:
                 close_old_connections()
+                if celery_task is not None and pop_current_task is not None:
+                    pop_current_task()
 
         # Each device is fully independent (own RESTCONF sessions, own operation
         # uuids, own gates), so a batch runs up to 'parallelism' devices
