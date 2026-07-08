@@ -562,6 +562,20 @@ class IOSXEUpgrade(Job):
         image = self._resolve_image(device, target_version, log)
         self._gate_free_space(client, image, log)
 
+        # Advisory (info, not warning — leftover images are normal during soak
+        # periods): if a DIFFERENT version is staged/added, say so before we
+        # spend ~15 minutes on a copy the install engine may refuse.
+        entries, staged = self._inventory_other_versions(client, target_str)
+        if staged:
+            self.logger.info(
+                "Install DB also tracks other version(s): %s. If the install "
+                "engine refuses this run because %s is staged, either target "
+                "that version or clear it ('Remove inactive').",
+                "; ".join(entries),
+                " / ".join(staged),
+                extra=log,
+            )
+
         if dryrun:
             if run_scope == "stage-copy":
                 planned = (
@@ -1341,7 +1355,8 @@ class IOSXEUpgrade(Job):
         if error_text:
             raise UpgradeAbort(
                 f"install add was rejected by the install engine: {error_text} — "
-                "check 'show install log' and flash:.installer logs. If leftover "
+                f"{self._staged_hint(client, version_str)}"
+                "Check 'show install log' and flash:.installer logs. If leftover "
                 "packages from a prior life of this version exist, run 'install "
                 "remove inactive' and re-run this job."
             )
@@ -1349,7 +1364,15 @@ class IOSXEUpgrade(Job):
         # for our uuid completes (the version-state row appears at extract-done,
         # ~60-70s BEFORE the add's post-check phase finishes — gating on it
         # fired activates into a still-running add, which the engine drops).
-        outcome = self._await_op(client, op_uuid, C.ADD_TIMEOUT, log, "install add")
+        try:
+            outcome = self._await_op(client, op_uuid, C.ADD_TIMEOUT, log, "install add")
+        except LedgerOpFailure as exc:
+            # The engine recorded WHY it failed; add WHAT it says is staged —
+            # the "different version already staged" case in operator terms.
+            hint = self._staged_hint(client, version_str)
+            if hint:
+                raise LedgerOpFailure(f"{exc} {hint}") from exc
+            raise
         if outcome == "success":
             return True
         if outcome == "absent":
@@ -1411,6 +1434,51 @@ class IOSXEUpgrade(Job):
             C.ADD_TIMEOUT,
             sorted(final_tokens) or "none",
             extra=log,
+        )
+
+    def _inventory_other_versions(self, client, target_str):
+        """(entries, staged): friendly install-DB summary of NON-target versions.
+
+        Read fresh from the documented install-version-state-info rows; used to
+        explain "different version already staged" situations in the operator's
+        terms. Advisory only — a read failure returns empty rather than ever
+        breaking the run.
+        """
+        try:
+            data = client.get(C.DATA_INSTALL_OPER, ok_404=True) or {}
+        except RestconfError:
+            return [], []
+        target = _version_key(target_str)
+        labels = {
+            "pending": "staged — marked for activation",
+            "added": "added (available for activation)",
+            "uncommitted": "activated, NOT committed",
+            "committed": "committed",
+            "present": "files present, not staged",
+        }
+        entries = []
+        staged = []
+        for row in _find_version_rows(data):
+            version = str(row.get("version", "")).strip()
+            if not version or _version_key(version) == target:
+                continue
+            state_class = _classify_state(str(row.get("version-state", "")))
+            entries.append(
+                f"{version}: {labels.get(state_class, str(row.get('version-state', '?')))}"
+            )
+            if state_class in ("pending", "added"):
+                staged.append(version)
+        return entries, staged
+
+    def _staged_hint(self, client, target_str):
+        """One sentence for failure messages naming what IS staged, with exits."""
+        entries, staged = self._inventory_other_versions(client, target_str)
+        if not staged:
+            return ""
+        return (
+            f"The device reports: {'; '.join(entries)}. Either target the staged "
+            f"version ({', '.join(staged)}) or clear it first ('Remove inactive' "
+            "option, or CLI 'install remove inactive'), then re-run. "
         )
 
     def _check_stop(self):
