@@ -70,10 +70,16 @@ SPINE = [
      {"abort": ("error / timeout /\nmismatch", "Copy RPC failed/refused, timed out,\nor on-device size ≠ expected — abort"),
       "warn": ("size unknown", "No expected size → warn; rely on\ninstall add signature validation"),
       "passlabel": "match"}),
+    ("d_stagecopy", "dec", "Run scope =\nstage-copy?",
+     {"okright": ("Yes", "DONE: STAGED (copy) — window run\nwill skip the verified copy"),
+      "passlabel": "full / stage-add"}),
     ("roster", "proc", "Capture stack member roster\n(chassis serials from inventory)", {}),
     ("add", "proc",
      "install add (skipped if already staged) →\ntrack our op-uuid in the operation ledger\n"
      "to op-complete (state inference fallback)", {}),
+    ("d_stageadd", "dec", "Run scope =\nstage-add?",
+     {"okright": ("Yes", "DONE: STAGED (add) — marked for\nactivation; window run: activate →\nreload → commit only"),
+      "passlabel": "full"}),
     ("idle", "proc",
      "Engine-idle gate before EVERY install write:\nsys-activity = no-activity on all members\n"
      "(settle delay only pre-activate w/o signal)", {}),

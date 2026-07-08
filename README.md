@@ -3,19 +3,20 @@
 A native **Nautobot Job** that reliably and cautiously upgrades **Cisco IOS-XE**
 devices — **Catalyst 9300** primarily — driven entirely over **RESTCONF**.
 
-> ### Status: hardware-validated across trains — 17.12 → 17.15 ↔ 17.18, stacks, and rebuilds
+> ### Status: work in progress — core flow thoroughly lab-proven, active development ongoing
 >
-> Complete upgrades **and downgrades**, entirely over RESTCONF, have succeeded
-> repeatedly on real Catalyst 9300 hardware, run from a **Nautobot 3.1**
-> nautobot-composer deployment — including a **2-member stack**
-> (17.12.4 → 17.15.5 → 17.15.4) and a single switch walked through
-> 17.15.4 → **17.15.4d** (lettered rebuild) → 17.15.4 → 17.15.5 →
-> **17.18.3** → 17.15.5. The operation-ledger tracking, engine-idle gating,
-> stack member-rejoin gate, and interrupted-run recovery all ran live.
-> Remaining untested: **26.1, multi-device batches, Nautobot 2.4 job
-> execution, the Remove-inactive option, and hard failure paths** (rollback
-> expiry, a member failing to rejoin). **Always run with Dry-run first.** See
-> the [support matrix](#support-matrix) and [Status & testing](#status--testing).
+> The core upgrade/downgrade flow is **thoroughly tested on real Catalyst
+> 9300 hardware**: repeated upgrades **and downgrades**, entirely over
+> RESTCONF, across **17.12 → 17.15 ↔ 17.18 ↔ 26.1** — single switches, a
+> **2-member stack**, **lettered rebuilds** (17.15.4 ↔ 17.15.4d), serial
+> **batches** (including correct already-on-target short-circuits and a batch
+> downgrade), remove-inactive cleanup, and interrupted-run recovery — all
+> driven by the operation-ledger tracking and engine-idle gating the job
+> decides by. That said, this project is under **active development**: new
+> capabilities land frequently (parallel batches and pre-staging are the most
+> recent), each marked with its validation state in
+> [Status & testing](#status--testing). Expect change between releases, read
+> the Job Result logs, and **always run with Dry-run first**.
 
 ---
 
@@ -162,10 +163,13 @@ stack, and lettered rebuilds** — all from Nautobot 3.1.
 
 **Not yet tested — do not assume these work**
 
-- ❌ **Parallel batch execution** — the feature is new and stabilizing: the
-  first parallel run surfaced (and fixed) worker-thread log loss; awaiting a
-  clean parallel batch before it graduates to Verified. Serial batches
-  (Parallelism = 1) are validated.
+- 🔶 **Parallel batch execution** — implemented and running in the lab; the
+  first parallel run surfaced worker-thread log loss (fixed — Celery task +
+  request context propagation). Recent feature: watch the first runs. Serial
+  batches (Parallelism = 1) are fully validated.
+- 🔶 **Pre-staging (Run scope)** — new feature, not yet exercised on
+  hardware; it is a strict subset of the validated full flow (gates + copy,
+  optionally + add) that stops before activate.
   (17.9/17.10/17.11 will not be tested by policy — escape sources only.)
 - ❌ **Job execution from Nautobot 2.4** — installs/syncs verified there, but
   every hardware upgrade so far ran from 3.1. (**Nautobot 3.0** is untested by
@@ -408,6 +412,31 @@ cancelled; and the post-mortem names three lists: completed, stopped/failed
 re-run — the idempotent gates (copy/add skip-if-done, commit-to-be-safe) pick
 each device up where it stopped.
 
+### Pre-staging (stage now, activate in the window)
+
+An install-mode upgrade splits into a **harmless half** (copy the image;
+`install add` extracts, distributes to every stack member, and marks the
+version for activation — no reload, no boot change, nothing armed, a
+Cisco-supported resting state that survives power cycles) and the
+**disruptive half** (activate → reload → commit). The **Run scope** input
+lets you do the harmless half ahead of time:
+
+- **`stage-add`** (recommended): every pre-flight gate + copy + a
+  ledger-confirmed `install add`, then stop. The maintenance-window run
+  (scope `full`) skips the finished work automatically — the idempotent
+  gates recognize it — and needs only **activate → reload → commit**,
+  collapsing per-device window time to roughly the reload (~10–15 min).
+- **`stage-copy`**: stop after the size-verified copy — for fleets tight on
+  flash (staged packages roughly double the image's footprint until the
+  window).
+
+Staging causes **no outage**, so it is safe at high **Parallelism** during
+business hours, and pairs naturally with Nautobot's native job scheduling
+("stage the fleet overnight"). Structural guarantee: stage scopes return
+before any code path that can reach `activate` — the only disruptive verb.
+If plans change, a staged image is inert; `install remove inactive` (or the
+Remove-inactive option on a later run) reclaims the space.
+
 ### Job inputs
 
 | Input | Required | Purpose |
@@ -415,6 +444,7 @@ each device up where it stopped.
 | Location / Role / Status / Platform / Device type / Current version / Tags | no | Optional filters that narrow the **Devices** picker for field operations. |
 | Devices | yes | Target devices to upgrade (narrowed by the filters above). |
 | Target version | yes | Core `SoftwareVersion` to upgrade to. |
+| Run scope | no | **full** (default) = complete upgrade; **stage-add** / **stage-copy** = pre-stage ahead of the window with no activate and no reload — see [Pre-staging](#pre-staging-stage-now-activate-in-the-window). |
 | Secrets group override | no | Force one Secrets Group for the whole run; by default each device uses its own assigned group. |
 | Assume install mode | no | Proceed when boot mode can't be confirmed over RESTCONF (default **off** = fail closed; confirmed BUNDLE always aborts). Only needed for model drift — verify install mode manually first. |
 | Remove inactive | no | After commit, reclaim space (default **off** — keeps the rollback image for a soak period). |
