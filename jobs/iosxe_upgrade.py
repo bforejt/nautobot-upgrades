@@ -61,6 +61,7 @@ except ImportError:  # pragma: no cover - non-Celery environments (tests)
 from django.db import close_old_connections, transaction
 from nautobot.apps.jobs import (
     BooleanVar,
+    ChoiceVar,
     DryRunVar,
     IntegerVar,
     Job,
@@ -207,6 +208,24 @@ class IOSXEUpgrade(Job):
             "Software Image File must have a download URL and, ideally, a file size."
         ),
     )
+    run_scope = ChoiceVar(
+        choices=(
+            ("full", "Full upgrade (default)"),
+            ("stage-add", "Pre-stage: copy + install add — no activate, no reload"),
+            ("stage-copy", "Pre-stage: copy only"),
+        ),
+        default="full",
+        required=False,
+        description=(
+            "Pre-stage ahead of a maintenance window: 'stage-add' runs every "
+            "pre-flight gate, the copy, and a ledger-confirmed install add, then "
+            "STOPS — no activate, no reload, nothing armed; the staged image is a "
+            "supported resting state that survives power cycles. The window run "
+            "(scope 'full') then skips the finished work and needs only "
+            "activate → reload → commit. Staging causes no outage, so it is safe "
+            "at high Parallelism during business hours."
+        ),
+    )
     secrets_group_override = ObjectVar(
         model=SecretsGroup,
         required=False,
@@ -280,6 +299,7 @@ class IOSXEUpgrade(Job):
             "tags",
             "devices",
             "target_version",
+            "run_scope",
             "secrets_group_override",
             "assume_install_mode",
             "remove_inactive",
@@ -302,6 +322,7 @@ class IOSXEUpgrade(Job):
         tags,
         devices,
         target_version,
+        run_scope,
         secrets_group_override,
         assume_install_mode,
         remove_inactive,
@@ -389,6 +410,7 @@ class IOSXEUpgrade(Job):
                     debug,
                     dryrun,
                     assume_install_mode,
+                    run_scope,
                 )
                 # Total wall-clock per device — the number change windows are
                 # planned around.
@@ -511,6 +533,7 @@ class IOSXEUpgrade(Job):
         debug,
         dryrun,
         assume_install_mode,
+        run_scope="full",
     ):
         log = {"object": device}
 
@@ -540,15 +563,35 @@ class IOSXEUpgrade(Job):
         self._gate_free_space(client, image, log)
 
         if dryrun:
-            return (
-                f"DRY-RUN ok: would copy '{image.download_url}' to "
-                f"{C.TARGET_FS}{image.image_file_name} and install {target_str}. "
-                "All pre-flight gates passed."
-            )
+            if run_scope == "stage-copy":
+                planned = (
+                    f"would PRE-STAGE (copy only): '{image.download_url}' to "
+                    f"{C.TARGET_FS}{image.image_file_name} — no install activity"
+                )
+            elif run_scope == "stage-add":
+                planned = (
+                    f"would PRE-STAGE (copy + install add) {target_str} — no activate, no reload"
+                )
+            else:
+                planned = (
+                    f"would copy '{image.download_url}' to "
+                    f"{C.TARGET_FS}{image.image_file_name} and install {target_str}"
+                )
+            return f"DRY-RUN ok: {planned}. All pre-flight gates passed."
 
         # -- 3. Transfer + integrity (classic copy in a worker thread, watched
         # to a size-verified completion inside _copy_image) --------------------
         self._copy_image(client, image, log)
+
+        if run_scope == "stage-copy":
+            # Pre-staging stops HERE, structurally before any code path that
+            # can reach activate (the only disruptive verb). Nothing is armed;
+            # nothing reloads; a re-run skips the verified copy.
+            return (
+                f"STAGED (copy): '{image.image_file_name}' is on {C.TARGET_FS} "
+                "and size-verified. Run again with scope 'full' during the "
+                "maintenance window — the copy will be skipped."
+            )
 
         # -- 4. install add / activate (verified started) / reload -----------
         # Capture the stack member roster first: after the reload, every member
@@ -565,6 +608,17 @@ class IOSXEUpgrade(Job):
         # ledger is keyed by it, so per-operation uuids keep the tracking exact
         # (one shared uuid would make add records vouch for the commit).
         ledger_confirmed_add = self._install_add(client, image, str(uuid_lib.uuid4()), log)
+        if run_scope == "stage-add":
+            # Pre-staging stops HERE — the image is extracted, distributed to
+            # every member, and marked for activation in the install DB (a
+            # supported resting state that survives power cycles; no rollback
+            # timer armed, boot variable untouched). The window run needs only
+            # activate -> reload -> commit.
+            return (
+                f"STAGED (add): {target_str} is marked for activation. The "
+                "maintenance-window run (scope 'full') will skip the copy and "
+                "the add, and needs only activate → reload → commit."
+            )
         self._wait_for_engine_idle(
             client, log, "install activate", settle_fallback=not ledger_confirmed_add
         )
