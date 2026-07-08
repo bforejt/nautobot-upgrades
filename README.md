@@ -81,7 +81,7 @@ per-device decision logic (editable [`upgrade-flow.drawio`](docs/upgrade-flow.dr
 
 | Component | Supported | Notes |
 | --- | --- | --- |
-| **Nautobot** | **2.4 LTM** and **3.1+** | Installs/syncs verified on **2.4 and 3.1**; the end-to-end upgrade has run from **3.1**. **3.0 is untested and will stay that way** — it no longer receives maintenance now that 3.1 (the 3.x LTM designation) has shipped. Earlier 2.x (≥ 2.2) *may* work but is not tested or supported. |
+| **Nautobot** | **2.4 LTM** and **3.1+** | End-to-end upgrades verified from **both 3.1 and 2.4.36** (most testing volume on 3.1). **3.0 is untested and will stay that way** — it no longer receives maintenance now that 3.1 (the 3.x LTM designation) has shipped. Earlier 2.x (≥ 2.2) *may* work but is not tested or supported. |
 | **Deployment** | [nautobot-composer](#sister-project-nautobot-composer) | The sister Docker-Compose installer this Job is built to run on; it currently ships Nautobot 2.4 and 3.x. |
 | **Device OS** | Cisco IOS-XE **≥ 17.9.1** (incl. 26.x) | Hardware-validated on **17.15.x**; every YANG model the job touches verified against Cisco's published models from 17.9.1 through 26.1.1. See the [support posture](#support-posture) for the per-train breakdown. Model presence ≠ runtime behavior — run one supervised upgrade per new train before fleet use. Rebuild letters (e.g. 17.15.4**d**) are **distinct versions** — base → rebuild upgrades (and rebuild rollbacks) are supported. |
 | **Platform** | Catalyst **9300** (install mode) | Primary target, booted from `flash:packages.conf`. |
@@ -90,31 +90,26 @@ per-device decision logic (editable [`upgrade-flow.drawio`](docs/upgrade-flow.dr
 
 The posture is deliberate, in priority order:
 
-1. **17.15 and 17.18 first** — stable mainline code, hardware-tested; the
-   platforms this job is built and validated against. (26.1 joins this tier
-   when validated — the code is already prepared for it.)
+1. **17.15, 17.18, and 26.1 first** — current mainline code, all
+   hardware-tested; the platforms this job is built and validated against.
 2. **17.12** — aging but still supportable mainline; **hardware-validated as
    an upgrade source** (a 2-member stack was lifted 17.12.4 → 17.15.5).
    Upgrading *to* 17.12 remains untested and unrecommended (install current
    mainline instead).
-3. **17.9** — a *maybe*: the job accepts it as the floor so parked fleets can
-   be lifted off it, but there is **no intention to test or support it** —
-   escape source only, never a target.
-4. **Older than 17.9** — **not supported, and never will be.** The job refuses
-   these releases.
+3. **17.9 – 17.11** — **not tested, but might work**: model-complete on paper
+   (17.9 is the floor), best suited as an escape source for parked fleets.
+4. **Older than 17.9** — **not supported.** The job refuses these releases.
 
 | IOS-XE train | Status | Basis |
 | --- | --- | --- |
-| **17.15** | ✅ **Primary — tested on real equipment** | Repeated full upgrades **and** downgrades on single switches **and a 2-member stack**, run from Nautobot 3.1 — including the **lettered rebuild cycle** (17.15.4 → 17.15.4d → 17.15.4) and cross-train moves to/from 17.12 and 17.18. Ledger-tracked add/activate/commit, engine-idle gating, member-rejoin gate, copy progress + byte-exact verification, interrupted-run recovery. The behavioral baseline. |
-| **17.18** | ✅ **Primary — tested on real equipment** | Upgrade **and** downgrade validated on a Catalyst 9300 (17.15.5 → 17.18.3 → 17.15.5). The 17.18 model additions (`op-reverted`, `install-version-state-unknown`) are handled in code. Not yet run on a stack. |
-| **26.1** | ⏳ **Pending — future primary** | New unified numbering; install-oper is byte-identical to 17.18.1 and the restructured rpc inputs (mandatory choices) are satisfied by the job's payloads. Version logic verified for 26.x forms. Awaiting a hardware run. |
-| **17.12** (EM) | ✔️ **Supported — hardware-validated as a source** | A **2-member stack running 17.12.4 was upgraded to 17.15.5** on real equipment — the models (ledger, sys-activity, byte units) behaved identically to the baseline, as the research predicted. Upgrading **to** 17.12 remains untested; target current mainline instead. |
-| **17.9 / 17.10 / 17.11** | ⚠️ **Maybe — will not be tested or supported** | Model-complete on paper (17.9 is the floor), accepted strictly as an *escape source*: 17.9 exited Cisco software maintenance in Aug 2025. Upgrade FROM these, never to them; runs here are entirely at your own risk. |
-| **< 17.9** | 🚫 **Not supported — and never will be** | The job refuses these releases. |
+| **17.12 / 17.15 / 17.18 / 26.1** | ✅ **Tested and working on real equipment** | Repeated full upgrades **and** downgrades across all four trains on Catalyst 9300s — single switches and a **2-member stack** (17.12.4 → 17.15.5 → 17.15.4), the **lettered rebuild cycle** (17.15.4 ↔ 17.15.4d), cross-era moves in both directions (17.15.5 ↔ 17.18.3, 17.15.5 → 26.1.1, 26.1.1 → 17.18.3 and back down to 17.15.x), and serial **batches** including a batch downgrade. Ledger-tracked add/activate/commit, engine-idle gating, member-rejoin gate, byte-exact copy verification, remove-inactive, and interrupted-run recovery all exercised live. |
+| **17.9 / 17.10 / 17.11** | ⚠️ **Not tested — might work** | Model-complete on paper (17.9 is the support floor; every YANG model the job touches verified against Cisco's published 17.9.1–17.11.1 models). Best suited as an *escape source*: 17.9 exited Cisco software maintenance in Aug 2025 — upgrade FROM it rather than to it. Run one supervised upgrade before relying on it. |
+| **< 17.9** | 🚫 **Not supported** | The job refuses these releases (key models/units are missing or unreliable below the floor). |
 
-**Nautobot**: installed and synced successfully on **3.1 and 2.4**; **most
-testing — including every hardware upgrade — was done on 3.1**. Job execution
-from 2.4 is untested.
+**Nautobot**: installed, synced, and **job execution verified on both 3.1
+and 2.4** (a full 26.1.1 → 17.18.3 device install ran end-to-end from a stock
+Nautobot **2.4.36** outside the nautobot-composer environment). Most testing
+volume remains on 3.1.
 
 There is no separate Python dependency matrix: the Job imports only `requests`
 plus Nautobot core, so whatever ships with the supported Nautobot release suffices.
@@ -157,6 +152,11 @@ stack, and lettered rebuilds** — all from Nautobot 3.1.
   the transfer never leaves the Docker host).
 - ✅ Installs / syncs as a Git Repository on **Nautobot 2.4 and 3.1**; both Jobs
   register. **Register IOS-XE Image**: upload → validate → record.
+- ✅ **Job execution from Nautobot 2.4.36**: a full 26.1.1 → 17.18.3 device
+  install ran end-to-end from a stock 2.4.36 outside nautobot-composer.
+- ✅ **Pre-staging exercised**: a version staged via Run scope was correctly
+  held on the device, and a follow-up run targeting a *different* version was
+  correctly refused by the install engine (the failure condition behaves).
 - ✅ A long list of real-device truths encoded and regression-tested: boot-mode
   leaf naming, version-state semantics, silent RPC drops during the post-add
   compatibility probe, junk version identifiers, KB-vs-byte size units.
@@ -167,15 +167,15 @@ stack, and lettered rebuilds** — all from Nautobot 3.1.
   first parallel run surfaced worker-thread log loss (fixed — Celery task +
   request context propagation). Recent feature: watch the first runs. Serial
   batches (Parallelism = 1) are fully validated.
-- 🔶 **Pre-staging (Run scope)** — new feature, not yet exercised on
-  hardware; it is a strict subset of the validated full flow (gates + copy,
-  optionally + add) that stops before activate.
-  (17.9/17.10/17.11 will not be tested by policy — escape sources only.)
-- ❌ **Job execution from Nautobot 2.4** — installs/syncs verified there, but
-  every hardware upgrade so far ran from 3.1. (**Nautobot 3.0** is untested by
-  choice: unmaintained since 3.1 shipped.)
-- ❌ **Multi-device batches** and 9300 models beyond those in the lab; stacks
-  larger than 2 members; 17.18 on a stack.
+- 🔶 **Pre-staging (Run scope)** — recent feature: staging itself has been
+  exercised on hardware, but the full timed cycle (stage midday → window run
+  collapsing to ~reload time) hasn't been measured yet. It is a strict subset
+  of the validated full flow that stops before activate.
+- ❌ **17.9 / 17.10 / 17.11** — not tested; might work (see the support
+  matrix). **Nautobot 3.0** is untested by choice: unmaintained since 3.1
+  shipped.
+- ❌ **9300 models beyond those in the lab**; stacks larger than 2 members;
+  17.18/26.1 on a stack.
 - ❌ **Failure paths on hardware**: auto-rollback expiry (activate without
   commit), a genuinely corrupt image, a member failing to rejoin.
 
