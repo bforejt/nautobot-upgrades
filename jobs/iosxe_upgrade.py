@@ -1,4 +1,4 @@
-"""Cisco IOS-XE (Catalyst 9300) software upgrade Job — RESTCONF only.
+"""Cisco IOS-XE software upgrade Job (Catalyst 9300 family, C8000V) — RESTCONF only.
 
 This Job upgrades one or more Cisco IOS-XE devices to a target software version
 using INSTALL mode, driven entirely over RESTCONF. It behaves like a cautious
@@ -6,7 +6,10 @@ engineer: every step is a PASS/FAIL gate, and the job stops on the first failed
 gate for a device rather than pushing forward.
 
 Scope (kept deliberately small):
-  * IOS-XE Catalyst 9300, devices currently running >= 17.9.1 — the lowest
+  * IOS-XE devices running >= 17.9.1: the Catalyst 9300 family (9300 /
+    9300L / 9300LM / 9300X — one shared cat9k image and install flow) and the
+    Catalyst 8000V (autonomous mode; its bootflash: filesystem is discovered
+    from the device automatically). 17.9.1 is the lowest
     release where every model the job relies on is complete (operation ledger
     17.8.1+, sys-activity/boot-mode 17.5.1+, byte-exact file sizes 17.9.1+).
     17.5-17.8 are refused (their file sizes are kilobyte-described, which
@@ -141,7 +144,7 @@ def _version_tuple(text):
 
 
 class IOSXEUpgrade(Job):
-    """Upgrade Cisco IOS-XE Catalyst 9300 devices over RESTCONF (install mode)."""
+    """Upgrade Cisco IOS-XE devices (9300 family, C8000V) over RESTCONF install mode."""
 
     # --- Optional filters: narrow the device picker for field operations ------
     location = MultiObjectVar(
@@ -281,8 +284,8 @@ class IOSXEUpgrade(Job):
         name = "Cisco IOS-XE Upgrade (RESTCONF)"
         description = (
             "Conservative, gate-driven IOS-XE install-mode upgrade for Catalyst "
-            "9300 devices, driven entirely over RESTCONF. Requires devices running "
-            "IOS-XE >= 17.9.1 with RESTCONF enabled."
+            "9300-family switches and Catalyst 8000V routers, entirely over "
+            "RESTCONF. Requires IOS-XE >= 17.9.1 with RESTCONF enabled."
         )
         has_sensitive_variables = False
         dryrun_default = True
@@ -564,7 +567,12 @@ class IOSXEUpgrade(Job):
         self._gate_install_mode(client, log, assume_install_mode)
 
         image = self._resolve_image(device, target_version, log)
-        self._gate_free_space(client, image, log)
+        # Discover the writable filesystem from the device itself (flash: on
+        # Catalyst switches, bootflash: on C8000V) — every downstream step
+        # (space gate, copy destination, install add path) uses this value.
+        # Per-device local, never instance state: device threads run in parallel.
+        target_fs = self._discover_target_fs(client, log)
+        self._gate_free_space(client, image, log, target_fs)
 
         # Advisory (info, not warning — leftover images are normal during soak
         # periods): if a DIFFERENT version is staged/added, say so before we
@@ -584,7 +592,7 @@ class IOSXEUpgrade(Job):
             if run_scope == "stage-copy":
                 planned = (
                     f"would PRE-STAGE (copy only): '{image.download_url}' to "
-                    f"{C.TARGET_FS}{image.image_file_name} — no install activity"
+                    f"{target_fs}{image.image_file_name} — no install activity"
                 )
             elif run_scope == "stage-add":
                 planned = (
@@ -593,20 +601,20 @@ class IOSXEUpgrade(Job):
             else:
                 planned = (
                     f"would copy '{image.download_url}' to "
-                    f"{C.TARGET_FS}{image.image_file_name} and install {target_str}"
+                    f"{target_fs}{image.image_file_name} and install {target_str}"
                 )
             return f"DRY-RUN ok: {planned}. All pre-flight gates passed."
 
         # -- 3. Transfer + integrity (classic copy in a worker thread, watched
         # to a size-verified completion inside _copy_image) --------------------
-        self._copy_image(client, image, log)
+        self._copy_image(client, image, log, target_fs)
 
         if run_scope == "stage-copy":
             # Pre-staging stops HERE, structurally before any code path that
             # can reach activate (the only disruptive verb). Nothing is armed;
             # nothing reloads; a re-run skips the verified copy.
             return (
-                f"STAGED (copy): '{image.image_file_name}' is on {C.TARGET_FS} "
+                f"STAGED (copy): '{image.image_file_name}' is on {target_fs} "
                 "and size-verified. Run again with scope 'full' during the "
                 "maintenance window — the copy will be skipped."
             )
@@ -625,7 +633,9 @@ class IOSXEUpgrade(Job):
         # Each write gets its OWN correlation uuid: the engine's operation
         # ledger is keyed by it, so per-operation uuids keep the tracking exact
         # (one shared uuid would make add records vouch for the commit).
-        ledger_confirmed_add = self._install_add(client, image, str(uuid_lib.uuid4()), log)
+        ledger_confirmed_add = self._install_add(
+            client, image, str(uuid_lib.uuid4()), log, target_fs
+        )
         if run_scope == "stage-add":
             # Pre-staging stops HERE — the image is extracted, distributed to
             # every member, and marked for activation in the install DB (a
@@ -1014,18 +1024,56 @@ class IOSXEUpgrade(Job):
                 return image
         return None if require_default else images[0]
 
-    def _gate_free_space(self, client, image, log):
+    def _discover_target_fs(self, client, log):
+        """The device's writable install filesystem, read from the DEVICE.
+
+        Catalyst switches call it 'flash'; IOS-XE routers (Catalyst 8000V)
+        call it 'bootflash'. Rather than configuring this per platform, ask
+        q-filesystem which partitions actually exist and pick the first
+        supported candidate — an API answer, not an inference. Fail closed
+        when nothing matches: every later step (space gate, copy destination,
+        install add path) depends on it.
+        """
+        data = self._read_q_filesystem(client) or {}
+        names = {
+            str(partition.get("name", "")).strip().rstrip(":").lower()
+            for partition in _find_partitions(data)
+        }
+        for candidate in C.TARGET_FS_CANDIDATES:
+            if any(
+                name == candidate
+                or name.startswith(candidate + "-")
+                or name.startswith(candidate + ":")
+                for name in names
+            ):
+                target_fs = f"{candidate}:"
+                if candidate != C.TARGET_FS_CANDIDATES[0]:
+                    self.logger.info(
+                        "Target filesystem discovered from the device: %s",
+                        target_fs,
+                        extra=log,
+                    )
+                return target_fs
+        raise UpgradeAbort(
+            "Could not identify the target filesystem: the device's "
+            f"q-filesystem partitions ({sorted(names) or 'none readable'}) "
+            f"match none of {C.TARGET_FS_CANDIDATES}. If this platform names "
+            "its writable filesystem differently, add it to "
+            "TARGET_FS_CANDIDATES in constants.py."
+        )
+
+    def _gate_free_space(self, client, image, log, target_fs):
         # 'install add' distributes packages to EVERY stack member, so the gate
-        # is the MINIMUM free space across all matching flash partitions (one
-        # per member on a stack; exactly one on a standalone switch).
+        # is the MINIMUM free space across all matching partitions of the
+        # DISCOVERED filesystem (one per member on a stack; exactly one on a
+        # standalone switch or a C8000V).
         data = self._read_q_filesystem(client)
-        frees = _flash_frees(data or {}, C.TARGET_FS_NAMES)
+        frees = _flash_frees(data or {}, (target_fs.rstrip(":"),))
         if not frees:
             raise UpgradeAbort(
-                "Could not confirm free space on the target filesystem over "
-                "RESTCONF. The partition name or path may differ on this release / "
-                "platform — adjust TARGET_FS_NAMES / DATA_Q_FILESYSTEM in "
-                "constants.py. Refusing to copy without confirming space."
+                f"Could not confirm free space on {target_fs} over RESTCONF "
+                "even though the partition was just discovered — transient "
+                "read failure? Refusing to copy without confirming space."
             )
         free = min(f for _, f in frees)
         if len(frees) > 1:
@@ -1140,7 +1188,7 @@ class IOSXEUpgrade(Job):
 
     # ------------------------------------------------- helpers: device writes --
 
-    def _copy_image(self, client, image, log):
+    def _copy_image(self, client, image, log, target_fs):
         """Run the classic copy RPC in a worker thread and watch its progress.
 
         The classic Cisco-IOS-XE-rpc:copy BLOCKS for the whole transfer (chosen
@@ -1150,7 +1198,7 @@ class IOSXEUpgrade(Job):
         match is the transfer-integrity gate, and 'install add' image-signature
         validation remains the cryptographic backstop.
         """
-        dest = f"{C.TARGET_FS}{image.image_file_name}"
+        dest = f"{target_fs}{image.image_file_name}"
         expected = image.image_file_size
         pre_data = self._read_q_filesystem(client) or {}
         pre_size = _file_size_bytes(pre_data, image.image_file_name)
@@ -1319,8 +1367,8 @@ class IOSXEUpgrade(Job):
                 extra=log,
             )
 
-    def _install_add(self, client, image, op_uuid, log):
-        path = f"{C.TARGET_FS}{image.image_file_name}"
+    def _install_add(self, client, image, op_uuid, log, target_fs):
+        path = f"{target_fs}{image.image_file_name}"
         version_str = image.software_version.version
         # NOTE (verified on a real 17.15.4): install-version-state-in-progress
         # ("marked for activation") is the NORMAL resting state of an added,
