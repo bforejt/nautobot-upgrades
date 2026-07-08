@@ -84,7 +84,7 @@ per-device decision logic (editable [`upgrade-flow.drawio`](docs/upgrade-flow.dr
 | **Nautobot** | **2.4 LTM** and **3.1+** | End-to-end upgrades verified from **both 3.1 and 2.4.36** (most testing volume on 3.1). **3.0 is untested and will stay that way** — it no longer receives maintenance now that 3.1 (the 3.x LTM designation) has shipped. Earlier 2.x (≥ 2.2) *may* work but is not tested or supported. |
 | **Deployment** | [nautobot-composer](#sister-project-nautobot-composer) | The sister Docker-Compose installer this Job is built to run on; it currently ships Nautobot 2.4 and 3.x. |
 | **Device OS** | Cisco IOS-XE **≥ 17.9.1** (incl. 26.x) | Hardware-validated on **17.15.x**; every YANG model the job touches verified against Cisco's published models from 17.9.1 through 26.1.1. See the [support posture](#support-posture) for the per-train breakdown. Model presence ≠ runtime behavior — run one supervised upgrade per new train before fleet use. Rebuild letters (e.g. 17.15.4**d**) are **distinct versions** — base → rebuild upgrades (and rebuild rollbacks) are supported. |
-| **Platform** | Catalyst **9300** (install mode) | Primary target, booted from `flash:packages.conf`. |
+| **Platform** | Catalyst **9300 family** + **C8000V** | 9300 hardware-tested; **9300L/LM/X** run the identical cat9k image, install flow, and YANG bundle (validation run pending). **Catalyst 8000V** (autonomous mode): all required models verified in Cisco's c8000v capability files; its `bootflash:` filesystem is **discovered from the device** (hardware run pending). Nexus/NX-OS is a different OS and API — not supported. |
 
 ### Support posture
 
@@ -176,8 +176,10 @@ stack, and lettered rebuilds** — all from Nautobot 3.1.
 - ❌ **17.9 / 17.10 / 17.11** — not tested; might work (see the support
   matrix). **Nautobot 3.0** is untested by choice: unmaintained since 3.1
   shipped.
-- ❌ **9300 models beyond those in the lab**; stacks larger than 2 members;
-  17.18/26.1 on a stack.
+- ❌ **9300L/LM/X validation run** (identical image/flow — expected boring)
+  and the **C8000V hardware run** (filesystem discovery + models verified on
+  paper); other 9300 models beyond those in the lab; stacks larger than
+  2 members; 17.18/26.1 on a stack.
 - ❌ **Failure paths on hardware**: auto-rollback expiry (activate without
   commit), a genuinely corrupt image, a member failing to rejoin.
 
@@ -474,10 +476,12 @@ should pass `run_scope` explicitly.
 
 Release- and site-specific knobs live in [`jobs/constants.py`](jobs/constants.py):
 the version floor, target filesystem (`flash:`) and its **partition-name match**
-(`TARGET_FS_NAMES`), timeouts, and space headroom (~2× the image size). The
-filesystem operational data path and partition naming can drift between IOS-XE
-releases/platforms — if the free-space gate can't read anything, adjust
-`DATA_Q_FILESYSTEM` / `TARGET_FS_NAMES` for your release.
+(`TARGET_FS_CANDIDATES`), timeouts, and space headroom (~2× the image size).
+The target filesystem is **discovered from each device's own q-filesystem
+data** (`flash:` on Catalyst switches, `bootflash:` on C8000V) — if a platform
+names its writable filesystem something else entirely, add it to
+`TARGET_FS_CANDIDATES`; if the free-space read fails, check
+`DATA_Q_FILESYSTEM` for your release.
 
 ## Reuse & licensing analysis
 

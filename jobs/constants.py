@@ -23,14 +23,15 @@ RESTCONF_PORT = 443
 #: CA) for a stricter posture.
 VERIFY_TLS = False
 
-#: Writable filesystem on a Catalyst 9300 (the C9000 upgrade guide uses flash:).
-TARGET_FS = "flash:"
-
-#: Partition name(s) of the target filesystem in the platform-software-oper data.
-#: Matched by exact name OR a stack-member suffix (e.g. "flash", "flash-1",
-#: "flash:1") — NOT as a loose substring, so "bootflash"/"usbflash" never match.
-#: Add aliases here if a release/platform names the writable flash differently.
-TARGET_FS_NAMES = ("flash",)
+#: Candidate names for the device's writable install filesystem, in preference
+#: order. The job DISCOVERS which one the device actually has by reading its
+#: q-filesystem partitions per device (state over inference): Catalyst
+#: switches report "flash" (Catalyst 9300 family incl. 9300L/LM/X), IOS-XE
+#: routers such as the Catalyst 8000V report "bootflash". Matched by exact
+#: name OR a stack-member suffix ("flash-1", "flash:1") — never as a loose
+#: substring, so "usbflash"/"crashinfo" can never match. Add a name here if a
+#: platform calls its writable filesystem something else entirely.
+TARGET_FS_CANDIDATES = ("flash", "bootflash")
 
 # --- Version gating ---------------------------------------------------------
 
