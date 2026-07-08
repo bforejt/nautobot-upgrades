@@ -98,13 +98,15 @@ The posture is deliberate, in priority order:
    mainline instead).
 3. **17.9 – 17.11** — **not tested, but might work**: model-complete on paper
    (17.9 is the floor), best suited as an escape source for parked fleets.
-4. **Older than 17.9** — **not supported.** The job refuses these releases.
+4. **Older than 17.9** — **not supported.** The job cannot execute as
+   written there — key API components are missing — so it refuses these
+   releases.
 
 | IOS-XE train | Status | Basis |
 | --- | --- | --- |
 | **17.12 / 17.15 / 17.18 / 26.1** | ✅ **Tested and working on real equipment** | Repeated full upgrades **and** downgrades across all four trains on Catalyst 9300s — single switches and a **2-member stack** (17.12.4 → 17.15.5 → 17.15.4), the **lettered rebuild cycle** (17.15.4 ↔ 17.15.4d), cross-era moves in both directions (17.15.5 ↔ 17.18.3, 17.15.5 → 26.1.1, 26.1.1 → 17.18.3 and back down to 17.15.x), and serial **batches** including a batch downgrade. Ledger-tracked add/activate/commit, engine-idle gating, member-rejoin gate, byte-exact copy verification, remove-inactive, and interrupted-run recovery all exercised live. |
 | **17.9 / 17.10 / 17.11** | ⚠️ **Not tested — might work** | Model-complete on paper (17.9 is the support floor; every YANG model the job touches verified against Cisco's published 17.9.1–17.11.1 models). Best suited as an *escape source*: 17.9 exited Cisco software maintenance in Aug 2025 — upgrade FROM it rather than to it. Run one supervised upgrade before relying on it. |
-| **< 17.9** | 🚫 **Not supported** | The job refuses these releases (key models/units are missing or unreliable below the floor). |
+| **< 17.9** | 🚫 **Not supported** | The job refuses these releases because it **cannot execute as written: key API components are missing** below the floor (the RESTCONF install models and reliable file-size reporting the job is built on). |
 
 **Nautobot**: installed, synced, and **job execution verified on both 3.1
 and 2.4** (a full 26.1.1 → 17.18.3 device install ran end-to-end from a stock
