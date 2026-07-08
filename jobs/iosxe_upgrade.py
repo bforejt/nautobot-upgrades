@@ -316,18 +316,29 @@ class IOSXEUpgrade(Job):
         # Cooperative-stop signal for the time-budget path: worker threads
         # check it at every polling loop and halt at a safe boundary.
         self._stop = threading.Event()
-        # Nautobot's job-log handler binds records to the JobResult via
-        # celery.current_task — a THREAD-LOCAL. Worker threads start with no
-        # task context, so their log records would be silently dropped at the
-        # handler's `if current_task is None: return`. Capture the real task
-        # object here (main thread) so each worker can push it onto its own
-        # thread-local stack.
+        # Nautobot's job-log handler binds records to the JobResult through
+        # TWO separate Celery thread-locals (verified against Nautobot's
+        # add_nautobot_log_handler + celery's TaskFormatter):
+        #   1. current_task — the handler's `if current_task is None: return`;
+        #   2. task.request (the REQUEST stack) — TaskFormatter stamps
+        #      record.task_id from task.request.id; a worker thread sees a
+        #      blank Context (id=None), the JobResult lookup fails, and the
+        #      record is silently dropped even with the task pushed.
+        # Capture BOTH in the main thread so each worker can push them onto
+        # its own thread-local stacks.
         celery_task = None
+        celery_request = None
         if current_task is not None:
             try:
                 celery_task = current_task._get_current_object()
+                if celery_task is not None:
+                    request = celery_task.request
+                    # Only a real in-worker request carries the task id; a
+                    # blank default Context would reintroduce the silent drop.
+                    celery_request = request if getattr(request, "id", None) else None
             except Exception:  # noqa: BLE001 - no task context (tests, shell)
                 celery_task = None
+                celery_request = None
         self.logger.info(
             "Starting IOS-XE upgrade to **%s** for %d selected device(s)%s.",
             target_version,
@@ -360,11 +371,13 @@ class IOSXEUpgrade(Job):
             (the job logger and the Nautobot sync both hit the DB), so stale
             connections are closed on entry and exit.
             """
-            # Bind this thread to the Celery task so Nautobot's DB log
-            # handler can resolve the JobResult — without this, every log
-            # line from a worker thread is silently dropped.
+            # Bind this thread to the Celery task AND its request context so
+            # Nautobot's DB log handler can resolve the JobResult — without
+            # both, every log line from a worker thread is silently dropped.
             if celery_task is not None and push_current_task is not None:
                 push_current_task(celery_task)
+                if celery_request is not None:
+                    celery_task.request_stack.push(celery_request)
             close_old_connections()
             device_started = time.monotonic()
             try:
@@ -403,6 +416,8 @@ class IOSXEUpgrade(Job):
             finally:
                 close_old_connections()
                 if celery_task is not None and pop_current_task is not None:
+                    if celery_request is not None:
+                        celery_task.request_stack.pop()
                     pop_current_task()
 
         # Each device is fully independent (own RESTCONF sessions, own operation
