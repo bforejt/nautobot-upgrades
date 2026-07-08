@@ -210,20 +210,24 @@ class IOSXEUpgrade(Job):
     )
     run_scope = ChoiceVar(
         choices=(
-            ("full", "Full upgrade (default)"),
-            ("stage-add", "Pre-stage: copy + install add — no activate, no reload"),
-            ("stage-copy", "Pre-stage: copy only"),
+            # Listed in pipeline order; the SAFE step is the default so a
+            # forgotten dropdown can never reload a device (a real upgrade
+            # requires deliberately selecting Full).
+            ("stage-copy", "Step 1 - Copy image (default)"),
+            ("stage-add", "Steps 1 & 2 - Copy image and prep"),
+            ("full", "Full - Copy, Activate, Reload"),
         ),
-        default="full",
+        default="stage-copy",
         required=False,
         description=(
-            "Pre-stage ahead of a maintenance window: 'stage-add' runs every "
-            "pre-flight gate, the copy, and a ledger-confirmed install add, then "
-            "STOPS — no activate, no reload, nothing armed; the staged image is a "
-            "supported resting state that survives power cycles. The window run "
-            "(scope 'full') then skips the finished work and needs only "
-            "activate → reload → commit. Staging causes no outage, so it is safe "
-            "at high Parallelism during business hours."
+            "Order of operations: copy the image to the device (Step 1) → prep "
+            "it for activation (Step 2, 'install add' — extracted, distributed "
+            "to all members, marked for activation; no reload, nothing armed) → "
+            "activate + reload + commit (Full — THE ONLY CHOICE THAT RELOADS). "
+            "The safe copy-only step is the default; each later run skips work "
+            "already done, so staging ahead collapses the maintenance window to "
+            "roughly the reload. Staging causes no outage and is safe at high "
+            "Parallelism during business hours."
         ),
     )
     secrets_group_override = ObjectVar(
