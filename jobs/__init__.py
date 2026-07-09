@@ -8,7 +8,8 @@ submodules are not discovered unless registration is wired through
 
 from nautobot.apps.jobs import register_jobs
 
+from .cancel_run import CancelUpgradeRun
 from .iosxe_upgrade import IOSXEUpgrade
 from .register_image import RegisterImage
 
-register_jobs(IOSXEUpgrade, RegisterImage)
+register_jobs(CancelUpgradeRun, IOSXEUpgrade, RegisterImage)
