@@ -443,6 +443,11 @@ before any code path that can reach `activate` — the only disruptive verb.
 If plans change, a staged image is inert; `install remove inactive` (or the
 Remove-inactive option on a later run) reclaims the space.
 
+**Clean-then-stage** for tight-flash devices (4 GB 9200s, 8 GB C8000V
+profiles): tick *Clean device first* together with a stage scope — the device
+is groomed by the install engine, the free-space gate evaluates the cleaned
+flash, and the staged image lands with maximum headroom.
+
 **The safe step is the default**: Run scope defaults to *Step 1 - Copy
 image*, so an actual upgrade requires **two deliberate acts** — unchecking
 Dry-run *and* selecting *Full* — and a forgotten dropdown can never reload a

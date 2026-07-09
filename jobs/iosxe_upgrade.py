@@ -25,14 +25,20 @@ Upgrade flow (per device):
   1. Idempotency: if already on target, commit it if it is merely activated
      (cancelling a pending rollback), else no-op
   2. Pre-flight gates: version floor, install-mode (fail-closed), image
-     resolution + compatibility, free-space (minimum across stack members)
+     resolution + compatibility; optional operator-requested CLEAN (remove
+     inactive/staged software — the deliberate staged-conflict override);
+     target-filesystem discovery from the device; free-space (minimum across
+     stack members, evaluated on the cleaned flash)
   3. Classic copy RPC in a worker thread, with the on-device file size polled
      for progress reporting and a size verification on completion
+     (Run scope 'stage-copy' STOPS here — staged, nothing armed)
   4. install add -> tracked to COMPLETION in the engine's operation ledger
      (install-oper / install-oper-hist records keyed by our RPC uuid; install
-     state inference only as a fallback) -> engine-idle gate (sys-activity) ->
-     install activate (non-ISSU, by full internal version; re-sent on
-     ledger-absent evidence; rollback timer checked after reload) -> reload
+     state inference only as a fallback; Run scope 'stage-add' STOPS here) ->
+     engine-idle gate (sys-activity) -> install activate (non-ISSU, by full
+     internal version; re-sent on ledger-absent evidence; ledger-ENGAGED runs
+     get an extended budget for microcode reprogramming; rollback timer
+     checked after reload) -> reload
   5. Poll until the target version actually booted AND every pre-upgrade
      stack member rejoined -> install commit (ledger-tracked)
   6. Post-checks + sync Nautobot's Device.software_version
@@ -581,6 +587,12 @@ class IOSXEUpgrade(Job):
         self._gate_install_mode(client, log)
 
         image = self._resolve_image(device, target_version, log)
+        # Operator-requested pre-upgrade clean (deliberate override of the
+        # staged-conflict stop) — never in dry-run (it writes). Runs BEFORE the
+        # free-space gate so the gate evaluates the CLEANED flash.
+        if clean_before and not dryrun:
+            self._clean_device(client, target_str, log)
+
         # Discover the writable filesystem from the device itself (flash: on
         # Catalyst switches, bootflash: on C8000V) — every downstream step
         # (space gate, copy destination, install add path) uses this value.
@@ -617,11 +629,6 @@ class IOSXEUpgrade(Job):
                     "wireless-aware mode is built.",
                     extra=log,
                 )
-
-        # Operator-requested pre-upgrade clean (deliberate override of the
-        # staged-conflict stop) — never in dry-run (it writes).
-        if clean_before and not dryrun:
-            self._clean_device(client, target_str, log)
 
         # Advisory (info, not warning — leftover images are normal during soak
         # periods): if a DIFFERENT version is staged/added, say so before we
