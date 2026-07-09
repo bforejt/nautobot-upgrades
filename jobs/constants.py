@@ -41,7 +41,7 @@ TARGET_FS_CANDIDATES = ("flash", "bootflash")
 #: install-location-information[]/oper-state; 'install-mode' is kept as a
 #: fallback for releases that may name it differently. NOTE: the leaf was ADDED
 #: in IOS-XE 17.5.1 (install-oper revision 2021-03-01); every supported release
-#: (>= 17.12.1) has it, so assume_install_mode exists only for naming/model drift.
+#: (>= 17.9.1) has it; if a release renames the leaf, add the new name here.
 BOOT_MODE_KEYS = ("boot-mode", "install-mode")
 
 #: Minimum IOS-XE release the job supports. Boundaries (verified against
@@ -116,11 +116,19 @@ MEMBER_CHECK_TIMEOUT = 300
 #: immediate read false-warns.
 COMMIT_CONFIRM_TIMEOUT = 300
 
-#: How long to wait for the activation to actually START after the activate RPC
-#: (state turns activated/uncommitted, or the device drops offline to reload).
-#: The RPC returns 2xx even when the install engine rejects it — e.g. 'add in
-#: progress' — so the state change is the real gate.
+#: How long to wait for the activate to REGISTER (ledger record / state move /
+#: reload) after the RPC. Applies only while the operation ledger has NOT yet
+#: listed our request: re-sends fire within this window, and a request that
+#: never registers in 10 minutes is dead. Once the ledger shows the op
+#: RUNNING, the budget switches to ACTIVATE_ENGAGED_TIMEOUT below.
 ACTIVATE_START_TIMEOUT = 600
+
+#: How long an ENGAGED activation (ledger-confirmed running) may take before
+#: the job gives up waiting. Activations that reprogram microcode/ROMMON —
+#: field-observed on microcode downgrades — legitimately exceed 10 minutes;
+#: while the device's own ledger says the op is running, the evidence-based
+#: choice is to keep waiting. Recorded failures still abort immediately.
+ACTIVATE_ENGAGED_TIMEOUT = 3600
 
 #: Engine-activity gate before every install-engine write. The oper-state
 #: 'sys-activity' leaf (typedef install-system-activity: install-no-activity /

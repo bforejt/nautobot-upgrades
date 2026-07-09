@@ -485,7 +485,6 @@ verb, which stays human:
 | Target version | yes | Core `SoftwareVersion` to upgrade to. |
 | Run scope | no | Order of operations, safest first: **Step 1 - Copy image** (**default** — a forgotten dropdown can never reload a device), **Steps 1 & 2 - Copy image and prep** (`install add`, no reload), **Full - Copy, Activate, Reload** (the only choice that reloads; a real upgrade requires selecting it deliberately). See [Pre-staging](#pre-staging-stage-now-activate-in-the-window). |
 | Secrets group override | no | Force one Secrets Group for the whole run; by default each device uses its own assigned group. |
-| Assume install mode | no | Proceed when boot mode can't be confirmed over RESTCONF (default **off** = fail closed; confirmed BUNDLE always aborts). Only needed for model drift — verify install mode manually first. |
 | Remove inactive | no | After commit, reclaim space (default **off** — keeps the rollback image for a soak period). |
 | Parallelism | no | Devices upgraded concurrently (default **4**, max 16; 1 = serial). Size to the firmware server's capacity for simultaneous image pulls. |
 | Debug | no | Verbose RESTCONF request/response logging. |
