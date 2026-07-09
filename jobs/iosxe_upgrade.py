@@ -38,9 +38,11 @@ Upgrade flow (per device):
   6. Post-checks + sync Nautobot's Device.software_version
   7. Optional: install remove inactive (off by default)
 
-NOTE: This project is brand new and has NOT been validated against real
-hardware. Treat the exact RESTCONF payloads/paths as research-derived and verify
-in a lab before production use. Always run with Dry-run first.
+NOTE: The core flow is hardware-validated (Catalyst 9300 single switches and
+a 2-member stack; trains 17.12 -> 17.15 <-> 17.18 <-> 26.1; lettered rebuilds;
+serial batches; from Nautobot 3.1 and 2.4). The project remains under active
+development - new capabilities carry their validation state in the README -
+and every run should start with Dry-run.
 """
 
 from __future__ import annotations
