@@ -244,15 +244,6 @@ class IOSXEUpgrade(Job):
             "set this only to force a single group for this run."
         ),
     )
-    assume_install_mode = BooleanVar(
-        default=False,
-        description=(
-            "Proceed even if INSTALL vs BUNDLE boot mode cannot be confirmed over "
-            "RESTCONF (e.g. a release names the boot-mode leaf differently). Off "
-            "(default) = fail closed; a confirmed BUNDLE always aborts. Verify "
-            "install mode manually ('show version') before enabling."
-        ),
-    )
     remove_inactive = BooleanVar(
         label="Remove inactive (after commit)",
         default=False,
@@ -315,7 +306,6 @@ class IOSXEUpgrade(Job):
             "target_version",
             "run_scope",
             "secrets_group_override",
-            "assume_install_mode",
             "remove_inactive",
             "parallelism",
             "debug",
@@ -338,7 +328,6 @@ class IOSXEUpgrade(Job):
         target_version,
         run_scope,
         secrets_group_override,
-        assume_install_mode,
         remove_inactive,
         parallelism,
         debug,
@@ -423,7 +412,6 @@ class IOSXEUpgrade(Job):
                     remove_inactive,
                     debug,
                     dryrun,
-                    assume_install_mode,
                     run_scope,
                 )
                 # Total wall-clock per device — the number change windows are
@@ -546,7 +534,6 @@ class IOSXEUpgrade(Job):
         remove_inactive,
         debug,
         dryrun,
-        assume_install_mode,
         run_scope="full",
     ):
         log = {"object": device}
@@ -571,7 +558,7 @@ class IOSXEUpgrade(Job):
 
         # -- 2. Pre-flight gates ---------------------------------------------
         self._gate_version_floor(current, log)
-        self._gate_install_mode(client, log, assume_install_mode)
+        self._gate_install_mode(client, log)
 
         image = self._resolve_image(device, target_version, log)
         # Discover the writable filesystem from the device itself (flash: on
@@ -921,7 +908,7 @@ class IOSXEUpgrade(Job):
             )
         self.logger.info("Version floor gate passed (>= %s).", floor, extra=log)
 
-    def _gate_install_mode(self, client, log, assume_install_mode):
+    def _gate_install_mode(self, client, log):
         data = client.get(C.DATA_INSTALL_OPER, ok_404=True)
         if not data:
             # install-oper entirely unreadable: every later gate (add/commit/
@@ -929,8 +916,7 @@ class IOSXEUpgrade(Job):
             # opt-in rather than run writes against an unobservable device.
             raise UpgradeAbort(
                 "Could not read Cisco-IOS-XE-install-oper data; RESTCONF may lack "
-                "the install model. The operational gates cannot function — refusing "
-                "(assume_install_mode does not override an unreadable model)."
+                "the install model. The operational gates cannot function — refusing."
             )
         # Collect the boot mode of EVERY member. The leaf is 'boot-mode' (17.15.x:
         # typedef install-boot-mode, values install-boot-mode-{unknown,install,
@@ -963,22 +949,17 @@ class IOSXEUpgrade(Job):
                 f"Unrecognized boot mode(s) {unconfirmed}; refusing (fail-closed). "
                 "Verify the device is in install mode."
             )
-        # No boot-mode leaf found (unexpected on >= 17.12.1 — likely leaf-name
-        # drift), or the device reports
-        # the explicit 'unknown' enum: only the opt-in proceeds.
+        # No boot-mode leaf found, or the device reports the explicit 'unknown'
+        # enum. Every supported release publishes this leaf (17.5.1+), so this
+        # firing means leaf-name drift on a new release/platform — a situation
+        # worth STOPPING for, not asserting through (the former
+        # assume_install_mode override was removed deliberately).
         detail = f"read: {suffixes}" if suffixes else "no boot-mode value found"
-        if assume_install_mode:
-            self.logger.warning(
-                "Boot mode unconfirmed in install-oper (%s); assume_install_mode is "
-                "set, so proceeding. Verify with 'show version'.",
-                detail,
-                extra=log,
-            )
-            return
         raise UpgradeAbort(
-            f"Boot mode unconfirmed in install-oper ({detail}). Set "
-            "'assume_install_mode' to proceed, or verify the device is in install "
-            "mode."
+            f"Boot mode unconfirmed in install-oper ({detail}). Verify the device "
+            "is in install mode ('show version'), and if it is, this release "
+            "likely renamed the leaf — add the new name to BOOT_MODE_KEYS in "
+            "constants.py and report it as an issue."
         )
 
     def _resolve_image(self, device, target_version, log):
@@ -1882,10 +1863,18 @@ class IOSXEUpgrade(Job):
                 absent_streak = 0
                 if not engaged:
                     engaged = True
+                    # Evidence-based budget switch: the device's own ledger says
+                    # the activation is RUNNING, so the short did-it-register
+                    # window no longer applies. Long activations are real —
+                    # microcode/ROMMON reprogramming on downgrades has been
+                    # field-observed to exceed 10 minutes.
+                    deadline = started + C.ACTIVATE_ENGAGED_TIMEOUT
                     self.logger.info(
                         "Activate operation registered in the ledger (%s); "
-                        "waiting for the reload...",
+                        "waiting for the reload (budget extended to %ds — "
+                        "microcode reprogramming can take a while)...",
                         detail,
+                        C.ACTIVATE_ENGAGED_TIMEOUT,
                         extra=log,
                     )
             else:
@@ -1915,7 +1904,7 @@ class IOSXEUpgrade(Job):
                     detail,
                     sorted(tokens) or "none",
                     int(time.monotonic() - started),
-                    C.ACTIVATE_START_TIMEOUT,
+                    C.ACTIVATE_ENGAGED_TIMEOUT if engaged else C.ACTIVATE_START_TIMEOUT,
                     extra=log,
                 )
         if engaged:
@@ -1925,10 +1914,11 @@ class IOSXEUpgrade(Job):
             raise UpgradeAbort(
                 f"The activate is IN FLIGHT per the operation ledger (last phase: "
                 f"{last_detail}) but did not produce a reload within "
-                f"{C.ACTIVATE_START_TIMEOUT}s. DO NOT re-run or modify the device "
-                "until it settles — watch 'show install summary'; the reload may "
-                "still occur. If this is a large stack, raise "
-                "ACTIVATE_START_TIMEOUT in constants.py."
+                f"{C.ACTIVATE_ENGAGED_TIMEOUT}s. DO NOT re-run or modify the "
+                "device until it settles — watch 'show install summary'; the "
+                "reload may still occur. For very slow activations (large stacks, "
+                "extensive microcode reprogramming), raise "
+                "ACTIVATE_ENGAGED_TIMEOUT in constants.py."
             )
         if resends:
             raise UpgradeAbort(
