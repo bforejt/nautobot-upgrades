@@ -252,10 +252,15 @@ class IOSXEUpgrade(Job):
         ),
     )
     remove_inactive = BooleanVar(
+        label="Remove inactive (after commit)",
         default=False,
         description=(
-            "After a successful commit, run 'install remove inactive' to reclaim "
-            "space. Off by default so the previous image is kept for a soak period."
+            "AFTER this run's successful commit, run 'install remove inactive' "
+            "to reclaim space. Off by default so the previous image is kept for "
+            "a soak period. This does NOT clear previously staged images before "
+            "an upgrade — a different staged version aborts the run with a "
+            "warning instead, deliberately: it usually means another change is "
+            "already in flight on that device."
         ),
     )
     parallelism = IntegerVar(
@@ -610,9 +615,14 @@ class IOSXEUpgrade(Job):
         entries, staged = self._inventory_other_versions(client, target_str)
         if staged:
             self.logger.info(
-                "Install DB also tracks other version(s): %s. If the install "
-                "engine refuses this run because %s is staged, either target "
-                "that version or clear it ('Remove inactive').",
+                "Install DB also tracks other version(s): %s. A staged version "
+                "(%s) usually means someone ALREADY prepared an upgrade on this "
+                "device — if this run targets something else, check for a "
+                "change in flight before proceeding. The install engine may "
+                "refuse this run; clearing staged code is a deliberate manual "
+                "act (CLI 'install remove inactive' — the job's Remove-inactive "
+                "option runs only AFTER a successful commit and does not do "
+                "this).",
                 "; ".join(entries),
                 " / ".join(staged),
                 extra=log,
@@ -1558,9 +1568,13 @@ class IOSXEUpgrade(Job):
         if not staged:
             return ""
         return (
-            f"The device reports: {'; '.join(entries)}. Either target the staged "
-            f"version ({', '.join(staged)}) or clear it first ('Remove inactive' "
-            "option, or CLI 'install remove inactive'), then re-run. "
+            f"The device reports: {'; '.join(entries)}. A different staged "
+            f"version ({', '.join(staged)}) usually means another upgrade was "
+            "already prepared on this device — verify no change is in flight "
+            "before clearing it. To proceed with THIS version instead: clear "
+            "the staged code deliberately (CLI 'install remove inactive' — the "
+            "job's Remove-inactive option runs only after a successful commit "
+            "and does not clear staged images), then re-run. "
         )
 
     def _check_stop(self):
