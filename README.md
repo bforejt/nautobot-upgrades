@@ -458,6 +458,11 @@ before any code path that can reach `activate` — the only disruptive verb.
 If plans change, a staged image is inert; `install remove inactive` (or the
 Remove-inactive option on a later run) reclaims the space.
 
+**Clean-then-stage** for tight-flash devices (4 GB 9200s, 8 GB C8000V
+profiles): tick *Clean device first* together with a stage scope — the device
+is groomed by the install engine, the free-space gate evaluates the cleaned
+flash, and the staged image lands with maximum headroom.
+
 **The safe step is the default**: Run scope defaults to *Step 1 - Copy
 image*, so an actual upgrade requires **two deliberate acts** — unchecking
 Dry-run *and* selecting *Full* — and a forgotten dropdown can never reload a
@@ -498,6 +503,7 @@ verb, which stays human:
 | Location / Role / Status / Platform / Device type / Current version / Tags | no | Optional filters that narrow the **Devices** picker for field operations. |
 | Devices | yes | Target devices to upgrade (narrowed by the filters above). |
 | Target version | yes | Core `SoftwareVersion` to upgrade to. |
+| Clean device first | no | ⚠️ **Default off.** Before upgrading, remove ALL software the device is not running — inactive packages, leftover files, **and any version another engineer staged** (deliberately overrides the staged-conflict stop) plus the soak-period rollback image. For engineers who know the state of the network. Failures abort; dry-run reports what would be removed. Independent of *Remove inactive (after commit)*. |
 | Run scope | no | Order of operations, safest first: **Step 1 - Copy image** (**default** — a forgotten dropdown can never reload a device), **Steps 1 & 2 - Copy image and prep** (`install add`, no reload), **Full - Copy, Activate, Reload** (the only choice that reloads; a real upgrade requires selecting it deliberately). See [Pre-staging](#pre-staging-stage-now-activate-in-the-window). |
 | Secrets group override | no | Force one Secrets Group for the whole run; by default each device uses its own assigned group. |
 | Remove inactive | no | After commit, reclaim space (default **off** — keeps the rollback image for a soak period). |

@@ -60,6 +60,9 @@ SPINE = [
     ("space", "proc", "Read free space\n(q-filesystem, exact flash: match)", {}),
     ("d_space", "dec", "Free ≥ image × 2\n(or ≥ 2 GB if size unknown)?",
      {"abort": ("No", "Free space unconfirmed or\ninsufficient"), "passlabel": "Yes"}),
+    ("d_clean", "dec", "Clean device first\nticked? (default off)",
+     {"warn": ("Yes", "Remove ALL inactive/staged software\n(engine-decided; overrides the staged-\nconflict stop; failures ABORT)"),
+      "passlabel": "No"}),
     ("d_dry", "dec", "Dry-run?",
      {"okright": ("Yes", "DONE: DRY-RUN — pre-flight\npassed, no changes made"),
       "passlabel": "No"}),
@@ -87,7 +90,7 @@ SPINE = [
      "install activate (non-ISSU, by full internal\nversion; ledger-tracked,\n"
      "re-sent on ledger-absent evidence)", {}),
     ("d_act", "dec", "Activation started?\n(ledger / state / device drop)",
-     {"abort": ("No", "Ledger-recorded failure, or never\nregistered despite re-sends — abort"),
+     {"abort": ("No", "Ledger-recorded failure, or never\nregistered despite re-sends — abort\n(engaged runs get an extended budget)"),
       "passlabel": "Yes"}),
     ("waitc", "proc",
      "Wait for reload: must observe the device\ngo DOWN, then boot the target stably\n"
