@@ -194,8 +194,10 @@ stack, and lettered rebuilds** — all from Nautobot 3.1.
 2. **Upgrade Dry-run.** Against one lab Catalyst 9300 (≥ 17.9.1, RESTCONF enabled,
    a Secrets Group assigned): run **Cisco IOS-XE Upgrade** with Dry-run on and
    confirm the reachability/auth, version-floor, install-mode, image-resolution,
-   and free-space gates all read correctly. Fix any release-specific leaf paths in
-   [`jobs/constants.py`](jobs/constants.py).
+   and free-space gates all read correctly (the target filesystem is
+   discovered from the device automatically; `TARGET_FS_CANDIDATES` in
+   [`jobs/constants.py`](jobs/constants.py) covers platforms that name it
+   differently).
 3. **Single real upgrade.** One non-production device — watch the Job Result log
    through copy → add → activate → reload → confirm → commit, and verify the
    auto-rollback timer actually arms.
@@ -447,6 +449,33 @@ Dry-run *and* selecting *Full* — and a forgotten dropdown can never reload a
 device (the run just stages and says so). Anyone automating runs via the API
 should pass `run_scope` explicitly.
 
+### ISSU on Catalyst 9500/9400/9600 pairs (proposed workflow — untested)
+
+This job's activation is **deliberately non-ISSU**: on a StackWise Virtual
+pair or dual-supervisor chassis, a full-scope run reloads **everything at
+once** — the documented default upgrade path, but exactly the total outage
+that core sites use ISSU to avoid. Until a native ISSU mode exists, the
+**proposed** pattern lets the job do everything around the one disruptive
+verb, which stays human:
+
+1. **Stage with the job** — Run scope *Steps 1 & 2*: every pre-flight gate,
+   the verified copy, and a ledger-confirmed `install add` on the pair
+   (non-disruptive; packages distribute to both chassis). Safe in business
+   hours, batchable across core sites.
+2. **Perform the ISSU by hand** in the window: `install activate issu` from
+   the CLI, watched by an engineer — the rolling standby-first sequence,
+   switchover, and ISSU eligibility (the engine's own compatibility check)
+   remain under direct human control.
+3. **Re-run the job** (scope *Full*, same target): the already-on-target
+   path runs **commit-to-be-safe** (cancelling any pending rollback) and
+   syncs Nautobot — the interrupted-run recovery flow, hardware-validated.
+
+> **Status: proposed, never tested.** No part of this pattern has run
+> against a real SVL pair or dual-sup chassis from this job. If we ever test
+> it, this project will be updated accordingly — including a native ISSU
+> mode (the activate RPC already carries the `issu` flag we set to false; a
+> research spike on a lab pair would define the confirmation choreography).
+
 ### Job inputs
 
 | Input | Required | Purpose |
@@ -507,10 +536,11 @@ Everything actually depended on (`requests`, Nautobot core) is permissive
 
 ## Known limitations / not yet done
 
-- **Hardware validation covers 17.12 (as source), 17.15, and 17.18** on
-  single switches and a 2-member stack — everything else is admitted on model
-  evidence (see the [support matrix](#support-matrix)); do one supervised
-  upgrade per new train (26.1 is the open one). On releases whose devices don't populate
+- **Hardware validation covers 17.12, 17.15, 17.18, and 26.1** on single
+  switches and a 2-member stack, from Nautobot 3.1 and 2.4 — other platforms
+  (9200, 9400–9600, C8000V) are admitted on model evidence (see the
+  [support matrix](#support-matrix) and platform row); do one supervised run
+  per newly-encountered train or platform. On releases whose devices don't populate
   the operation ledger or `sys-activity` at runtime, the job degrades to
   version-state inference and a settle timer — clearly labeled in the logs.
 - **The activate deliberately does NOT send `auto-abort-timer-val`** (the leaf
@@ -533,6 +563,11 @@ separate, agreed features:
 
 - A companion job to **enable RESTCONF** on devices that lack it (needs a
   non-RESTCONF channel to bootstrap).
+- **Native ISSU mode for 9400/9500/9600 HA pairs**: `issu: true` on the
+  activate (the RPC leaf already exists) plus ISSU-aware confirmation —
+  today's logic requires observing the device go DOWN, which an ISSU
+  deliberately avoids. Gated on a lab SVL pair for the research spike; see
+  the proposed interim workflow above.
 - **Catalyst 9800 wireless-aware mode**: AP image predownload between add and
   activate (`Cisco-IOS-XE-wireless-access-point-cmd-rpc:set-rad-predownload-all`
   is available at our floor), AP-fleet completion polling, and SSO awareness —
