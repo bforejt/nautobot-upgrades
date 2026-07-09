@@ -478,7 +478,8 @@ class IOSXEUpgrade(Job):
             # well inside the soft->hard grace), then account for EVERY device.
             self._stop.set()
             self.logger.error(
-                "Job soft time limit reached — stopping in-flight device "
+                "Stop signal received (soft time limit, or an operator ran "
+                "'Cancel IOS-XE Upgrade Run') — stopping in-flight device "
                 "upgrades at their next safe checkpoint..."
             )
             executor.shutdown(wait=True, cancel_futures=True)

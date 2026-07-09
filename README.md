@@ -359,7 +359,8 @@ upgrade ran from 3.1.
    URL to this public repo, choose a branch, and select **Provides: Jobs**, then
    **Sync**.
 3. **Jobs → Jobs**: under the **IOS-XE Upgrades** group, edit and **Enable**
-   both **“Cisco IOS-XE Upgrade (RESTCONF)”** and **“Register IOS-XE Image”**.
+   **“Cisco IOS-XE Upgrade (RESTCONF)”**, **“Register IOS-XE Image”**, and
+   **“Cancel IOS-XE Upgrade Run”**.
 4. After changing job code, re-sync the repo and (for non-container installs)
    restart the Celery worker.
 
@@ -417,6 +418,20 @@ cancelled; and the post-mortem names three lists: completed, stopped/failed
 (each entry carries its reason), and never started. Everything is safe to
 re-run — the idempotent gates (copy/add skip-if-done, commit-to-be-safe) pick
 each device up where it stopped.
+
+### Cancelling a run
+
+Nautobot core has no cancel button for running jobs
+([nautobot#2088](https://github.com/nautobot/nautobot/issues/2088)), so this
+repo ships one as a job: **Cancel IOS-XE Upgrade Run**. Pick the running Job
+Result and run it — the upgrade run receives the same signal as the soft time
+limit, which it handles **gracefully by design**: every in-flight device stops
+at its next safe step boundary (never mid-decision, within ~one poll
+interval), queued devices never start, and the cancelled run logs the full
+**completed / stopped / never-started** post-mortem. Stopped devices are left
+at safe boundaries — re-running the upgrade job later picks each one up
+(idempotent gates + commit-to-be-safe). Cancelling a *queued* run simply
+prevents it from starting.
 
 ### Pre-staging (stage now, activate in the window)
 
