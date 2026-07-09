@@ -235,6 +235,22 @@ class IOSXEUpgrade(Job):
             "Parallelism during business hours."
         ),
     )
+    clean_before = BooleanVar(
+        label="Clean device first (removes inactive & staged images!)",
+        default=False,
+        description=(
+            "⚠️ BE CAREFUL. Before upgrading, remove ALL software this device "
+            "is not running: inactive packages, leftover image files, AND any "
+            "version another engineer may have staged — this deliberately "
+            "overrides the staged-conflict safety stop, which exists because a "
+            "staged version usually means a change is already in flight. It "
+            "also deletes the previous version kept for soak-period rollback "
+            "(rolling back afterward = re-run this job targeting the old "
+            "version). Tick only when you know the state of the network and "
+            "that nothing else is planned for this device. Independent of "
+            "'Remove inactive (after commit)'."
+        ),
+    )
     secrets_group_override = ObjectVar(
         model=SecretsGroup,
         required=False,
@@ -305,6 +321,7 @@ class IOSXEUpgrade(Job):
             "devices",
             "target_version",
             "run_scope",
+            "clean_before",
             "secrets_group_override",
             "remove_inactive",
             "parallelism",
@@ -327,6 +344,7 @@ class IOSXEUpgrade(Job):
         devices,
         target_version,
         run_scope,
+        clean_before,
         secrets_group_override,
         remove_inactive,
         parallelism,
@@ -413,6 +431,7 @@ class IOSXEUpgrade(Job):
                     debug,
                     dryrun,
                     run_scope,
+                    clean_before,
                 )
                 # Total wall-clock per device — the number change windows are
                 # planned around.
@@ -535,6 +554,7 @@ class IOSXEUpgrade(Job):
         debug,
         dryrun,
         run_scope="full",
+        clean_before=False,
     ):
         log = {"object": device}
 
@@ -598,6 +618,11 @@ class IOSXEUpgrade(Job):
                     extra=log,
                 )
 
+        # Operator-requested pre-upgrade clean (deliberate override of the
+        # staged-conflict stop) — never in dry-run (it writes).
+        if clean_before and not dryrun:
+            self._clean_device(client, target_str, log)
+
         # Advisory (info, not warning — leftover images are normal during soak
         # periods): if a DIFFERENT version is staged/added, say so before we
         # spend ~15 minutes on a copy the install engine may refuse.
@@ -608,10 +633,11 @@ class IOSXEUpgrade(Job):
                 "(%s) usually means someone ALREADY prepared an upgrade on this "
                 "device — if this run targets something else, check for a "
                 "change in flight before proceeding. The install engine may "
-                "refuse this run; clearing staged code is a deliberate manual "
-                "act (CLI 'install remove inactive' — the job's Remove-inactive "
-                "option runs only AFTER a successful commit and does not do "
-                "this).",
+                "refuse this run; clearing staged code is a deliberate act: "
+                "if you OWN this device's change, re-run with 'Clean device "
+                "first' ticked (or CLI 'install remove inactive'). The "
+                "Remove-inactive option runs only AFTER a successful commit "
+                "and does not do this.",
                 "; ".join(entries),
                 " / ".join(staged),
                 extra=log,
@@ -632,7 +658,15 @@ class IOSXEUpgrade(Job):
                     f"would copy '{image.download_url}' to "
                     f"{target_fs}{image.image_file_name} and install {target_str}"
                 )
-            return f"DRY-RUN ok: {planned}. All pre-flight gates passed."
+            clean_note = ""
+            if clean_before:
+                pre_entries, _ = self._inventory_other_versions(client, target_str)
+                clean_note = (
+                    " Would FIRST clean the device (remove inactive/staged "
+                    f"software; install DB currently also tracks: "
+                    f"{'; '.join(pre_entries) or 'nothing'})."
+                )
+            return f"DRY-RUN ok:{clean_note} {planned}. All pre-flight gates passed."
 
         # -- 3. Transfer + integrity (classic copy in a worker thread, watched
         # to a size-verified completion inside _copy_image) --------------------
@@ -1554,10 +1588,11 @@ class IOSXEUpgrade(Job):
             f"The device reports: {'; '.join(entries)}. A different staged "
             f"version ({', '.join(staged)}) usually means another upgrade was "
             "already prepared on this device — verify no change is in flight "
-            "before clearing it. To proceed with THIS version instead: clear "
-            "the staged code deliberately (CLI 'install remove inactive' — the "
-            "job's Remove-inactive option runs only after a successful commit "
-            "and does not clear staged images), then re-run. "
+            "before clearing it. To proceed with THIS version instead: if you "
+            "own this device's change, re-run with 'Clean device first' ticked "
+            "(or clear deliberately via CLI 'install remove inactive'); the "
+            "Remove-inactive option runs only after a successful commit and "
+            "does not clear staged images. "
         )
 
     def _check_stop(self):
@@ -2117,10 +2152,15 @@ class IOSXEUpgrade(Job):
         )
         return False
 
-    def _remove_inactive(self, client, log):
-        self.logger.info("install remove inactive (reclaiming space)...", extra=log)
-        # The 'inactive' leaf may be named 'remove-use-inactive' on some releases;
-        # this step is optional and non-fatal.
+    def _remove_inactive(self, client, log, fatal=False):
+        """Run 'install remove inactive' (idle-gated, ledger-tracked).
+
+        fatal=False (post-commit cleanup): every failure is a warning — the
+        upgrade already succeeded. fatal=True (operator-requested pre-upgrade
+        clean): failures ABORT — an engineer who asked for a clean that failed
+        should investigate, not proceed onto a dirty device.
+        """
+        self.logger.info("install remove inactive...", extra=log)
         op_uuid = str(uuid_lib.uuid4())
         # INVARIANT (26.1.1+): 'inactive' sits inside the now-mandatory choice
         # remove-type-by-choice (version | path | inactive | name) — a uuid-only
@@ -2131,6 +2171,12 @@ class IOSXEUpgrade(Job):
             response = client.post_rpc(C.OP_REMOVE, payload, timeout=C.RPC_TIMEOUT)
             error_text = _rpc_error_text(response)
             if error_text:
+                if fatal:
+                    raise UpgradeAbort(
+                        f"The requested clean was refused by the install engine: "
+                        f"{error_text} — device unchanged; investigate before "
+                        "re-running."
+                    )
                 self.logger.warning(
                     "remove inactive was refused (non-fatal): %s", error_text, extra=log
                 )
@@ -2139,10 +2185,17 @@ class IOSXEUpgrade(Job):
                 client, op_uuid, C.COMMIT_CONFIRM_TIMEOUT, log, "install remove inactive"
             )
         except (RestconfError, UpgradeAbort) as exc:
+            if fatal:
+                raise
             self.logger.warning("remove inactive failed (non-fatal): %s", exc, extra=log)
             return
         if outcome == "success":
             self.logger.info("Inactive images removed (ledger-confirmed).", extra=log)
+        elif fatal:
+            raise UpgradeAbort(
+                f"The requested clean was not ledger-confirmed ({outcome}); "
+                "verify 'show install summary' before re-running."
+            )
         else:
             self.logger.warning(
                 "remove inactive issued but not ledger-confirmed (%s); verify "
@@ -2150,6 +2203,40 @@ class IOSXEUpgrade(Job):
                 outcome,
                 extra=log,
             )
+
+    def _clean_device(self, client, target_str, log):
+        """Operator-requested pre-upgrade clean — the deliberate override.
+
+        Logs what the install DB tracks before and after, then lets the ENGINE
+        decide what is removable ('install remove inactive' clears inactive and
+        staged versions plus unreferenced .bin/.pkg files — never the running
+        committed image). State over inference: we report observed outcomes,
+        not guessed file lists.
+        """
+        entries, _staged = self._inventory_other_versions(client, target_str)
+        if not entries:
+            self.logger.info(
+                "Clean requested: the install DB tracks nothing besides the "
+                "running image — nothing to remove.",
+                extra=log,
+            )
+            return
+        self.logger.warning(
+            "CLEAN REQUESTED — removing all software this device is not "
+            "running. Install DB currently also tracks: %s. This includes any "
+            "version staged by another engineer and the previous soak/rollback "
+            "image (rollback afterward = re-run this job targeting the old "
+            "version).",
+            "; ".join(entries),
+            extra=log,
+        )
+        self._remove_inactive(client, log, fatal=True)
+        after, _ = self._inventory_other_versions(client, target_str)
+        self.logger.info(
+            "Clean complete. Install DB now tracks besides the running image: %s.",
+            "; ".join(after) or "nothing",
+            extra=log,
+        )
 
     def _sync_nautobot(self, device, target_version, log):
         with transaction.atomic():
