@@ -574,6 +574,36 @@ class IOSXEUpgrade(Job):
         target_fs = self._discover_target_fs(client, log)
         self._gate_free_space(client, image, log, target_fs)
 
+        # Catalyst 9800 WLC guidance (warn, never gate — the operator owns the
+        # choice): this job upgrades the CONTROLLER only. It does not perform
+        # AP image predownload, so a full-scope reload forces every joined AP
+        # to download its image afterward — an extended wireless outage.
+        # Detection is by the image being installed (all 9800 images are
+        # named C9800-*): the strongest signal, available even in dry-run.
+        if "c9800" in str(image.image_file_name).lower():
+            if run_scope == "full":
+                self.logger.warning(
+                    "Catalyst 9800 WLC image detected. This job upgrades the "
+                    "CONTROLLER ONLY — it does NOT predownload AP images. After "
+                    "the reload, every joined AP must download the new image "
+                    "before rejoining (CAPWAP requires matching versions): "
+                    "expect an EXTENDED wireless outage — minutes to hours at "
+                    "fleet scale. Proceed only if a full wireless outage is "
+                    "acceptable (lab, or a full-outage window). On HA SSO pairs "
+                    "BOTH controllers reload together. A wireless-aware mode "
+                    "(AP predownload orchestration) is planned but not built.",
+                    extra=log,
+                )
+            else:
+                self.logger.info(
+                    "Catalyst 9800 WLC image detected. Staging (copy/add) is "
+                    "safe on a 9800 — nothing reloads. Note for the eventual "
+                    "activation: this job does not predownload AP images, so a "
+                    "full-scope run causes an extended wireless outage until a "
+                    "wireless-aware mode is built.",
+                    extra=log,
+                )
+
         # Advisory (info, not warning — leftover images are normal during soak
         # periods): if a DIFFERENT version is staged/added, say so before we
         # spend ~15 minutes on a copy the install engine may refuse.

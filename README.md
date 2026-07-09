@@ -84,7 +84,7 @@ per-device decision logic (editable [`upgrade-flow.drawio`](docs/upgrade-flow.dr
 | **Nautobot** | **2.4 LTM** and **3.1+** | End-to-end upgrades verified from **both 3.1 and 2.4.36** (most testing volume on 3.1). **3.0 is untested and will stay that way** — it no longer receives maintenance now that 3.1 (the 3.x LTM designation) has shipped. Earlier 2.x (≥ 2.2) *may* work but is not tested or supported. |
 | **Deployment** | [nautobot-composer](#sister-project-nautobot-composer) | The sister Docker-Compose installer this Job is built to run on; it currently ships Nautobot 2.4 and 3.x. |
 | **Device OS** | Cisco IOS-XE **≥ 17.9.1** (incl. 26.x) | Hardware-validated on **17.15.x**; every YANG model the job touches verified against Cisco's published models from 17.9.1 through 26.1.1. See the [support posture](#support-posture) for the per-train breakdown. Model presence ≠ runtime behavior — run one supervised upgrade per new train before fleet use. Rebuild letters (e.g. 17.15.4**d**) are **distinct versions** — base → rebuild upgrades (and rebuild rollbacks) are supported. |
-| **Platform** | Catalyst **9300 family** + **C8000V** | 9300 hardware-tested; **9300L/LM/X** run the identical cat9k image, install flow, and YANG bundle (validation run pending). **Catalyst 8000V** (autonomous mode): all required models verified in Cisco's c8000v capability files; its `bootflash:` filesystem is **discovered from the device** (hardware run pending). Nexus/NX-OS is a different OS and API — not supported. |
+| **Platform** | Catalyst **9300 family** + **C8000V** | 9300 hardware-tested; **9300L/LM/X** run the identical cat9k image, install flow, and YANG bundle (validation run pending). **Catalyst 8000V** (autonomous mode): all required models verified in Cisco's c8000v capability files; its `bootflash:` filesystem is **discovered from the device** (hardware run pending). **Catalyst 9200** and **9400/9500/9600**: model sets verified identical — validation runs pending. **Catalyst 9800 WLC**: mechanically compatible but **operationally out of scope** — the job upgrades the controller only, with no AP predownload; a full-scope run is warned in-job (extended wireless outage) and a wireless-aware mode is planned. Nexus/NX-OS is a different OS and API — not supported. **3650/3850 cannot be supported** (terminal 16.12 train lacks the install API; both at/near end of support — Cisco's replacement is the 9300L, which this job supports). |
 
 ### Support posture
 
@@ -533,6 +533,10 @@ separate, agreed features:
 
 - A companion job to **enable RESTCONF** on devices that lack it (needs a
   non-RESTCONF channel to bootstrap).
+- **Catalyst 9800 wireless-aware mode**: AP image predownload between add and
+  activate (`Cisco-IOS-XE-wireless-access-point-cmd-rpc:set-rad-predownload-all`
+  is available at our floor), AP-fleet completion polling, and SSO awareness —
+  until then the job warns and leaves 9800s to deliberate full-outage use.
 - **Device Lifecycle Management** integration for **validated/approved-software
   gating** and CVE/EoL/contract context.
 - User-based **authorization/gating** of who may run upgrades.
