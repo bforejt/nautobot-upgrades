@@ -81,7 +81,7 @@ per-device decision logic (editable [`upgrade-flow.drawio`](docs/upgrade-flow.dr
 
 | Component | Supported | Notes |
 | --- | --- | --- |
-| **Nautobot** | **2.4 LTM** and **3.1+** | End-to-end upgrades verified from **both 3.1 and 2.4.36** (most testing volume on 3.1). **3.0 is untested and will stay that way** — it no longer receives maintenance now that 3.1 (the 3.x LTM designation) has shipped. Earlier 2.x (≥ 2.2) *may* work but is not tested or supported. |
+| **Nautobot** | **2.4 LTM** and **3.1+** | End-to-end upgrades verified from **3.1 and multiple independent 2.4 environments** (most testing volume on 3.1). **3.0 is untested and will stay that way** — it no longer receives maintenance now that 3.1 (the 3.x LTM designation) has shipped. Earlier 2.x (≥ 2.2) *may* work but is not tested or supported. |
 | **Deployment** | [nautobot-composer](#sister-project-nautobot-composer) | The sister Docker-Compose installer this Job is built to run on; it currently ships Nautobot 2.4 and 3.x. |
 | **Device OS** | Cisco IOS-XE **≥ 17.9.1** (incl. 26.x) | Hardware-validated on **17.15.x**; every YANG model the job touches verified against Cisco's published models from 17.9.1 through 26.1.1. See the [support posture](#support-posture) for the per-train breakdown. Model presence ≠ runtime behavior — run one supervised upgrade per new train before fleet use. Rebuild letters (e.g. 17.15.4**d**) are **distinct versions** — base → rebuild upgrades (and rebuild rollbacks) are supported. |
 | **Platform** | Catalyst **9300 family** + **C8000V** | 9300 hardware-tested; **9300L/LM/X** run the identical cat9k image, install flow, and YANG bundle (validation run pending). **Catalyst 8000V** (autonomous mode): all required models verified in Cisco's c8000v capability files; its `bootflash:` filesystem is **discovered from the device** (hardware run pending). **Catalyst 9200** and **9400/9500/9600**: model sets verified identical — validation runs pending. **Catalyst 9800 WLC**: mechanically compatible but **operationally out of scope** — the job upgrades the controller only, with no AP predownload; a full-scope run is warned in-job (extended wireless outage) and a wireless-aware mode is planned. Nexus/NX-OS is a different OS and API — not supported. **3650/3850 cannot be supported** (terminal 16.12 train lacks the install API; both at/near end of support — Cisco's replacement is the 9300L, which this job supports). |
@@ -92,10 +92,10 @@ The posture is deliberate, in priority order:
 
 1. **17.15, 17.18, and 26.1 first** — current mainline code, all
    hardware-tested; the platforms this job is built and validated against.
-2. **17.12** — aging but still supportable mainline; **hardware-validated as
-   an upgrade source** (a 2-member stack was lifted 17.12.4 → 17.15.5).
-   Upgrading *to* 17.12 remains untested and unrecommended (install current
-   mainline instead).
+2. **17.12** — aging but still supportable mainline; **hardware-validated in
+   both directions** (a 2-member stack was lifted 17.12.4 → 17.15.5, and a
+   downgrade to 17.12.6 completed successfully). Prefer current mainline as
+   an upgrade target; the 17.12 rollback path is proven.
 3. **17.9 – 17.11** — **not tested, but might work**: model-complete on paper
    (17.9 is the floor), best suited as an escape source for parked fleets.
 4. **Older than 17.9** — **not supported.** The job cannot execute as
@@ -108,10 +108,10 @@ The posture is deliberate, in priority order:
 | **17.9 / 17.10 / 17.11** | ⚠️ **Not tested — might work** | Model-complete on paper (17.9 is the support floor; every YANG model the job touches verified against Cisco's published 17.9.1–17.11.1 models). Best suited as an *escape source*: 17.9 exited Cisco software maintenance in Aug 2025 — upgrade FROM it rather than to it. Run one supervised upgrade before relying on it. |
 | **< 17.9** | 🚫 **Not supported** | The job refuses these releases because it **cannot execute as written: key API components are missing** below the floor (the RESTCONF install models and reliable file-size reporting the job is built on). |
 
-**Nautobot**: installed, synced, and **job execution verified on both 3.1
-and 2.4** (a full 26.1.1 → 17.18.3 device install ran end-to-end from a stock
-Nautobot **2.4.36** outside the nautobot-composer environment). Most testing
-volume remains on 3.1.
+**Nautobot**: installed, synced, and **job execution verified on 3.1 and
+multiple independent 2.4 environments** (incl. a full 26.1.1 → 17.18.3 device
+install from a stock 2.4.36 outside nautobot-composer). Most testing volume
+remains on 3.1.
 
 There is no separate Python dependency matrix: the Job imports only `requests`
 plus Nautobot core, so whatever ships with the supported Nautobot release suffices.
