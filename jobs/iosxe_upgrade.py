@@ -100,11 +100,23 @@ from .restconf import RestconfClient, RestconfError
 
 name = "IOS-XE Upgrades"
 
-_VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)([a-z])?", re.IGNORECASE)
+# The lookbehind rejects candidates glued to an alphanumeric: real image
+# names like 'c8000v-universalk9.17.15.04a.SPA.bin' would otherwise match
+# '9.17.15' LEFTMOST (the platform token's trailing 'k9' donates its digit)
+# and misparse every standard C8000V/9800 filename (review finding).
+_VERSION_RE = re.compile(r"(?<![0-9A-Za-z])(\d+)\.(\d+)\.(\d+)([a-z])?", re.IGNORECASE)
 
 
 class UpgradeAbort(Exception):
     """A safety gate failed; abort this device's upgrade (not the whole job)."""
+
+
+class JobStopped(UpgradeAbort):
+    """Cooperative stop (cancel / time budget) — never a device-state verdict."""
+
+
+class EngineBusy(UpgradeAbort):
+    """The install engine positively reported another operation in flight."""
 
 
 class LedgerOpFailure(UpgradeAbort):
@@ -601,7 +613,9 @@ class IOSXEUpgrade(Job):
         # _version_key: rebuild letters count (17.15.4d is NOT 17.15.4), so a
         # base->rebuild upgrade (or a rebuild rollback) proceeds as a real run.
         if _version_key(current) and _version_key(current) == _version_key(target_str):
-            return self._handle_already_on_target(client, device, target_version, dryrun, log)
+            return self._handle_already_on_target(
+                client, device, target_version, dryrun, log, run_scope=run_scope
+            )
 
         # -- 2. Pre-flight gates ---------------------------------------------
         self._gate_version_floor(current, log)
@@ -674,7 +688,7 @@ class IOSXEUpgrade(Job):
         if dryrun:
             if run_scope == "stage-copy":
                 planned = (
-                    f"would PRE-STAGE (copy only): '{image.download_url}' to "
+                    f"would PRE-STAGE (copy only): '{_redact_url(image.download_url)}' to "
                     f"{target_fs}{image.image_file_name} — no install activity"
                 )
             elif run_scope == "stage-add":
@@ -683,7 +697,7 @@ class IOSXEUpgrade(Job):
                 )
             else:
                 planned = (
-                    f"would copy '{image.download_url}' to "
+                    f"would copy '{_redact_url(image.download_url)}' to "
                     f"{target_fs}{image.image_file_name} and install {target_str}"
                 )
             clean_note = ""
@@ -856,7 +870,9 @@ class IOSXEUpgrade(Job):
             )
         return f"Upgraded and committed to {target_str}.{sync_note}"
 
-    def _handle_already_on_target(self, client, device, target_version, dryrun, log):
+    def _handle_already_on_target(
+        self, client, device, target_version, dryrun, log, run_scope="full"
+    ):
         """Device already runs the target version — but is it committed?
 
         Fail SAFE: treat it as a no-op only when we can positively confirm it is
@@ -869,6 +885,24 @@ class IOSXEUpgrade(Job):
         tokens = self._state_tokens(client, target_str)
         if _is_committed(tokens):
             return f"Already on target version {target_str} and committed; nothing to do."
+        if run_scope != "full":
+            # Stage scopes promise NO install activity (review finding: the
+            # commit-repair is an install write and belongs to Full runs).
+            self.logger.warning(
+                "On target %s but not confirmed committed (state: %s). Run "
+                "scope '%s' performs no install writes — run with scope "
+                "'full' (or commit manually) to clear any pending "
+                "auto-rollback.",
+                target_str,
+                tokens or "unknown",
+                run_scope,
+                extra=log,
+            )
+            return (
+                f"On target {target_str} but not confirmed committed; scope "
+                f"'{run_scope}' makes no install writes — run scope 'full' to "
+                "commit."
+            )
         if dryrun:
             return (
                 f"DRY-RUN: on target {target_str} but not confirmed committed "
@@ -882,7 +916,13 @@ class IOSXEUpgrade(Job):
             extra=log,
         )
         try:
-            self._install_commit(client, target_str, log)
+            committed = self._install_commit(client, target_str, log)
+        except (JobStopped, EngineBusy):
+            # Neither is a device-state verdict (review finding: swallowing
+            # them reported an UNCOMMITTED device as handled): the stop must
+            # end the run, and a busy engine means another operation is in
+            # flight — both surface to the per-device handler unchanged.
+            raise
         except LedgerOpFailure as exc:
             # The engine RECORDED a commit failure — device-published state, not
             # a benign "nothing to commit" refusal. The image is uncommitted and
@@ -917,7 +957,13 @@ class IOSXEUpgrade(Job):
                 exc,
                 extra=log,
             )
-        return f"On target {target_str}; ran install commit to ensure it is committed."
+        if committed:
+            return f"On target {target_str}; install commit confirmed."
+        return (
+            f"On target {target_str}; install commit issued but not yet "
+            "confirmed by the ledger — re-run to verify (auto-rollback, if "
+            "armed, is cancelled by a successful commit)."
+        )
 
     # -------------------------------------------------------- helpers: setup --
 
@@ -1152,7 +1198,10 @@ class IOSXEUpgrade(Job):
                 "string or map the correct image, then re-run."
             )
         self.logger.info(
-            "Resolved image '%s' (%s).", image.image_file_name, image.download_url, extra=log
+            "Resolved image '%s' (%s).",
+            image.image_file_name,
+            _redact_url(image.download_url),
+            extra=log,
         )
         return image
 
@@ -1285,7 +1334,8 @@ class IOSXEUpgrade(Job):
                 )
                 or {}
             )
-            client._partitions_cache = data
+            if data:
+                client._partitions_cache = data
             return data
         except RestconfError as exc:
             # fields unsupported or a transient error — the full read (with
@@ -1933,10 +1983,11 @@ class IOSXEUpgrade(Job):
         """
         dest = f"{target_fs}{image.image_file_name}"
         expected = image.image_file_size
-        # Resolve the keyed file reference ONCE (ledger dest-dir + partition
-        # location): every file-size read this copy makes — pre-check, the
-        # ~30 progress polls, the final verify — then asks the device about
-        # exactly one path instead of requesting a full filesystem walk.
+        # Resolve the keyed file reference ONCE (ledger mount root + partition
+        # location): the ~30 progress polls then ask the device about exactly
+        # one path instead of requesting a full filesystem walk. (The final
+        # verify deliberately never consults this ref — a wrong-address keyed
+        # hit could fake agreement; it uses the catalog/full listing instead.)
         ref_cell = {
             "ref": self._resolve_file_ref(client, image.image_file_name, target_fs, log),
             "disabled": False,
@@ -2023,7 +2074,7 @@ class IOSXEUpgrade(Job):
             # heal tier — review finding: a wrong-but-accepted root otherwise
             # silently defeats the idempotent skip and re-copies a multi-GB
             # image, and suppresses the overwrite warning).
-            data = self._read_q_filesystem(client) or {}
+            data = self._read_q_filesystem(client, retries=1) or {}
             pre_context = _find_file_context(data, image.image_file_name)
             if pre_context is not None:
                 keys, pname, entry = pre_context
@@ -2062,7 +2113,7 @@ class IOSXEUpgrade(Job):
             # Known limit: q-filesystem does not say which member owns flash:
             # after a failover, so a wrong-member skip still fails loudly at
             # 'install add' (file not found) rather than silently.
-            data = self._read_q_filesystem(client) or {}
+            data = self._read_q_filesystem(client, retries=1) or {}
             context = _find_file_context(data, image.image_file_name)
             confirmed = None
             confirmed_path = ""
@@ -2219,8 +2270,13 @@ class IOSXEUpgrade(Job):
                             )
                         else:
                             ref_cell["misses"] = 0
-                elif heal_now:
-                    ref_cell["misses"] = 0  # file genuinely absent; keep keyed cadence
+                if heal_now:
+                    # ALWAYS reset after a heal walk — an unusable sighting
+                    # (non-'/' path, missing keys) previously left misses
+                    # parked at a multiple of 4, latching heal_now on and
+                    # silently walking EVERY poll for the rest of the copy
+                    # (review finding).
+                    ref_cell["misses"] = 0
             elapsed = int(time.monotonic() - started)
             if size is not None:
                 step = max((expected or 0) // 20, 25_000_000)  # ~5% or 25 MB
@@ -2268,13 +2324,25 @@ class IOSXEUpgrade(Job):
         verified_by_catalog = False
         catalog_missed = False
         if fresh_dest and expected:
-            catalog = self._read_image_files(poll_client, log)
-            listed = _image_file_size(catalog, dest) if catalog is not None else None
-            if listed is not None and abs(listed - expected) <= C.SIZE_MATCH_TOLERANCE_BYTES:
-                size = listed
-                verified_by_catalog = True
-            else:
+            # The catalog is a device-side CACHE, and the pre-check just
+            # proved it did NOT list this file — asking again seconds after
+            # the copy is structurally likely to miss (review finding: this
+            # made the verify walk near-unconditional on fresh copies, the
+            # very flurry the tier exists to avoid). Give the cache one
+            # bounded, labeled chance to refresh before paying the walk.
+            for attempt in range(2):
+                catalog = self._read_image_files(poll_client, log)
+                listed = _image_file_size(catalog, dest) if catalog is not None else None
+                if listed is not None and abs(listed - expected) <= C.SIZE_MATCH_TOLERANCE_BYTES:
+                    size = listed
+                    verified_by_catalog = True
+                    break
                 catalog_missed = catalog is not None and listed is None
+                if attempt == 0 and catalog_missed:
+                    self._check_stop()
+                    time.sleep(C.VERIFY_CATALOG_RETRY_DELAY)
+                else:
+                    break
         if not verified_by_catalog:
             size = _file_size_bytes(
                 self._read_q_filesystem(poll_client) or {}, image.image_file_name
@@ -2441,6 +2509,7 @@ class IOSXEUpgrade(Job):
         deadline = time.monotonic() + C.ADD_TIMEOUT
         started = time.monotonic()
         polls = 0
+        error_streak = 0
         while time.monotonic() < deadline:
             self._check_stop()
             # States that mean the add has finished (verified on a real 17.15.4):
@@ -2451,7 +2520,22 @@ class IOSXEUpgrade(Job):
             # of this version) and must never confirm an add. While the add is
             # still extracting, the version is absent or sits at 'invalid' →
             # keep waiting.
-            tokens = self._state_tokens(client, version_str)
+            try:
+                tokens = self._state_tokens(client, version_str)
+            except RestconfError as exc:
+                error_streak += 1
+                if error_streak >= C.LEDGER_BLIP_POLLS:
+                    raise
+                self.logger.info(
+                    "Add-state read failed (%s) — transient blip %d/%d, retrying.",
+                    exc,
+                    error_streak,
+                    C.LEDGER_BLIP_POLLS,
+                    extra=log,
+                )
+                time.sleep(C.POLL_INTERVAL)
+                continue
+            error_streak = 0
             states = {_classify_state(t) for t in tokens}
             if states & {"pending", "added", "activated", "uncommitted", "committed"}:
                 self.logger.info("install add complete (state: %s).", sorted(tokens), extra=log)
@@ -2540,7 +2624,7 @@ class IOSXEUpgrade(Job):
         """
         stop = getattr(self, "_stop", None)
         if stop is not None and stop.is_set():
-            raise UpgradeAbort(
+            raise JobStopped(
                 "stopped by the job's time budget before the next step — the "
                 "device was left at a safe boundary; re-run this job for it "
                 "(the gates make re-runs safe)"
@@ -2557,17 +2641,36 @@ class IOSXEUpgrade(Job):
         the ledger — the caller picks the fallback), or 'timeout' when records
         exist but never complete in time (the caller decides how fatal that is).
         A ledger-RECORDED failure raises with the engine's own phase detail.
-        RestconfError propagates (reload-tolerant callers interpret it).
+        Transient read errors are tolerated for LEDGER_BLIP_POLLS consecutive
+        polls before propagating (review finding: a single connection blip
+        mid-tracking aborted the whole device run); a PERSISTENT failure
+        still raises so reload-tolerant callers can interpret it.
         """
         deadline = time.monotonic() + timeout
         started = time.monotonic()
         polls = 0
         absent_streak = 0
+        error_streak = 0
         success_count = None
         detail = ""
         while time.monotonic() < deadline:
             self._check_stop()
-            data = client.get(C.DATA_INSTALL_OPER, ok_404=True) or {}
+            try:
+                data = client.get(C.DATA_INSTALL_OPER, ok_404=True) or {}
+            except RestconfError as exc:
+                error_streak += 1
+                if error_streak >= C.LEDGER_BLIP_POLLS:
+                    raise
+                self.logger.info(
+                    "Ledger read failed (%s) — transient blip %d/%d, retrying.",
+                    exc,
+                    error_streak,
+                    C.LEDGER_BLIP_POLLS,
+                    extra=log,
+                )
+                time.sleep(C.POLL_INTERVAL)
+                continue
+            error_streak = 0
             records = _find_op_records(data, op_uuid)
             status, detail = _classify_ops(records)
             if status == "success":
@@ -2698,7 +2801,7 @@ class IOSXEUpgrade(Job):
             time.sleep(C.POLL_INTERVAL)
         # The device POSITIVELY reported busy the whole window: writing now would
         # be silently dropped (field-verified). State says do not write — refuse.
-        raise UpgradeAbort(
+        raise EngineBusy(
             f"The install engine reported busy (sys-activity: {last_seen}) for "
             f"{C.ENGINE_IDLE_TIMEOUT}s before {context} — another install "
             "operation (CLI, or another job run) appears to be in progress. "
@@ -2809,7 +2912,20 @@ class IOSXEUpgrade(Job):
             time.sleep(C.POLL_INTERVAL)
             try:
                 data = client.get(C.DATA_INSTALL_OPER, ok_404=True) or {}
-            except RestconfError:
+            except RestconfError as exc:
+                if getattr(exc, "status_code", None) is not None:
+                    # The device ANSWERED (an HTTP error is a served response,
+                    # not a reload) — treat as a transient poll blip so the
+                    # resend machinery keeps working (review finding: a 500
+                    # during engine churn was misread as 'reload started').
+                    self.logger.info(
+                        "Activation poll returned HTTP %s (%s) — device still "
+                        "up; continuing to watch.",
+                        exc.status_code,
+                        exc,
+                        extra=log,
+                    )
+                    continue
                 self.logger.info(
                     "Device stopped answering — reload appears to have started.",
                     extra=log,
@@ -3065,9 +3181,25 @@ class IOSXEUpgrade(Job):
         started = time.monotonic()
         deadline = started + C.COMMIT_CONFIRM_TIMEOUT
         tokens = []
+        error_streak = 0
         while time.monotonic() < deadline:
             self._check_stop()
-            tokens = self._state_tokens(client, version_str)
+            try:
+                tokens = self._state_tokens(client, version_str)
+            except RestconfError as exc:
+                error_streak += 1
+                if error_streak >= C.LEDGER_BLIP_POLLS:
+                    raise
+                self.logger.info(
+                    "Commit-state read failed (%s) — transient blip %d/%d, retrying.",
+                    exc,
+                    error_streak,
+                    C.LEDGER_BLIP_POLLS,
+                    extra=log,
+                )
+                time.sleep(C.POLL_INTERVAL)
+                continue
+            error_streak = 0
             if _is_committed(tokens):
                 self.logger.info(
                     "Commit confirmed via install-oper (state: %s, %ds).",
@@ -3197,7 +3329,13 @@ def _progress_label(size, expected):
     return f"{label} (expected size unknown)"
 
 
+def _redact_url(url):
+    """Strip userinfo (ftp://user:pass@host/...) before a URL reaches a log."""
+    return re.sub(r"://[^/@\s]+@", "://***@", str(url or ""))
+
+
 def _fetch_hints(url):
+    url = _redact_url(url)
     """Actionable causes for a device failing to download from ``url``.
 
     The dominant real-world cause for an https source is TLS: the firmware
@@ -3222,6 +3360,7 @@ def _fetch_hints(url):
 
 
 def _interpret_copy_failure(exc, url):
+    url = _redact_url(url)
     """Turn a copy-RPC failure into an actionable message.
 
     The device reports fetch failures as an opaque '%Error opening ... (I/O

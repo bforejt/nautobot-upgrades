@@ -10,6 +10,8 @@ RPC ``operations``. All higher-level upgrade logic lives in ``iosxe_upgrade.py``
 
 from __future__ import annotations
 
+import re
+
 import requests
 
 from . import constants as C
@@ -112,6 +114,16 @@ class RestconfClient:
         try:
             return resp.json()
         except ValueError:
+            # A 2xx body that is not JSON is a device quirk worth a breadcrumb
+            # — silently coercing it to {} let one garbage reply masquerade as
+            # a genuinely empty resource (review finding).
+            self._debug(f"GET {path} returned unparsable body; treating as empty")
+            if self.logger is not None:
+                self.logger.warning(
+                    "RESTCONF GET %s returned a 2xx body that is not JSON — treating as empty.",
+                    path,
+                    extra={"object": self.log_object} if self.log_object else None,
+                )
             return {}
 
     def post_rpc(self, operation, payload, *, timeout=C.RPC_TIMEOUT, tolerate_disconnect=False):
@@ -126,7 +138,10 @@ class RestconfClient:
         NOT a reload). HTTP 4xx/5xx and DNS/TLS/auth failures still raise.
         """
         url = f"{self.base_url}/{operation}"
-        self._debug(f"POST {url} body={self._truncate(payload)}")
+        # Redact URL userinfo (ftp://user:pass@...) — copy payloads may carry
+        # credentialed source URLs (review finding).
+        body_repr = re.sub(r"://[^/@\s']+@", "://***@", self._truncate(payload))
+        self._debug(f"POST {url} body={body_repr}")
         try:
             resp = self._session.post(url, json=payload, timeout=timeout)
         except requests.exceptions.ReadTimeout as exc:
@@ -137,6 +152,12 @@ class RestconfClient:
                 self._debug(f"POST {url} timed out with the connection open: {exc}")
                 return {"_timeout": True}
             raise RestconfError(f"POST {operation} failed: {exc}") from exc
+        except requests.exceptions.ConnectTimeout as exc:
+            # The TCP connect never completed: the request was NEVER SENT, so
+            # this cannot mean 'the RPC was accepted and the reload began'
+            # (review finding — ConnectTimeout subclasses ConnectionError and
+            # would otherwise fall through to the disconnect arm).
+            raise RestconfError(f"POST {operation} failed before sending: {exc}") from exc
         except (
             requests.exceptions.ConnectionError,
             requests.exceptions.ChunkedEncodingError,
