@@ -1224,13 +1224,32 @@ class IOSXEUpgrade(Job):
             data = client.get(C.DATA_INSTALL_OPER, ok_404=True) or {}
         except RestconfError:
             return None, []
+        # ADD records only: dest-dir also appears in remove-param / stale
+        # download-param records pointing at USB sticks, subdirectories, or
+        # other members — the review proved first-hit-anywhere selection can
+        # poison the whole run. Prefer the most recent add by start-time.
+        candidates = []
         seen = []
-        for value in _find_all_values(data, "dest-dir"):
-            text = str(value).strip()
-            if text and text not in seen:
-                seen.append(text)
-            if text.startswith("/"):
-                return text.rstrip("/"), seen
+
+        def _walk(node, start_time=""):
+            if isinstance(node, dict):
+                stamp = str(node.get("start-time", start_time))
+                add_param = node.get("add-param")
+                if isinstance(add_param, dict):
+                    text = str(add_param.get("dest-dir", "")).strip()
+                    if text and text not in seen:
+                        seen.append(text)
+                    if text.startswith("/"):
+                        candidates.append((stamp, text.rstrip("/")))
+                for value in node.values():
+                    _walk(value, stamp)
+            elif isinstance(node, list):
+                for item in node:
+                    _walk(item, start_time)
+
+        _walk(data)
+        if candidates:
+            return max(candidates)[1], seen
         return None, seen
 
     def _locate_target_partition(self, client, target_fs):
@@ -1243,27 +1262,38 @@ class IOSXEUpgrade(Job):
         data = self._read_partitions(client, retries=1) or {}
         wanted = target_fs.rstrip(":").lower()
         # tolerate wrapper shapes: hunt for dicts carrying a 'partitions' list
+        best = None
         for entry in _find_qfs_entries(data):
             for partition in entry.get("partitions") or []:
                 name = str(partition.get("name", "")).strip().rstrip(":").lower()
-                if name == wanted:
+                exact = name == wanted
+                # Stacks report member-suffixed names (flash-1, flash-2): a
+                # suffix match engages the keyed path there too; exact wins.
+                if exact or name.startswith(wanted + "-") or name.startswith(wanted + ":"):
                     keys = tuple(str(entry.get(k, "")) for k in ("fru", "slot", "bay", "chassis"))
-                    if all(keys):
-                        return keys, str(partition.get("name"))
-        return None
+                    if all(k != "" for k in keys):
+                        if exact:
+                            return keys, str(partition.get("name"))
+                        if best is None:
+                            best = (keys, str(partition.get("name")))
+        return best
 
-    def _read_file_size(self, client, image_file_name, file_ref, retries=None):
+    def _read_file_size(self, client, image_file_name, ref_cell, log, retries=None):
         """Size of ONE file, via a keyed partition-content entry when possible.
 
-        file_ref = (entry_keys, partition_name, full_path) resolved once per
-        copy from the ledger's dest-dir — the keyed GET asks the device about
-        exactly one path, so no filesystem walk (and no AVC spray) happens.
-        A 404 means the file does not exist (yet) — normal mid-copy. Any other
-        problem, or no file_ref (no install history), falls back to the full
-        q-filesystem read: today's behavior, unchanged.
+        ref_cell is a per-copy MUTABLE dict: {"ref": (keys, pname, full_path)
+        or None, "disabled": bool, "misses": int}. The keyed GET asks about
+        exactly one path — no filesystem walk, no AVC spray. Semantics:
+          * keyed 404 -> None (file not there yet — normal mid-copy) and
+            "misses" increments so the watcher can self-heal a stale path;
+          * keyed transport/schema error -> logged ONCE, "disabled" set, and
+            every later read uses the full walk EXPLICITLY (the operator can
+            see the mitigation is inert) — never a silent per-poll retry;
+          * no ref / disabled -> the full read: today's exact behavior.
         """
-        if file_ref is not None:
-            (fru, slot, bay, chassis), pname, full_path = file_ref
+        ref = None if ref_cell.get("disabled") else ref_cell.get("ref")
+        if ref is not None:
+            (fru, slot, bay, chassis), pname, full_path = ref
             url = (
                 f"{C.DATA_Q_FILESYSTEM}={_uq(fru)},{_uq(slot)},{_uq(bay)},{_uq(chassis)}"
                 f"/partitions={_uq(pname)}/partition-content={_uq(full_path)}"
@@ -1271,10 +1301,19 @@ class IOSXEUpgrade(Job):
             try:
                 data = client.get(url, ok_404=True)
                 if data is None:
+                    ref_cell["misses"] = ref_cell.get("misses", 0) + 1
                     return None  # keyed entry absent: file not there (yet)
+                ref_cell["misses"] = 0
                 return _file_size_bytes(data, image_file_name)
-            except RestconfError:
-                pass  # fall back to the full read below
+            except RestconfError as exc:
+                ref_cell["disabled"] = True
+                self.logger.warning(
+                    "Keyed file-size read rejected by this release (%s) — "
+                    "falling back to full q-filesystem reads for the rest of "
+                    "this copy (expect smand AVC log noise on 17.15.x).",
+                    exc,
+                    extra=log,
+                )
         data = self._read_q_filesystem(client, retries=retries)
         if data is None:
             return None
@@ -1397,19 +1436,38 @@ class IOSXEUpgrade(Job):
         # location): every file-size read this copy makes — pre-check, the
         # ~30 progress polls, the final verify — then asks the device about
         # exactly one path instead of requesting a full filesystem walk.
-        file_ref = self._resolve_file_ref(client, image.image_file_name, target_fs, log)
-        pre_size = self._read_file_size(client, image.image_file_name, file_ref)
+        ref_cell = {
+            "ref": self._resolve_file_ref(client, image.image_file_name, target_fs, log),
+            "disabled": False,
+            "misses": 0,
+        }
+        pre_size = self._read_file_size(client, image.image_file_name, ref_cell, log)
         if expected and pre_size is not None and pre_size == expected:
-            # Idempotent short-circuit: the exact file is already on flash (e.g. a
-            # prior run copied it but died before install add). Skip the transfer;
-            # 'install add' signature validation still vets the bytes.
-            self.logger.info(
-                "Image already present on %s with the expected size (%s bytes); skipping copy.",
-                dest,
-                expected,
+            # Idempotent short-circuit — but a SKIP is consequential, and the
+            # keyed hit rests on a ledger-derived path hypothesis (a stale
+            # subdirectory could hold an old same-named exact-size file). Spend
+            # ONE authoritative full read to confirm before skipping.
+            data = self._read_q_filesystem(client) or {}
+            confirmed = _file_size_bytes(data, image.image_file_name)
+            if confirmed == expected:
+                context = _find_file_context(data, image.image_file_name)
+                if context is not None and str(context[2].get("full-path", "")).startswith("/"):
+                    ref_cell["ref"] = (context[0], context[1], str(context[2]["full-path"]))
+                self.logger.info(
+                    "Image already present on %s with the expected size (%s bytes); "
+                    "skipping copy (confirmed by a full listing).",
+                    dest,
+                    expected,
+                    extra=log,
+                )
+                return
+            self.logger.warning(
+                "Keyed read reported the image present at the expected size, but "
+                "the full listing disagrees (%s) — copying anyway; the ledger-"
+                "derived path may be stale.",
+                confirmed if confirmed is not None else "file not found",
                 extra=log,
             )
-            return
         if pre_size is not None:
             self.logger.warning(
                 "A file named %s already exists on flash (%s bytes, expected %s); "
@@ -1445,11 +1503,11 @@ class IOSXEUpgrade(Job):
         # Poll from a SEPARATE session: requests.Session is not thread-safe and
         # the original one is occupied by the blocking copy.
         self._watch_copy(
-            client.clone(), copy_thread, result, image, expected, log, target_fs, file_ref
+            client.clone(), copy_thread, result, image, expected, log, target_fs, ref_cell
         )
 
     def _watch_copy(
-        self, poll_client, copy_thread, result, image, expected, log, target_fs, file_ref=None
+        self, poll_client, copy_thread, result, image, expected, log, target_fs, ref_cell
     ):
         """Report progress while the copy thread runs; verify when it finishes.
 
@@ -1471,32 +1529,56 @@ class IOSXEUpgrade(Job):
                 )
             time.sleep(C.POLL_INTERVAL)
             polls += 1
-            if file_ref is not None:
-                size = self._read_file_size(poll_client, image.image_file_name, file_ref, retries=1)
+            heal_now = (
+                ref_cell.get("ref") is not None
+                and not ref_cell.get("disabled")
+                and ref_cell.get("misses", 0) > 0
+                and ref_cell["misses"] % 4 == 0
+            )
+            if ref_cell.get("ref") is not None and not ref_cell.get("disabled") and not heal_now:
+                size = self._read_file_size(
+                    poll_client, image.image_file_name, ref_cell, log, retries=1
+                )
             else:
-                # Ledger couldn't supply the mount root: full read, but LEARN
-                # the file's real full-path from its first sighting and switch
-                # to keyed reads for every remaining poll and the final verify.
+                # Full read for one of three reasons: no ref yet (LEARN the
+                # real path from the first sighting), keyed reads disabled
+                # (release rejected them — explicit fallback), or HEAL (the
+                # keyed path has 404ed for ~2 minutes straight while the copy
+                # runs — the ledger-derived hypothesis may be stale, so check
+                # what the device actually shows and correct the address from
+                # OBSERVATION).
                 data = self._read_q_filesystem(poll_client, retries=1) or {}
-                entry = _find_file_entry(data, image.image_file_name)
+                context = _find_file_context(data, image.image_file_name)
                 size = None
-                if entry is not None:
+                if context is not None:
+                    keys, pname, entry = context
                     try:
                         size = int(entry.get("file-size") or entry.get("size"))
                     except (TypeError, ValueError):
                         size = None
                     full_path = str(entry.get("full-path") or "")
-                    if full_path.startswith("/"):
-                        located = self._locate_target_partition(poll_client, target_fs)
-                        if located is not None:
-                            keys, pname = located
-                            file_ref = (keys, pname, full_path)
+                    if (
+                        not ref_cell.get("disabled")
+                        and full_path.startswith("/")
+                        and keys is not None
+                        and pname is not None
+                    ):
+                        old_ref = ref_cell.get("ref")
+                        new_ref = (keys, pname, full_path)
+                        if old_ref != new_ref:
+                            ref_cell["ref"] = new_ref
+                            ref_cell["misses"] = 0
                             self.logger.info(
-                                "Learned the on-device file path (%s) — "
+                                "%s the on-device file address (%s) — "
                                 "remaining size reads use the keyed entry.",
+                                "Corrected" if old_ref else "Learned",
                                 full_path,
                                 extra=log,
                             )
+                        else:
+                            ref_cell["misses"] = 0
+                elif heal_now:
+                    ref_cell["misses"] = 0  # file genuinely absent; keep keyed cadence
             elapsed = int(time.monotonic() - started)
             if size is not None:
                 step = max((expected or 0) // 20, 25_000_000)  # ~5% or 25 MB
@@ -1529,8 +1611,17 @@ class IOSXEUpgrade(Job):
                 f"The copy was rejected by the device: {error_text}. "
                 + _fetch_hints(image.download_url)
             )
-        # RPC returned success — verify what actually landed on flash.
-        size = self._read_file_size(poll_client, image.image_file_name, file_ref)
+        # RPC returned success — verify what actually landed on flash. The
+        # keyed read is only an optimization here: if it 404s (possibly-stale
+        # path), is disabled, or DISAGREES with the expected size, the full
+        # authoritative listing decides — the byte-exact gate must never be
+        # downgraded to a warning by a wrong address (review finding), nor
+        # abort a good copy because a stale path holds an old file.
+        size = self._read_file_size(poll_client, image.image_file_name, ref_cell, log)
+        if size is None or (expected and abs(size - expected) > C.SIZE_MATCH_TOLERANCE_BYTES):
+            size = _file_size_bytes(
+                self._read_q_filesystem(poll_client) or {}, image.image_file_name
+            )
         elapsed = int(time.monotonic() - started)
         if expected and size is not None:
             if abs(size - expected) > C.SIZE_MATCH_TOLERANCE_BYTES:
@@ -2851,29 +2942,40 @@ def _flash_frees(data, fs_names):
     return out
 
 
-def _find_file_entry(data, image_file_name):
-    """The dict entry for ``image_file_name`` (basename equality) — or None.
+def _find_file_context(data, image_file_name):
+    """(entry_keys, partition_name, file_entry) for an OBSERVED file — or None.
 
-    Same matching rules as the size read; ALSO exposes the entry's full-path,
-    which lets the copy watcher learn the keyed address from its first
-    sighting when the ledger could not supply the mount root.
+    Walks a full q-filesystem document carrying the enclosing q-filesystem
+    entry keys and partition name, so a sighting yields the complete keyed
+    address (correct member on stacks, correct partition, real full-path) —
+    observation, not hypothesis.
     """
-    if isinstance(data, dict):
-        path = data.get("full-path") or data.get("name") or data.get("filename")
-        if path:
-            basename = str(path).split(":")[-1].rsplit("/", 1)[-1]
-            if basename == image_file_name:
-                return data
-        for value in data.values():
-            found = _find_file_entry(value, image_file_name)
-            if found is not None:
-                return found
-    elif isinstance(data, list):
-        for item in data:
-            found = _find_file_entry(item, image_file_name)
-            if found is not None:
-                return found
-    return None
+
+    def _walk(node, keys, pname):
+        if isinstance(node, dict):
+            if all(k in node for k in ("fru", "slot", "bay", "chassis")):
+                keys = tuple(str(node[k]) for k in ("fru", "slot", "bay", "chassis"))
+            if "name" in node and isinstance(node.get("partition-content"), list):
+                pname = str(node.get("name"))
+            path = node.get("full-path") or node.get("name") or node.get("filename")
+            if path:
+                basename = str(path).split(":")[-1].rsplit("/", 1)[-1]
+                if basename == image_file_name and (
+                    node.get("full-path") or node.get("file-size") or node.get("size")
+                ):
+                    return keys, pname, node
+            for value in node.values():
+                found = _walk(value, keys, pname)
+                if found is not None:
+                    return found
+        elif isinstance(node, list):
+            for item in node:
+                found = _walk(item, keys, pname)
+                if found is not None:
+                    return found
+        return None
+
+    return _walk(data, None, None)
 
 
 def _file_size_bytes(data, image_file_name):
