@@ -1278,9 +1278,19 @@ class IOSXEUpgrade(Job):
                 )
                 or {}
             )
-        except RestconfError:
-            # fields unsupported or a transient error — the full read (with its
-            # own retry policy) is the fallback; parsers handle either shape.
+        except RestconfError as exc:
+            # fields unsupported or a transient error — the full read (with
+            # its own retry policy) is the fallback; parsers handle either
+            # shape. NEVER silent (review finding): the fields read is the
+            # AVC mitigation for partition stats, and losing it must leave a
+            # breadcrumb naming the rejected expression.
+            self.logger.warning(
+                "Fields-scoped partitions read rejected by this release (%s) "
+                "— falling back to a full q-filesystem read (expect smand AVC "
+                "console noise). Rejected fields expression: %s",
+                exc,
+                C.QFS_PARTITIONS_FIELDS,
+            )
             return self._read_q_filesystem(client, retries=retries)
 
     @staticmethod
@@ -1421,30 +1431,63 @@ class IOSXEUpgrade(Job):
         return None, info, None
 
     def _locate_target_partition(self, client, target_fs):
-        """(q-filesystem entry keys, partition name) for the target filesystem.
+        """((entry keys, partition name) or None, reason) for the target fs.
 
         Needed to build the keyed partition-content URL (nested list entries
         must be addressed through their ancestors' keys). Uses the
-        partitions-scoped read — no file walk. Returns None when unresolvable.
+        partitions-scoped read — no file walk. The reason string states
+        exactly what the device returned when unresolvable, so a lab log
+        discriminates 'no such partition' from 'the listing carried no
+        location keys' (a real 9300 omitted them until the fields selection
+        asked for the key leaves explicitly).
         """
-        data = self._read_partitions(client, retries=1) or {}
+        data = self._read_partitions(client, retries=1)
+        if not data:
+            return None, "the partitions listing was unreadable"
         wanted = target_fs.rstrip(":").lower()
-        # tolerate wrapper shapes: hunt for dicts carrying a 'partitions' list
         best = None
+        seen = []
+        matched_keyless = False
+        any_keyed = False
+        # tolerate wrapper shapes: hunt for dicts carrying a 'partitions' list
         for entry in _find_qfs_entries(data):
             for partition in entry.get("partitions") or []:
-                name = str(partition.get("name", "")).strip().rstrip(":").lower()
+                raw_name = str(partition.get("name", "")).strip()
+                if raw_name and raw_name not in seen:
+                    seen.append(raw_name)
+                name = raw_name.rstrip(":").lower()
                 exact = name == wanted
                 # Stacks report member-suffixed names (flash-1, flash-2): a
                 # suffix match engages the keyed path there too; exact wins.
+                keys = tuple(str(entry.get(k, "")) for k in ("fru", "slot", "bay", "chassis"))
+                complete = all(k != "" for k in keys)
+                if complete:
+                    any_keyed = True
                 if exact or name.startswith(wanted + "-") or name.startswith(wanted + ":"):
-                    keys = tuple(str(entry.get(k, "")) for k in ("fru", "slot", "bay", "chassis"))
-                    if all(k != "" for k in keys):
+                    if complete:
                         if exact:
-                            return keys, str(partition.get("name"))
+                            return (keys, raw_name), ""
                         if best is None:
-                            best = (keys, str(partition.get("name")))
-        return best
+                            best = (keys, raw_name)
+                    else:
+                        matched_keyless = True
+        if best is not None:
+            return best, ""
+        if matched_keyless:
+            # Observation only — no cause attribution: this response may even
+            # have come from the full-read fallback, where no fields
+            # selection was in play (review finding).
+            if any_keyed:
+                return None, (
+                    "partition name(s) matched but their entries lacked "
+                    "complete fru/slot/bay/chassis location keys (other "
+                    "entries in the same listing carried them)"
+                )
+            return None, (
+                "partition name(s) matched but no entry in the listing "
+                "carried complete fru/slot/bay/chassis location keys"
+            )
+        return None, f"no partition named like '{wanted}' (partitions seen: {seen})"
 
     def _read_file_size(self, client, image_file_name, ref_cell, log, retries=None):
         """Size of ONE file, via a keyed partition-content entry when possible.
@@ -1558,13 +1601,14 @@ class IOSXEUpgrade(Job):
                     extra=log,
                 )
             return None
-        located = self._locate_target_partition(client, target_fs)
+        located, why = self._locate_target_partition(client, target_fs)
         if located is None:
             self.logger.info(
                 "The %s partition could not be located in the partitions "
-                "listing — the copy watcher will learn the file's path from "
-                "its first sighting instead.",
+                "listing (%s) — the copy watcher will learn the file's path "
+                "from its first sighting instead.",
                 target_fs,
+                why,
                 extra=log,
             )
             return None
