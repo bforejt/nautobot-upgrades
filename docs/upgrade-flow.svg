@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 3592" width="980" height="3592" font-family="Helvetica,Arial,sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 3688" width="980" height="3688" font-family="Helvetica,Arial,sans-serif">
 <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,3 L0,6 z" fill="#555"/></marker></defs>
-<rect x="0" y="0" width="980" height="3592" fill="#ffffff"/>
+<rect x="0" y="0" width="980" height="3688" fill="#ffffff"/>
 <text x="20" y="28" font-size="18" font-weight="bold" fill="#111">Cisco IOS-XE Upgrade (RESTCONF) — per-device flow</text>
 <rect x="570" y="38" width="400" height="96" rx="6" ry="6" fill="#fbfbfb" stroke="#bbb" stroke-width="1.5"/>
 <text x="770" y="66" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#333"><tspan x="770" dy="0">Legend:  diamonds = decisions</tspan><tspan x="770" dy="14">· red = ABORT this device (logs the reason, continues with the next device; ANY abort marks the whole Job Result FAILED at the end)</tspan><tspan x="770" dy="14">· amber = warn &amp; continue</tspan><tspan x="770" dy="14">· green = successful end state.</tspan></text>
@@ -39,24 +39,25 @@
 <path d="M 400 2306 L 400 2332" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
 <rect x="399" y="2310" width="34" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="416" y="2323" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="416" dy="0">full</tspan></text>
 <path d="M 400 2388 L 400 2428" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
-<path d="M 400 2484 L 400 2510" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
-<path d="M 400 2594 L 400 2620" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
-<rect x="402" y="2598" width="28" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="416" y="2611" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="416" dy="0">Yes</tspan></text>
-<path d="M 400 2676 L 400 2702" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
-<path d="M 400 2786 L 400 2798" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
-<rect x="402" y="2783" width="28" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="416" y="2796" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="416" dy="0">Yes</tspan></text>
-<path d="M 400 2882 L 400 2908" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
-<rect x="360" y="2886" width="112" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="416" y="2899" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="416" dy="0">Yes / standalone</tspan></text>
-<path d="M 400 2964 L 400 3004" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
-<path d="M 400 3060 L 400 3086" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
-<path d="M 400 3170 L 400 3196" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
-<rect x="402" y="3174" width="28" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="416" y="3187" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="416" dy="0">Yes</tspan></text>
-<path d="M 400 3252 L 400 3278" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
-<path d="M 400 3362 L 400 3388" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
-<rect x="402" y="3366" width="28" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="416" y="3379" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="416" dy="0">Yes</tspan></text>
-<path d="M 400 3444 L 400 3485" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
-<path d="M 275 3320 L 200 3320 L 200 3512 L 240 3512" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
-<rect x="216" y="3407" width="21" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="226" y="3420" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="226" dy="0">No</tspan></text>
+<path d="M 400 2484 L 400 2524" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 400 2580 L 400 2606" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 400 2690 L 400 2716" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="402" y="2694" width="28" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="416" y="2707" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="416" dy="0">Yes</tspan></text>
+<path d="M 400 2772 L 400 2798" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 400 2882 L 400 2894" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="402" y="2879" width="28" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="416" y="2892" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="416" dy="0">Yes</tspan></text>
+<path d="M 400 2978 L 400 3004" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="360" y="2982" width="112" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="416" y="2995" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="416" dy="0">Yes / standalone</tspan></text>
+<path d="M 400 3060 L 400 3100" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 400 3156 L 400 3182" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 400 3266 L 400 3292" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="402" y="3270" width="28" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="416" y="3283" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="416" dy="0">Yes</tspan></text>
+<path d="M 400 3348 L 400 3374" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 400 3458 L 400 3484" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="402" y="3462" width="28" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="416" y="3475" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="416" dy="0">Yes</tspan></text>
+<path d="M 400 3540 L 400 3581" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 275 3416 L 200 3416 L 200 3608 L 240 3608" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="216" y="3503" width="21" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="226" y="3516" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="226" dy="0">No</tspan></text>
 <path d="M 525 248 L 600 248" fill="none" stroke="#B85450" stroke-width="1.5" marker-end="url(#arrow)"/>
 <rect x="552" y="229" width="21" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="562.5" y="242" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B85450"><tspan x="562.5" dy="0">No</tspan></text>
 <rect x="600" y="215" width="330" height="66" rx="6" ry="6" fill="#F8CECC" stroke="#B85450" stroke-width="1.5"/>
@@ -131,38 +132,38 @@
 <rect x="549" y="2245" width="28" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="562.5" y="2258" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#2E7D32"><tspan x="562.5" dy="0">Yes</tspan></text>
 <rect x="600" y="2236" width="330" height="56" rx="22" ry="22" fill="#D5E8D4" stroke="#2E7D32" stroke-width="1.5"/>
 <text x="765.0" y="2250" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#1b5e20"><tspan x="765.0" dy="0">DONE: STAGED (add) — marked for</tspan><tspan x="765.0" dy="14">activation; window run: activate →</tspan><tspan x="765.0" dy="14">reload → commit only</tspan></text>
-<path d="M 525 2552 L 600 2552" fill="none" stroke="#B85450" stroke-width="1.5" marker-end="url(#arrow)"/>
-<rect x="552" y="2533" width="21" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="562.5" y="2546" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B85450"><tspan x="562.5" dy="0">No</tspan></text>
-<rect x="600" y="2519" width="330" height="66" rx="6" ry="6" fill="#F8CECC" stroke="#B85450" stroke-width="1.5"/>
-<text x="765.0" y="2543" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#8a1f1f"><tspan x="765.0" dy="0">ABORT</tspan></text>
-<text x="765.0" y="2548" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#5b1414"><tspan x="765.0" dy="0">Ledger-recorded failure, or never</tspan><tspan x="765.0" dy="14">registered despite re-sends — abort</tspan><tspan x="765.0" dy="14">(engaged runs get an extended budget)</tspan></text>
-<path d="M 525 2744 L 600 2744" fill="none" stroke="#B85450" stroke-width="1.5" marker-end="url(#arrow)"/>
-<rect x="552" y="2725" width="21" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="562.5" y="2738" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B85450"><tspan x="562.5" dy="0">No</tspan></text>
-<rect x="600" y="2711" width="330" height="66" rx="6" ry="6" fill="#F8CECC" stroke="#B85450" stroke-width="1.5"/>
-<text x="765.0" y="2735" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#8a1f1f"><tspan x="765.0" dy="0">ABORT</tspan></text>
-<text x="765.0" y="2746" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#5b1414"><tspan x="765.0" dy="0">Not confirmed before timeout — NOT</tspan><tspan x="765.0" dy="14">committed; auto-rollback should revert</tspan></text>
+<path d="M 525 2648 L 600 2648" fill="none" stroke="#B85450" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="552" y="2629" width="21" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="562.5" y="2642" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B85450"><tspan x="562.5" dy="0">No</tspan></text>
+<rect x="600" y="2615" width="330" height="66" rx="6" ry="6" fill="#F8CECC" stroke="#B85450" stroke-width="1.5"/>
+<text x="765.0" y="2639" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#8a1f1f"><tspan x="765.0" dy="0">ABORT</tspan></text>
+<text x="765.0" y="2644" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#5b1414"><tspan x="765.0" dy="0">Ledger-recorded failure, or never</tspan><tspan x="765.0" dy="14">registered despite re-sends — abort</tspan><tspan x="765.0" dy="14">(engaged runs get an extended budget)</tspan></text>
 <path d="M 525 2840 L 600 2840" fill="none" stroke="#B85450" stroke-width="1.5" marker-end="url(#arrow)"/>
 <rect x="552" y="2821" width="21" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="562.5" y="2834" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B85450"><tspan x="562.5" dy="0">No</tspan></text>
 <rect x="600" y="2807" width="330" height="66" rx="6" ry="6" fill="#F8CECC" stroke="#B85450" stroke-width="1.5"/>
 <text x="765.0" y="2831" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#8a1f1f"><tspan x="765.0" dy="0">ABORT</tspan></text>
-<text x="765.0" y="2842" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#5b1414"><tspan x="765.0" dy="0">Member(s) missing after reload — NOT</tspan><tspan x="765.0" dy="14">committed; auto-rollback should revert</tspan></text>
-<path d="M 275 2840 L 250 2840" fill="none" stroke="#D79B00" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
-<rect x="213" y="2821" width="99" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="262.5" y="2834" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B7791f"><tspan x="262.5" dy="0">roster unknown</tspan></text>
-<rect x="30" y="2810" width="220" height="60" rx="6" ry="6" fill="#FFE6CC" stroke="#D79B00" stroke-width="1.5"/>
-<text x="140.0" y="2833" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#7a4f00"><tspan x="140.0" dy="0">Roster unreadable pre-upgrade →</tspan><tspan x="140.0" dy="14">skip completeness check</tspan></text>
-<path d="M 140 2870 L 140 2936 L 250 2936" fill="none" stroke="#D79B00" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
-<rect x="165" y="2917" width="60" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="195.0" y="2930" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B7791f"><tspan x="195.0" dy="0">continue</tspan></text>
-<path d="M 525 3128 L 600 3128" fill="none" stroke="#B85450" stroke-width="1.5" marker-end="url(#arrow)"/>
-<rect x="539" y="3109" width="47" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="562.5" y="3122" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B85450"><tspan x="562.5" dy="0">failed</tspan></text>
-<rect x="600" y="3095" width="330" height="66" rx="6" ry="6" fill="#F8CECC" stroke="#B85450" stroke-width="1.5"/>
-<text x="765.0" y="3119" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#8a1f1f"><tspan x="765.0" dy="0">ABORT</tspan></text>
-<text x="765.0" y="3130" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#5b1414"><tspan x="765.0" dy="0">Commit failed — ACTIVATED but NOT</tspan><tspan x="765.0" dy="14">committed; manual intervention / re-run</tspan></text>
-<path d="M 275 3128 L 250 3128" fill="none" stroke="#D79B00" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
-<rect x="223" y="3109" width="80" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="262.5" y="3122" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B7791f"><tspan x="262.5" dy="0">unconfirmed</tspan></text>
-<rect x="30" y="3098" width="220" height="60" rx="6" ry="6" fill="#FFE6CC" stroke="#D79B00" stroke-width="1.5"/>
-<text x="140.0" y="3114" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#7a4f00"><tspan x="140.0" dy="0">Not confirmed in time → warn;</tspan><tspan x="140.0" dy="14">verify manually (remove-inactive</tspan><tspan x="140.0" dy="14">is skipped)</tspan></text>
-<path d="M 140 3158 L 140 3224 L 250 3224" fill="none" stroke="#D79B00" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
-<rect x="165" y="3205" width="60" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="195.0" y="3218" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B7791f"><tspan x="195.0" dy="0">continue</tspan></text>
+<text x="765.0" y="2842" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#5b1414"><tspan x="765.0" dy="0">Not confirmed before timeout — NOT</tspan><tspan x="765.0" dy="14">committed; auto-rollback should revert</tspan></text>
+<path d="M 525 2936 L 600 2936" fill="none" stroke="#B85450" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="552" y="2917" width="21" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="562.5" y="2930" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B85450"><tspan x="562.5" dy="0">No</tspan></text>
+<rect x="600" y="2903" width="330" height="66" rx="6" ry="6" fill="#F8CECC" stroke="#B85450" stroke-width="1.5"/>
+<text x="765.0" y="2927" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#8a1f1f"><tspan x="765.0" dy="0">ABORT</tspan></text>
+<text x="765.0" y="2938" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#5b1414"><tspan x="765.0" dy="0">Member(s) missing after reload — NOT</tspan><tspan x="765.0" dy="14">committed; auto-rollback should revert</tspan></text>
+<path d="M 275 2936 L 250 2936" fill="none" stroke="#D79B00" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+<rect x="213" y="2917" width="99" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="262.5" y="2930" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B7791f"><tspan x="262.5" dy="0">roster unknown</tspan></text>
+<rect x="30" y="2906" width="220" height="60" rx="6" ry="6" fill="#FFE6CC" stroke="#D79B00" stroke-width="1.5"/>
+<text x="140.0" y="2929" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#7a4f00"><tspan x="140.0" dy="0">Roster unreadable pre-upgrade →</tspan><tspan x="140.0" dy="14">skip completeness check</tspan></text>
+<path d="M 140 2966 L 140 3032 L 250 3032" fill="none" stroke="#D79B00" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+<rect x="165" y="3013" width="60" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="195.0" y="3026" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B7791f"><tspan x="195.0" dy="0">continue</tspan></text>
+<path d="M 525 3224 L 600 3224" fill="none" stroke="#B85450" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="539" y="3205" width="47" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="562.5" y="3218" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B85450"><tspan x="562.5" dy="0">failed</tspan></text>
+<rect x="600" y="3191" width="330" height="66" rx="6" ry="6" fill="#F8CECC" stroke="#B85450" stroke-width="1.5"/>
+<text x="765.0" y="3215" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#8a1f1f"><tspan x="765.0" dy="0">ABORT</tspan></text>
+<text x="765.0" y="3226" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#5b1414"><tspan x="765.0" dy="0">Commit failed — ACTIVATED but NOT</tspan><tspan x="765.0" dy="14">committed; manual intervention / re-run</tspan></text>
+<path d="M 275 3224 L 250 3224" fill="none" stroke="#D79B00" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+<rect x="223" y="3205" width="80" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="262.5" y="3218" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B7791f"><tspan x="262.5" dy="0">unconfirmed</tspan></text>
+<rect x="30" y="3194" width="220" height="60" rx="6" ry="6" fill="#FFE6CC" stroke="#D79B00" stroke-width="1.5"/>
+<text x="140.0" y="3210" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#7a4f00"><tspan x="140.0" dy="0">Not confirmed in time → warn;</tspan><tspan x="140.0" dy="14">verify manually (remove-inactive</tspan><tspan x="140.0" dy="14">is skipped)</tspan></text>
+<path d="M 140 3254 L 140 3320 L 250 3320" fill="none" stroke="#D79B00" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+<rect x="165" y="3301" width="60" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="195.0" y="3314" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B7791f"><tspan x="195.0" dy="0">continue</tspan></text>
 <rect x="250" y="31" width="300" height="50" rx="24" ry="24" fill="#DAE8FC" stroke="#6C8EBF" stroke-width="1.5"/>
 <text x="400" y="48" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#1b3a6b"><tspan x="400" dy="0">FOR EACH selected device</tspan><tspan x="400" dy="15">(up to &#x27;Parallelism&#x27; concurrently)</tspan></text>
 <rect x="250" y="124" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
@@ -212,29 +213,31 @@
 <polygon points="400,2222.0 525.0,2264 400,2306.0 275.0,2264" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
 <text x="400" y="2257" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Run scope =</tspan><tspan x="400" dy="14">stage-add?</tspan></text>
 <rect x="250" y="2332" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
-<text x="400" y="2346" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Engine-idle gate before EVERY install write:</tspan><tspan x="400" dy="14">sys-activity = no-activity on all members</tspan><tspan x="400" dy="14">(settle delay only pre-activate w/o signal)</tspan></text>
+<text x="400" y="2346" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Config-sync check (CONFIG-MAN timestamps):</tspan><tspan x="400" dy="14">warn if running-config unsaved (RPC reload</tspan><tspan x="400" dy="14">never prompts); opt-in save + verify</tspan></text>
 <rect x="250" y="2428" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
-<text x="400" y="2442" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">install activate (non-ISSU, by full internal</tspan><tspan x="400" dy="14">version; ledger-tracked,</tspan><tspan x="400" dy="14">re-sent on ledger-absent evidence)</tspan></text>
-<polygon points="400,2510.0 525.0,2552 400,2594.0 275.0,2552" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
-<text x="400" y="2545" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Activation started?</tspan><tspan x="400" dy="14">(ledger / state / device drop)</tspan></text>
-<rect x="250" y="2620" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
-<text x="400" y="2634" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Wait for reload: must observe the device</tspan><tspan x="400" dy="14">go DOWN, then boot the target stably</tspan><tspan x="400" dy="14">(2 consecutive matching polls)</tspan></text>
-<polygon points="400,2702.0 525.0,2744 400,2786.0 275.0,2744" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
-<text x="400" y="2737" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Target version</tspan><tspan x="400" dy="14">stably confirmed?</tspan></text>
+<text x="400" y="2442" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Engine-idle gate before EVERY install write:</tspan><tspan x="400" dy="14">sys-activity = no-activity on all members</tspan><tspan x="400" dy="14">(settle delay only pre-activate w/o signal)</tspan></text>
+<rect x="250" y="2524" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
+<text x="400" y="2538" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">install activate (non-ISSU, by full internal</tspan><tspan x="400" dy="14">version; ledger-tracked,</tspan><tspan x="400" dy="14">re-sent on ledger-absent evidence)</tspan></text>
+<polygon points="400,2606.0 525.0,2648 400,2690.0 275.0,2648" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
+<text x="400" y="2641" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Activation started?</tspan><tspan x="400" dy="14">(ledger / state / device drop)</tspan></text>
+<rect x="250" y="2716" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
+<text x="400" y="2730" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Wait for reload: must observe the device</tspan><tspan x="400" dy="14">go DOWN, then boot the target stably</tspan><tspan x="400" dy="14">(2 consecutive matching polls)</tspan></text>
 <polygon points="400,2798.0 525.0,2840 400,2882.0 275.0,2840" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
-<text x="400" y="2833" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">All stack members</tspan><tspan x="400" dy="14">rejoined?</tspan></text>
-<rect x="250" y="2908" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
-<text x="400" y="2929" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Report auto-rollback timer status</tspan><tspan x="400" dy="14">(informational; commit follows)</tspan></text>
+<text x="400" y="2833" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Target version</tspan><tspan x="400" dy="14">stably confirmed?</tspan></text>
+<polygon points="400,2894.0 525.0,2936 400,2978.0 275.0,2936" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
+<text x="400" y="2929" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">All stack members</tspan><tspan x="400" dy="14">rejoined?</tspan></text>
 <rect x="250" y="3004" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
-<text x="400" y="3025" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">install commit → ledger-confirmed,</tspan><tspan x="400" dy="14">cross-checked against committed state</tspan></text>
-<polygon points="400,3086.0 525.0,3128 400,3170.0 275.0,3128" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
-<text x="400" y="3121" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Commit</tspan><tspan x="400" dy="14">succeeded?</tspan></text>
-<rect x="250" y="3196" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
-<text x="400" y="3217" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Sync Nautobot software_version</tspan><tspan x="400" dy="14">(warn on fail; already committed)</tspan></text>
-<polygon points="400,3278.0 525.0,3320 400,3362.0 275.0,3320" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
-<text x="400" y="3313" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">remove_inactive</tspan><tspan x="400" dy="14">enabled?</tspan></text>
-<rect x="250" y="3388" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
-<text x="400" y="3409" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">install remove inactive (idle-gated,</tspan><tspan x="400" dy="14">ledger-tracked; warn on fail)</tspan></text>
-<rect x="240" y="3485" width="320" height="54" rx="24" ry="24" fill="#D5E8D4" stroke="#2E7D32" stroke-width="1.5"/>
-<text x="400" y="3512" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#14532d"><tspan x="400" dy="0">DONE: UPGRADED &amp; COMMITTED ✓</tspan></text>
+<text x="400" y="3025" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Report auto-rollback timer status</tspan><tspan x="400" dy="14">(informational; commit follows)</tspan></text>
+<rect x="250" y="3100" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
+<text x="400" y="3121" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">install commit → ledger-confirmed,</tspan><tspan x="400" dy="14">cross-checked against committed state</tspan></text>
+<polygon points="400,3182.0 525.0,3224 400,3266.0 275.0,3224" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
+<text x="400" y="3217" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Commit</tspan><tspan x="400" dy="14">succeeded?</tspan></text>
+<rect x="250" y="3292" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
+<text x="400" y="3313" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Sync Nautobot software_version</tspan><tspan x="400" dy="14">(warn on fail; already committed)</tspan></text>
+<polygon points="400,3374.0 525.0,3416 400,3458.0 275.0,3416" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
+<text x="400" y="3409" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">remove_inactive</tspan><tspan x="400" dy="14">enabled?</tspan></text>
+<rect x="250" y="3484" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
+<text x="400" y="3505" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">install remove inactive (idle-gated,</tspan><tspan x="400" dy="14">ledger-tracked; warn on fail)</tspan></text>
+<rect x="240" y="3581" width="320" height="54" rx="24" ry="24" fill="#D5E8D4" stroke="#2E7D32" stroke-width="1.5"/>
+<text x="400" y="3608" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#14532d"><tspan x="400" dy="0">DONE: UPGRADED &amp; COMMITTED ✓</tspan></text>
 </svg>
