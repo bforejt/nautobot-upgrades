@@ -83,6 +83,9 @@ SPINE = [
     ("d_stageadd", "dec", "Run scope =\nstage-add?",
      {"okright": ("Yes", "DONE: STAGED (add) — marked for\nactivation; window run: activate →\nreload → commit only"),
       "passlabel": "full"}),
+    ("cfgsync", "proc",
+     "Config-sync check (CONFIG-MAN timestamps):\nwarn if running-config unsaved (RPC reload\n"
+     "never prompts); opt-in save + verify", {}),
     ("idle", "proc",
      "Engine-idle gate before EVERY install write:\nsys-activity = no-activity on all members\n"
      "(settle delay only pre-activate w/o signal)", {}),

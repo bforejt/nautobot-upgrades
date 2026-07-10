@@ -258,6 +258,20 @@ class IOSXEUpgrade(Job):
             "'Remove inactive (after commit)'."
         ),
     )
+    save_config = BooleanVar(
+        label="Save running-config before reload (Full runs)",
+        default=False,
+        description=(
+            "Before the activation reload, write running-config to "
+            "startup-config ('write memory' over RESTCONF). RPC-triggered "
+            "reloads never ask the CLI's 'System configuration has been "
+            "modified. Save?' question — unsaved changes are silently lost. "
+            "Full runs always CHECK the device's config timestamps and warn "
+            "if running-config looks unsaved; this box makes the job save it. "
+            "Off by default: saving is itself a write, and it would persist "
+            "half-applied changes an engineer deliberately left unsaved."
+        ),
+    )
     secrets_group_override = ObjectVar(
         model=SecretsGroup,
         required=False,
@@ -329,6 +343,7 @@ class IOSXEUpgrade(Job):
             "target_version",
             "run_scope",
             "clean_before",
+            "save_config",
             "secrets_group_override",
             "remove_inactive",
             "parallelism",
@@ -352,6 +367,7 @@ class IOSXEUpgrade(Job):
         target_version,
         run_scope,
         clean_before,
+        save_config,
         secrets_group_override,
         remove_inactive,
         parallelism,
@@ -439,6 +455,7 @@ class IOSXEUpgrade(Job):
                     dryrun,
                     run_scope,
                     clean_before,
+                    save_config,
                 )
                 # Total wall-clock per device — the number change windows are
                 # planned around.
@@ -563,6 +580,7 @@ class IOSXEUpgrade(Job):
         dryrun,
         run_scope="full",
         clean_before=False,
+        save_config=False,
     ):
         log = {"object": device}
 
@@ -675,7 +693,30 @@ class IOSXEUpgrade(Job):
                     f"software; install DB currently also tracks: "
                     f"{'; '.join(pre_entries) or 'nothing'})."
                 )
-            return f"DRY-RUN ok:{clean_note} {planned}. All pre-flight gates passed."
+            cfg_note = ""
+            if run_scope == "full":
+                # Read-only check, surfaced here because only Full reloads —
+                # and the RPC reload never prompts to save.
+                state, detail, _ticks = self._config_sync_state(client)
+                if state is False:
+                    action = (
+                        "would save before the reload"
+                        if save_config
+                        else "the reload would NOT save them (tick 'Save "
+                        "running-config before reload' or save manually)"
+                    )
+                    cfg_note = f" Running-config has UNSAVED changes ({detail}) — {action}."
+                elif state is None:
+                    cfg_note = f" Config-sync state could not be determined ({detail})" + (
+                        "; would save before the reload regardless."
+                        if save_config
+                        else "; save manually if in doubt."
+                    )
+                elif save_config:
+                    cfg_note = (
+                        " startup-config is already current; would save again anyway (harmless)."
+                    )
+            return f"DRY-RUN ok:{clean_note}{cfg_note} {planned}. All pre-flight gates passed."
 
         # -- 3. Transfer + integrity (classic copy in a worker thread, watched
         # to a size-verified completion inside _copy_image) --------------------
@@ -718,6 +759,39 @@ class IOSXEUpgrade(Job):
                 f"STAGED (add): {target_str} is marked for activation. The "
                 "maintenance-window run (scope 'full') will skip the copy and "
                 "the add, and needs only activate → reload → commit."
+            )
+        # -- Config-sync before the reload: the RPC-triggered activation
+        # reload never asks the CLI's 'configuration modified. Save?' question
+        # — unsaved running-config changes would be silently lost. Decision
+        # from device-published timestamps; warn-don't-gate (the operator owns
+        # the choice) unless the save was explicitly requested. Runs BEFORE
+        # the engine-idle gate so the idle-confirmation-to-activate gap stays
+        # minimal.
+        state, detail, ticks = self._config_sync_state(client)
+        if save_config:
+            self._save_config(client, log, pre_ticks=ticks)
+        elif state is False:
+            self.logger.warning(
+                "Running-config has changes newer than startup-config (%s). "
+                "The activation reload will NOT save them — save manually now "
+                "('write memory') or re-run with 'Save running-config before "
+                "reload' ticked. (A device that has not saved since boot also "
+                "reads this way.)",
+                detail,
+                extra=log,
+            )
+        elif state is None:
+            self.logger.warning(
+                "Could not determine whether running-config is saved (%s) — "
+                "save manually if in doubt; the activation reload will not.",
+                detail,
+                extra=log,
+            )
+        else:
+            self.logger.info(
+                "startup-config is current (%s) — nothing to lose in the reload.",
+                detail,
+                extra=log,
             )
         self._wait_for_engine_idle(
             client, log, "install activate", settle_fallback=not ledger_confirmed_add
@@ -1447,6 +1521,179 @@ class IOSXEUpgrade(Job):
             extra=log,
         )
         return keys, pname, f"{root.rstrip('/')}/{image_file_name}"
+
+    def _config_sync_state(self, client):
+        """Has running-config been written to startup-config? Tri-state.
+
+        Returns (state, detail, ticks): state True = startup-config is
+        current, False = running-config changed after startup was last
+        written, None = indeterminate; ticks is {"running": int, "startup":
+        int_or_None} whenever the leaves were readable (kept even when state
+        is None so a save can be verified by CHANGE — wrap-immune), else
+        None. Source: the CISCO-CONFIG-MAN-MIB ccmHistory timestamps
+        (device-published; present 17.9.1-26.1.1). The comparison uses
+        startup-last-changed, NOT running-last-saved — the MIB counts ANY
+        write (even 'show run' to a terminal) as 'saved', so only the startup
+        write time proves persistence.
+
+        The leaves are sysUpTime ticks (uint32 hundredths, wrap ~497 days).
+        A leaf LARGER than the device's current sysUpTime must predate a wrap
+        — comparisons would be unreliable, so that reads as indeterminate
+        (checked against the same SMIv2 bridge; if sysUpTime is unreadable
+        the plain comparison stands). A device that has not saved since boot
+        reports startup=0 and legitimately reads 'unsaved'. The MIB data is
+        served via the device's SNMP agent: with snmp-server unconfigured the
+        GET returns empty -> indeterminate, never assumed in-sync.
+        """
+        try:
+            data = client.get(C.DATA_CONFIG_MAN, ok_404=True)
+        except RestconfError as exc:
+            return None, f"config timestamps unreadable: {exc}", None
+        if data is None:
+            return None, "the device does not expose CISCO-CONFIG-MAN-MIB (404)", None
+
+        def _find_key(node, key):
+            if isinstance(node, dict):
+                if key in node:
+                    return node
+                for value in node.values():
+                    found = _find_key(value, key)
+                    if found is not None:
+                        return found
+            elif isinstance(node, list):
+                for item in node:
+                    found = _find_key(item, key)
+                    if found is not None:
+                        return found
+            return None
+
+        hist = _find_key(data, "ccmHistoryRunningLastChanged")
+        if hist is None:
+            return (
+                None,
+                "config timestamps empty — the MIB bridge needs the SNMP "
+                "agent enabled (snmp-server) to answer",
+                None,
+            )
+        try:
+            running = int(hist["ccmHistoryRunningLastChanged"])
+            raw_startup = hist.get("ccmHistoryStartupLastChanged")
+            startup = None if raw_startup is None else int(raw_startup)
+        except (KeyError, TypeError, ValueError):
+            return None, f"config timestamps unparsable: {hist}", None
+        ticks = {"running": running, "startup": startup}
+        # Wrap check from state: any tick beyond current uptime predates a
+        # sysUpTime wrap. Best-effort — an unreadable sysUpTime leaves the
+        # plain comparison in force (the save verify is wrap-immune anyway).
+        uptime = None
+        try:
+            sysdata = client.get(C.DATA_SNMP_SYSTEM, ok_404=True)
+        except RestconfError:
+            sysdata = None
+        entry = _find_key(sysdata, "sysUpTime") if sysdata else None
+        if entry is not None:
+            try:
+                uptime = int(entry["sysUpTime"])
+            except (TypeError, ValueError):
+                uptime = None
+        if uptime is not None and max(running, startup or 0) > uptime + 500:
+            return (
+                None,
+                f"config timestamps predate a sysUpTime counter wrap "
+                f"(uptime tick {uptime}, running-config tick {running}, "
+                f"startup tick {startup}) — tick comparison unreliable on "
+                f"~497-day+ uptimes",
+                ticks,
+            )
+        detail = (
+            f"running-config last changed at tick {running}, "
+            f"startup-config last written at tick "
+            f"{startup if startup is not None else '0 (never since boot)'}"
+        )
+        return (startup or 0) >= running, detail, ticks
+
+    def _save_config(self, client, log, pre_ticks=None):
+        """Write running-config to startup-config; verify from the timestamps.
+
+        Operator asked for the save (checkbox), so a refused save ABORTS
+        (clean-before precedent: a requested precondition that cannot be
+        delivered must not be silently skipped). Verification is state-based:
+        the PRIMARY proof is the startup tick CHANGING between the pre-save
+        read (pre_ticks) and the post-save read — immune to the ~497-day
+        sysUpTime tick wrap that makes plain tick comparison lie (review
+        finding: the naive predicate-as-gate aborted verified-good saves on
+        year-plus uptimes). Abort only on POSITIVE evidence the save did not
+        take (startup tick readable on both sides and unchanged while the
+        config still reads dirty); when the timestamps cannot answer, the
+        device's own result string is the labeled fallback.
+        """
+        self.logger.info(
+            "Saving running-config to startup-config (cisco-ia:save-config)...",
+            extra=log,
+        )
+        try:
+            response = client.post_rpc(C.OP_SAVE_CONFIG, {})
+        except RestconfError as exc:
+            raise UpgradeAbort(
+                f"'Save running-config before reload' was requested but the "
+                f"save-config RPC failed: {exc}. Save manually ('write memory') "
+                "and re-run, or untick the option."
+            ) from exc
+        error_text = _rpc_error_text(response)
+        if error_text:
+            raise UpgradeAbort(
+                f"'Save running-config before reload' was requested but the "
+                f"device rejected the save: {error_text}."
+            )
+        result = ""
+        if isinstance(response, dict):
+            for value in response.values():
+                if isinstance(value, dict) and "result" in value:
+                    result = str(value["result"])
+                    break
+        if "fail" in result.lower() or "error" in result.lower():
+            raise UpgradeAbort(
+                f"'Save running-config before reload' was requested but the "
+                f"device reported: {result}."
+            )
+        state, detail, ticks = self._config_sync_state(client)
+        pre_startup = (pre_ticks or {}).get("startup")
+        post_startup = (ticks or {}).get("startup")
+        if state is True:
+            self.logger.info(
+                "Running-config saved to startup-config and verified from the "
+                "device's config timestamps (%s).",
+                detail,
+                extra=log,
+            )
+        elif post_startup is not None and pre_startup is not None and post_startup != pre_startup:
+            # Wrap-immune: the startup timestamp MOVED across the save — the
+            # write landed even where raw tick comparison misreads.
+            self.logger.info(
+                "Running-config saved to startup-config — verified by the "
+                "startup timestamp advancing (tick %s -> %s).",
+                pre_startup,
+                post_startup,
+                extra=log,
+            )
+        elif post_startup is not None and pre_startup is not None:
+            # Both sides readable, startup tick UNCHANGED, config still reads
+            # dirty: positive evidence the save did not take.
+            raise UpgradeAbort(
+                f"save-config reported success ({result or 'empty result'}) but "
+                f"the startup-config timestamp did not move (tick {post_startup} "
+                f"before and after) and the config still reads unsaved ({detail}) "
+                "— refusing to reload past a save that did not take."
+            )
+        else:
+            self.logger.info(
+                "Running-config saved (device result: %s). Timestamp "
+                "verification unavailable (%s) — trusting the device's result "
+                "string as the fallback.",
+                result or "empty",
+                detail,
+                extra=log,
+            )
 
     def _member_roster(self, client):
         """Stack member roster: {(hw-dev-index, serial)} for chassis entries.

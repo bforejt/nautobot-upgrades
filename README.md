@@ -469,6 +469,41 @@ Dry-run *and* selecting *Full* — and a forgotten dropdown can never reload a
 device (the run just stages and says so). Anyone automating runs via the API
 should pass `run_scope` explicitly.
 
+### Config-sync check & optional save (Full runs)
+
+The CLI `reload` asks *"System configuration has been modified. Save?"* —
+**RPC-triggered reloads never do.** The reload our activation triggers simply
+discards unsaved running-config changes (Cisco's own model says as much: the
+reload RPC's `force` leaf is described as *"Force a restart even if there is
+unsaved config"*).
+
+So before every Full-scope activation (and in the dry-run report), the job
+reads the device's **config-management timestamps**
+(`CISCO-CONFIG-MAN-MIB`/`ccmHistory` — advertised on every supported platform,
+17.9 through 26.1) and compares *running-config last changed* against
+*startup-config last written*:
+
+- **In sync** → logged, nothing to lose in the reload.
+- **Unsaved changes** → **warning, not a gate**: an unsaved change is usually
+  benign (someone forgot `write memory`), the operator owns the choice, and
+  the warning names both fixes. A device that has never saved since boot also
+  reads this way — the warning says so.
+- **Undeterminable** → labeled warning. The timestamps are served through the
+  device's **SNMP agent**: with no `snmp-server` configuration the read comes
+  back empty, and the job says "could not determine — save manually if in
+  doubt" rather than assuming either way.
+
+Tick **Save running-config before reload** to have the job do the save itself
+(`cisco-ia:save-config`, the programmatic `write memory`) — verified
+afterwards by watching the startup-config timestamp advance across the save
+(immune to the ~497-day tick wrap); a save that is refused, or that leaves the
+timestamp unmoved with the config still reading unsaved, **aborts before the
+reload**. When the timestamps themselves are unavailable (SNMP agent off) the
+job trusts the device's own success result and says so — that path is a
+labeled fallback, not a verification. Default **off**: saving is itself a
+write, and it would persist half-applied changes an engineer deliberately
+left unsaved.
+
 ### ISSU on Catalyst 9500/9400/9600 pairs (proposed workflow — untested)
 
 This job's activation is **deliberately non-ISSU**: on a StackWise Virtual
@@ -505,6 +540,7 @@ verb, which stays human:
 | Target version | yes | Core `SoftwareVersion` to upgrade to. |
 | Clean device first | no | ⚠️ **Default off.** Before upgrading, remove ALL software the device is not running — inactive packages, leftover files, **and any version another engineer staged** (deliberately overrides the staged-conflict stop) plus the soak-period rollback image. For engineers who know the state of the network. Failures abort; dry-run reports what would be removed. Independent of *Remove inactive (after commit)*. |
 | Run scope | no | Order of operations, safest first: **Step 1 - Copy image** (**default** — a forgotten dropdown can never reload a device), **Steps 1 & 2 - Copy image and prep** (`install add`, no reload), **Full - Copy, Activate, Reload** (the only choice that reloads; a real upgrade requires selecting it deliberately). See [Pre-staging](#pre-staging-stage-now-activate-in-the-window). |
+| Save running-config before reload | no | **Default off.** Full runs always *check* the config-sync timestamps and warn if running-config looks unsaved (RPC reloads never prompt to save); this box makes the job save it (`cisco-ia:save-config`) and verify from the timestamps (labeled result-string fallback when they're unavailable), aborting on positive evidence the save didn't take. See [Config-sync check](#config-sync-check--optional-save-full-runs). |
 | Secrets group override | no | Force one Secrets Group for the whole run; by default each device uses its own assigned group. |
 | Remove inactive | no | After commit, reclaim space (default **off** — keeps the rollback image for a soak period). |
 | Parallelism | no | Devices upgraded concurrently (default **4**, max 16; 1 = serial). Size to the firmware server's capacity for simultaneous image pulls. |
@@ -520,6 +556,8 @@ verb, which stays human:
 | Free space / file size | `GET .../Cisco-IOS-XE-platform-software-oper:cisco-platform-software/q-filesystem` |
 | Copy image (+ progress) | `POST .../operations/Cisco-IOS-XE-rpc:copy` (worker thread), size-polled via q-filesystem |
 | Add / activate / commit / remove | `POST .../operations/Cisco-IOS-XE-install-rpc:{install,activate,install-commit,remove}` |
+| Config-sync check (Full runs) | `GET .../data/CISCO-CONFIG-MAN-MIB:CISCO-CONFIG-MAN-MIB/ccmHistory` (needs the device's SNMP agent enabled; empty ⇒ reported as undeterminable) |
+| Save running-config (opt-in) | `POST .../operations/cisco-ia:save-config` |
 
 ## Configuration
 
