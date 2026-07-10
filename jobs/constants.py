@@ -150,8 +150,10 @@ QFS_PARTITIONS_FIELDS = "fru;slot;bay;chassis;partitions(name;total-size;used-si
 #: partitions read walks partition-content server-side no matter how narrow
 #: the selection (~100 AVC lines). The job therefore shares ONE partitions
 #: read per device run (discovery + space gate + locate) via a per-client
-#: cache. CISCO-FLASH-MIB (advertised on all captured platforms) is the
-#: walk-free candidate if the gates read ever needs to go fully silent.
+#: cache. CISCO-FLASH-MIB was probed as a walk-free alternative and
+#: DISQUALIFIED (2026-07-10): the SNMP-bridge read hung on the real 9300 and
+#: would add an snmp-server dependency — one shared walk per run is the
+#: accepted resting point.
 #: How long to wait for "install add" to finish staging the package. The target
 #: version appears in install-oper as soon as the add STARTS, so the gate waits
 #: for an add-complete state (added/inactive or beyond), not mere presence.
