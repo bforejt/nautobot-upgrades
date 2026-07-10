@@ -1212,22 +1212,26 @@ class IOSXEUpgrade(Job):
     def _ledger_dest_dir(client):
         """The writable partition's mount root, from the device's OWN records.
 
-        Every install add/download operation's ledger record echoes its
-        parameters, including dest-dir (e.g. '/mnt/sd3/user') — which is
-        exactly the root the q-filesystem partition-content list uses. This is
-        the fact that lets file-size reads address ONE keyed entry instead of
-        requesting a full filesystem walk. Returns None on a device with no
-        install history (factory-fresh) — callers fall back to the full read.
+        Add/download ledger records echo their parameters, including dest-dir
+        (e.g. '/mnt/sd3/user') — the root the q-filesystem partition-content
+        list uses. NOTE the history is a rolling window: after cleans and
+        commit/remove-heavy churn the surviving records may carry NO dest-dir
+        at all, and some trains may echo non-'/'-prefixed forms. Returns
+        (root_or_None, raw_values_seen) so callers can say precisely why
+        resolution failed instead of guessing.
         """
         try:
             data = client.get(C.DATA_INSTALL_OPER, ok_404=True) or {}
         except RestconfError:
-            return None
+            return None, []
+        seen = []
         for value in _find_all_values(data, "dest-dir"):
             text = str(value).strip()
+            if text and text not in seen:
+                seen.append(text)
             if text.startswith("/"):
-                return text.rstrip("/")
-        return None
+                return text.rstrip("/"), seen
+        return None, seen
 
     def _locate_target_partition(self, client, target_fs):
         """(q-filesystem entry keys, partition name) for the target filesystem.
@@ -1277,15 +1281,32 @@ class IOSXEUpgrade(Job):
         return _file_size_bytes(data, image_file_name)
 
     def _resolve_file_ref(self, client, image_file_name, target_fs, log):
-        """Build the keyed file reference once per copy (or None -> fallback)."""
-        dest_dir = self._ledger_dest_dir(client)
+        """Build the keyed file reference once per copy (or None -> fallback).
+
+        When the ledger cannot supply the mount root, the copy watcher learns
+        the file's real full-path from its FIRST successful full read and
+        switches to keyed reads for the remaining polls — so this returning
+        None costs at most a couple of walks, not the whole run.
+        """
+        dest_dir, seen = self._ledger_dest_dir(client)
         if not dest_dir:
-            self.logger.info(
-                "No install history on this device to reveal the filesystem "
-                "mount root — file-size reads will use the full q-filesystem "
-                "listing for this run.",
-                extra=log,
-            )
+            if seen:
+                self.logger.info(
+                    "Install history exists but exposes no usable mount root "
+                    "(dest-dir values seen: %s) — the copy watcher will learn "
+                    "the file's path from its first sighting instead.",
+                    seen,
+                    extra=log,
+                )
+            else:
+                self.logger.info(
+                    "No dest-dir-bearing records in the install history "
+                    "(add records may have aged out of the rolling window, or "
+                    "the device has never run an install add) — the copy "
+                    "watcher will learn the file's path from its first "
+                    "sighting instead.",
+                    extra=log,
+                )
             return None
         located = self._locate_target_partition(client, target_fs)
         if located is None:
@@ -1423,9 +1444,13 @@ class IOSXEUpgrade(Job):
         copy_thread.start()
         # Poll from a SEPARATE session: requests.Session is not thread-safe and
         # the original one is occupied by the blocking copy.
-        self._watch_copy(client.clone(), copy_thread, result, image, expected, log, file_ref)
+        self._watch_copy(
+            client.clone(), copy_thread, result, image, expected, log, target_fs, file_ref
+        )
 
-    def _watch_copy(self, poll_client, copy_thread, result, image, expected, log, file_ref=None):
+    def _watch_copy(
+        self, poll_client, copy_thread, result, image, expected, log, target_fs, file_ref=None
+    ):
         """Report progress while the copy thread runs; verify when it finishes.
 
         Progress is best-effort (some releases may not list the growing file);
@@ -1446,7 +1471,32 @@ class IOSXEUpgrade(Job):
                 )
             time.sleep(C.POLL_INTERVAL)
             polls += 1
-            size = self._read_file_size(poll_client, image.image_file_name, file_ref, retries=1)
+            if file_ref is not None:
+                size = self._read_file_size(poll_client, image.image_file_name, file_ref, retries=1)
+            else:
+                # Ledger couldn't supply the mount root: full read, but LEARN
+                # the file's real full-path from its first sighting and switch
+                # to keyed reads for every remaining poll and the final verify.
+                data = self._read_q_filesystem(poll_client, retries=1) or {}
+                entry = _find_file_entry(data, image.image_file_name)
+                size = None
+                if entry is not None:
+                    try:
+                        size = int(entry.get("file-size") or entry.get("size"))
+                    except (TypeError, ValueError):
+                        size = None
+                    full_path = str(entry.get("full-path") or "")
+                    if full_path.startswith("/"):
+                        located = self._locate_target_partition(poll_client, target_fs)
+                        if located is not None:
+                            keys, pname = located
+                            file_ref = (keys, pname, full_path)
+                            self.logger.info(
+                                "Learned the on-device file path (%s) — "
+                                "remaining size reads use the keyed entry.",
+                                full_path,
+                                extra=log,
+                            )
             elapsed = int(time.monotonic() - started)
             if size is not None:
                 step = max((expected or 0) // 20, 25_000_000)  # ~5% or 25 MB
@@ -2799,6 +2849,31 @@ def _flash_frees(data, fs_names):
                     out.append((name, free))
                 break
     return out
+
+
+def _find_file_entry(data, image_file_name):
+    """The dict entry for ``image_file_name`` (basename equality) — or None.
+
+    Same matching rules as the size read; ALSO exposes the entry's full-path,
+    which lets the copy watcher learn the keyed address from its first
+    sighting when the ledger could not supply the mount root.
+    """
+    if isinstance(data, dict):
+        path = data.get("full-path") or data.get("name") or data.get("filename")
+        if path:
+            basename = str(path).split(":")[-1].rsplit("/", 1)[-1]
+            if basename == image_file_name:
+                return data
+        for value in data.values():
+            found = _find_file_entry(value, image_file_name)
+            if found is not None:
+                return found
+    elif isinstance(data, list):
+        for item in data:
+            found = _find_file_entry(item, image_file_name)
+            if found is not None:
+                return found
+    return None
 
 
 def _file_size_bytes(data, image_file_name):
