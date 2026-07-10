@@ -59,6 +59,7 @@ import threading
 import time
 import urllib.parse as urllib_parse
 import uuid as uuid_lib
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
@@ -1297,14 +1298,20 @@ class IOSXEUpgrade(Job):
             the add itself DOWNLOADED the package. This job copies first and
             adds from local media, and local adds download nothing, so this
             echo is typically absent here.
-        A value is only accepted when its last path component matches the
-        target filesystem name — evidence for OTHER media is real state but
-        the wrong hypothesis for where THIS copy lands.
+        Live package rows are accepted as-is (the install-mode gate already
+        proved from device state that this upgrade targets the boot media,
+        and real mount roots need not resemble the filesystem name — a field
+        9300 mounts flash: at /mnt/sd3/user). Echo evidence is accepted only
+        when its last path component matches the target filesystem name:
+        echoes record where an operator once pulled a file from, which may
+        be other media entirely.
 
         Returns (root_or_None, info, error_or_None). info carries the raw
-        values seen per signal (plus 'source' on success) so the caller can
-        say precisely what the device published; error is set when the ledger
-        could not be read at all — which is NOT the same as an empty history.
+        values seen per signal — including historical package rows and
+        non-absolute forms that can never become the hypothesis — so the
+        caller can say precisely what the device published; error is set when
+        the ledger could not be read at all — NOT the same as an empty
+        history.
         """
         try:
             data = client.get(C.DATA_INSTALL_OPER, ok_404=True)
@@ -1313,6 +1320,7 @@ class IOSXEUpgrade(Job):
         if data is None:
             return None, {}, "the install-oper endpoint returned 404"
         pkg_dirs = []
+        hist_pkg_dirs = []  # historical rows: never a hypothesis, shown in diagnostics
         src_roots = []
         add_dirs = []  # (start-time, dir): recency decides within this signal
         raw_odd = []  # non-absolute values, reported verbatim on failure
@@ -1326,8 +1334,20 @@ class IOSXEUpgrade(Job):
         def _walk(node, start_time=""):
             if isinstance(node, dict):
                 stamp = str(node.get("start-time", start_time))
+                # Live install-packages rows form the hypothesis (key:
+                # pkg-dir pkg-name). The two HISTORICAL pkg-dir-keyed lists —
+                # version state rows and rollback-point rows — both carry
+                # package-type in their key (schema-verified across
+                # 17.12/17.15/17.18/26.1); its absence positively identifies
+                # a live row. Historical values are still RECORDED so failure
+                # diagnostics can say exactly what the device published.
                 if "pkg-dir" in node and "pkg-name" in node:
-                    _keep(pkg_dirs, str(node.get("pkg-dir", "")).strip())
+                    text = str(node.get("pkg-dir", "")).strip()
+                    if "package-type" in node:
+                        if text and text not in hist_pkg_dirs:
+                            hist_pkg_dirs.append(text)
+                    else:
+                        _keep(pkg_dirs, text)
                 # src-filename ALSO appears in add-param records — a verbatim
                 # echo of whatever path the operator typed (review finding).
                 # Only version rows (they carry version/src-checksum) count.
@@ -1353,26 +1373,49 @@ class IOSXEUpgrade(Job):
         _walk(data)
         info = {
             "pkg-dir": sorted(set(pkg_dirs)),
+            "historical-pkg-dir": sorted(set(hist_pkg_dirs)),
             "src-root": sorted(set(src_roots)),
             "add-dest-dir": sorted({d for _, d in add_dirs}),
             "other": raw_odd,
         }
         wanted = str(target_fs).rstrip(":/").lower()
-        pools = (
-            ("install package records (pkg-dir)", pkg_dirs),
+
+        def _named(pool):
+            return [d for d in pool if d.rsplit("/", 1)[-1].lower() == wanted]
+
+        # Live install-packages pkg-dir IS the boot-media mount root: the
+        # install-mode gate confirmed boot MODE from device state, and on
+        # every supported platform the discovered target filesystem
+        # (flash:/bootflash:) is the boot media where packages live — so it
+        # is accepted with NO name requirement. Field-proven necessity: a
+        # real 9300 mounts flash: at /mnt/sd3/user, which a name gate wrongly
+        # rejected (lab evidence 2026-07-10 — the watcher then observed the
+        # file at exactly the address these rows had published). The MAJORITY
+        # of live rows decides (the device's own dominant answer); a name
+        # match only breaks ties — the same field evidence shows real roots
+        # need not resemble the filesystem name, so one aliased minority row
+        # must not outvote the rest. Still only a HYPOTHESIS tier: downstream
+        # answers are corroborated or corrected by observation (learn/heal,
+        # confirmed pre-check, full-listing verify), so a wrong root costs a
+        # corrective walk, not the run.
+        if pkg_dirs:
+            counts = Counter(pkg_dirs)
+            best = max(counts.values())
+            leaders = [d for d in dict.fromkeys(pkg_dirs) if counts[d] == best]
+            root = (_named(leaders) or leaders)[0]
+            return root, {"source": "install package records (pkg-dir)", **info}, None
+        # ECHO evidence (version-row source paths, add dest-dir) stays
+        # name-gated: echoes record where an operator once pulled a file
+        # from — USB sticks, subdirectories, other media (review-confirmed
+        # poisoning) — and nothing ties them to the target filesystem. No
+        # acceptable evidence -> no hypothesis; the copy watcher's
+        # first-sighting observation takes over.
+        for label, pool in (
             ("installed-version source paths", src_roots),
             # most recent add first: the reviewed recency rule for echoes
             ("install add dest-dir echoes", [d for _, d in sorted(add_dirs, reverse=True)]),
-        )
-        # A candidate is only usable when its last path component matches the
-        # target filesystem name: pkg-dir names the BOOT media root, version
-        # sources may live in subdirectories, and echoes may point at other
-        # media entirely (review findings) — a non-matching root would send
-        # every keyed read to the wrong address, and a same-named file there
-        # can even fake a hit. No match anywhere -> no hypothesis; the copy
-        # watcher's first-sighting observation takes over.
-        for label, pool in pools:
-            named = [d for d in pool if d.rsplit("/", 1)[-1].lower() == wanted]
+        ):
+            named = _named(pool)
             if named:
                 return named[0], {"source": label, **info}, None
         return None, info, None
@@ -1472,13 +1515,15 @@ class IOSXEUpgrade(Job):
             )
             odd = info.get("other") or []
             if absolute:
+                odd_note = f" (non-absolute values also seen: {odd})" if odd else ""
                 self.logger.info(
                     "The install ledger publishes directory evidence (%s) but "
-                    "none of it matches the %s filesystem — the copy watcher "
+                    "none of it matches the %s filesystem%s — the copy watcher "
                     "will learn the file's path from its first sighting "
                     "instead.",
                     absolute,
                     target_fs,
+                    odd_note,
                     extra=log,
                 )
                 return None
@@ -1489,6 +1534,17 @@ class IOSXEUpgrade(Job):
                     "will learn the file's path from its first sighting "
                     "instead.",
                     odd,
+                    extra=log,
+                )
+            elif info.get("historical-pkg-dir"):
+                self.logger.info(
+                    "The install ledger exposes only HISTORICAL package rows "
+                    "(%s) — no live install-packages rows and no usable "
+                    "echoes; historical rows describe past versions and "
+                    "rollback points, not the current media, so they never "
+                    "form the hypothesis. The copy watcher will learn the "
+                    "file's path from its first sighting instead.",
+                    info["historical-pkg-dir"],
                     extra=log,
                 )
             else:
@@ -1784,7 +1840,45 @@ class IOSXEUpgrade(Job):
             "misses": 0,
         }
         pre_size = self._read_file_size(client, image.image_file_name, ref_cell, log)
+        pre_context = None
+        if pre_size is None and ref_cell.get("ref") is not None and not ref_cell.get("disabled"):
+            # A keyed 404 is NOT positive evidence of absence — the address
+            # is a ledger-derived hypothesis. One full listing decides:
+            # genuinely absent, or present at a DIFFERENT address (then the
+            # observation corrects the hypothesis, exactly like the watcher's
+            # heal tier — review finding: a wrong-but-accepted root otherwise
+            # silently defeats the idempotent skip and re-copies a multi-GB
+            # image, and suppresses the overwrite warning).
+            data = self._read_q_filesystem(client) or {}
+            pre_context = _find_file_context(data, image.image_file_name)
+            if pre_context is not None:
+                keys, pname, entry = pre_context
+                full_path = str(entry.get("full-path", ""))
+                if full_path.startswith("/") and keys is not None and pname is not None:
+                    ref_cell["ref"] = (keys, pname, full_path)
+                    ref_cell["misses"] = 0
+                    self.logger.info(
+                        "Corrected the on-device file address from a full "
+                        "listing (%s) — the ledger-derived path had no entry.",
+                        full_path,
+                        extra=log,
+                    )
+                try:
+                    pre_size = int(entry.get("file-size") or entry.get("size"))
+                except (TypeError, ValueError):
+                    pre_size = None
         if expected and pre_size is not None and pre_size == expected:
+            if pre_context is not None:
+                # Size AND address both just came from the full listing —
+                # already observation-corroborated; no second walk needed.
+                self.logger.info(
+                    "Image already present on %s with the expected size (%s bytes); "
+                    "skipping copy (address and size confirmed by a full listing).",
+                    dest,
+                    expected,
+                    extra=log,
+                )
+                return
             # Idempotent short-circuit — but a SKIP is consequential, and the
             # keyed hit rests on a ledger-derived path hypothesis. Spend ONE
             # authoritative full read and require it to corroborate the SAME
