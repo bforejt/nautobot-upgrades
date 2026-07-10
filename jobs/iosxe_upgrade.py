@@ -57,6 +57,7 @@ import math
 import re
 import threading
 import time
+import urllib.parse as urllib_parse
 import uuid as uuid_lib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -1099,7 +1100,7 @@ class IOSXEUpgrade(Job):
         when nothing matches: every later step (space gate, copy destination,
         install add path) depends on it.
         """
-        data = self._read_q_filesystem(client) or {}
+        data = self._read_partitions(client) or {}
         names = {
             str(partition.get("name", "")).strip().rstrip(":").lower()
             for partition in _find_partitions(data)
@@ -1132,7 +1133,7 @@ class IOSXEUpgrade(Job):
         # is the MINIMUM free space across all matching partitions of the
         # DISCOVERED filesystem (one per member on a stack; exactly one on a
         # standalone switch or a C8000V).
-        data = self._read_q_filesystem(client)
+        data = self._read_partitions(client)
         frees = _flash_frees(data or {}, (target_fs.rstrip(":"),))
         if not frees:
             raise UpgradeAbort(
@@ -1185,6 +1186,112 @@ class IOSXEUpgrade(Job):
                     return None
                 time.sleep(C.POLL_INTERVAL)
         return None
+
+    def _read_partitions(self, client, retries=None):
+        """Partition stats ONLY (name/total/used) — never the per-file listing.
+
+        Uses RESTCONF `fields` sub-selection so the device does not walk the
+        filesystem to build partition-content (that walk is what sprays smand
+        SELinux AVC denials on the console). A release that rejects or ignores
+        `fields` falls back to the full read — the parsers handle either shape.
+        """
+        try:
+            return (
+                client.get(
+                    f"{C.DATA_Q_FILESYSTEM}?fields={C.QFS_PARTITIONS_FIELDS}",
+                    ok_404=True,
+                )
+                or {}
+            )
+        except RestconfError:
+            # fields unsupported or a transient error — the full read (with its
+            # own retry policy) is the fallback; parsers handle either shape.
+            return self._read_q_filesystem(client, retries=retries)
+
+    @staticmethod
+    def _ledger_dest_dir(client):
+        """The writable partition's mount root, from the device's OWN records.
+
+        Every install add/download operation's ledger record echoes its
+        parameters, including dest-dir (e.g. '/mnt/sd3/user') — which is
+        exactly the root the q-filesystem partition-content list uses. This is
+        the fact that lets file-size reads address ONE keyed entry instead of
+        requesting a full filesystem walk. Returns None on a device with no
+        install history (factory-fresh) — callers fall back to the full read.
+        """
+        try:
+            data = client.get(C.DATA_INSTALL_OPER, ok_404=True) or {}
+        except RestconfError:
+            return None
+        for value in _find_all_values(data, "dest-dir"):
+            text = str(value).strip()
+            if text.startswith("/"):
+                return text.rstrip("/")
+        return None
+
+    def _locate_target_partition(self, client, target_fs):
+        """(q-filesystem entry keys, partition name) for the target filesystem.
+
+        Needed to build the keyed partition-content URL (nested list entries
+        must be addressed through their ancestors' keys). Uses the
+        partitions-scoped read — no file walk. Returns None when unresolvable.
+        """
+        data = self._read_partitions(client, retries=1) or {}
+        wanted = target_fs.rstrip(":").lower()
+        # tolerate wrapper shapes: hunt for dicts carrying a 'partitions' list
+        for entry in _find_qfs_entries(data):
+            for partition in entry.get("partitions") or []:
+                name = str(partition.get("name", "")).strip().rstrip(":").lower()
+                if name == wanted:
+                    keys = tuple(str(entry.get(k, "")) for k in ("fru", "slot", "bay", "chassis"))
+                    if all(keys):
+                        return keys, str(partition.get("name"))
+        return None
+
+    def _read_file_size(self, client, image_file_name, file_ref, retries=None):
+        """Size of ONE file, via a keyed partition-content entry when possible.
+
+        file_ref = (entry_keys, partition_name, full_path) resolved once per
+        copy from the ledger's dest-dir — the keyed GET asks the device about
+        exactly one path, so no filesystem walk (and no AVC spray) happens.
+        A 404 means the file does not exist (yet) — normal mid-copy. Any other
+        problem, or no file_ref (no install history), falls back to the full
+        q-filesystem read: today's behavior, unchanged.
+        """
+        if file_ref is not None:
+            (fru, slot, bay, chassis), pname, full_path = file_ref
+            url = (
+                f"{C.DATA_Q_FILESYSTEM}={_uq(fru)},{_uq(slot)},{_uq(bay)},{_uq(chassis)}"
+                f"/partitions={_uq(pname)}/partition-content={_uq(full_path)}"
+            )
+            try:
+                data = client.get(url, ok_404=True)
+                if data is None:
+                    return None  # keyed entry absent: file not there (yet)
+                return _file_size_bytes(data, image_file_name)
+            except RestconfError:
+                pass  # fall back to the full read below
+        data = self._read_q_filesystem(client, retries=retries)
+        if data is None:
+            return None
+        return _file_size_bytes(data, image_file_name)
+
+    def _resolve_file_ref(self, client, image_file_name, target_fs, log):
+        """Build the keyed file reference once per copy (or None -> fallback)."""
+        dest_dir = self._ledger_dest_dir(client)
+        if not dest_dir:
+            self.logger.info(
+                "No install history on this device to reveal the filesystem "
+                "mount root — file-size reads will use the full q-filesystem "
+                "listing for this run.",
+                extra=log,
+            )
+            return None
+        located = self._locate_target_partition(client, target_fs)
+        if located is None:
+            return None
+        keys, pname = located
+        return keys, pname, f"{dest_dir}/{image_file_name}"
 
     def _member_roster(self, client):
         """Stack member roster: {(hw-dev-index, serial)} for chassis entries.
@@ -1265,8 +1372,12 @@ class IOSXEUpgrade(Job):
         """
         dest = f"{target_fs}{image.image_file_name}"
         expected = image.image_file_size
-        pre_data = self._read_q_filesystem(client) or {}
-        pre_size = _file_size_bytes(pre_data, image.image_file_name)
+        # Resolve the keyed file reference ONCE (ledger dest-dir + partition
+        # location): every file-size read this copy makes — pre-check, the
+        # ~30 progress polls, the final verify — then asks the device about
+        # exactly one path instead of requesting a full filesystem walk.
+        file_ref = self._resolve_file_ref(client, image.image_file_name, target_fs, log)
+        pre_size = self._read_file_size(client, image.image_file_name, file_ref)
         if expected and pre_size is not None and pre_size == expected:
             # Idempotent short-circuit: the exact file is already on flash (e.g. a
             # prior run copied it but died before install add). Skip the transfer;
@@ -1312,9 +1423,9 @@ class IOSXEUpgrade(Job):
         copy_thread.start()
         # Poll from a SEPARATE session: requests.Session is not thread-safe and
         # the original one is occupied by the blocking copy.
-        self._watch_copy(client.clone(), copy_thread, result, image, expected, log)
+        self._watch_copy(client.clone(), copy_thread, result, image, expected, log, file_ref)
 
-    def _watch_copy(self, poll_client, copy_thread, result, image, expected, log):
+    def _watch_copy(self, poll_client, copy_thread, result, image, expected, log, file_ref=None):
         """Report progress while the copy thread runs; verify when it finishes.
 
         Progress is best-effort (some releases may not list the growing file);
@@ -1335,8 +1446,7 @@ class IOSXEUpgrade(Job):
                 )
             time.sleep(C.POLL_INTERVAL)
             polls += 1
-            data = self._read_q_filesystem(poll_client, retries=1) or {}
-            size = _file_size_bytes(data, image.image_file_name)
+            size = self._read_file_size(poll_client, image.image_file_name, file_ref, retries=1)
             elapsed = int(time.monotonic() - started)
             if size is not None:
                 step = max((expected or 0) // 20, 25_000_000)  # ~5% or 25 MB
@@ -1370,7 +1480,7 @@ class IOSXEUpgrade(Job):
                 + _fetch_hints(image.download_url)
             )
         # RPC returned success — verify what actually landed on flash.
-        size = _file_size_bytes(self._read_q_filesystem(poll_client) or {}, image.image_file_name)
+        size = self._read_file_size(poll_client, image.image_file_name, file_ref)
         elapsed = int(time.monotonic() - started)
         if expected and size is not None:
             if abs(size - expected) > C.SIZE_MATCH_TOLERANCE_BYTES:
@@ -2624,6 +2734,26 @@ def _find_timer_entries(data):
     elif isinstance(data, list):
         for item in data:
             found.extend(_find_timer_entries(item))
+    return found
+
+
+def _uq(value):
+    """Percent-encode a RESTCONF list-key value (full paths contain '/')."""
+    return urllib_parse.quote(str(value), safe="")
+
+
+def _find_qfs_entries(data):
+    """q-filesystem entry dicts (carrying 'partitions') in any wrapper shape."""
+    found = []
+    if isinstance(data, dict):
+        if isinstance(data.get("partitions"), list):
+            found.append(data)
+        else:
+            for value in data.values():
+                found.extend(_find_qfs_entries(value))
+    elif isinstance(data, list):
+        for item in data:
+            found.extend(_find_qfs_entries(item))
     return found
 
 

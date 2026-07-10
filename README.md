@@ -572,9 +572,14 @@ Everything actually depended on (`requests`, Nautobot core) is permissive
   platform names its flash differently.
 - Stack/SVL handling checks that **all members** report install mode, have the
   free space, and rejoin after reload; per-member deep health checks are
-  minimal. **17.15.x devices emit an SELinux AVC log flood** during
-  q-filesystem polling (Cisco policy defect, cosmetic — suppressible with a
-  `logging discriminator`; see the run notes above).
+  minimal. **17.15.x devices emit SELinux AVC log noise** when anything
+  requests a full q-filesystem file listing (Cisco policy defect, cosmetic).
+  The job now avoids triggering it: partition reads use `fields`
+  sub-selection and file-size reads address one keyed entry (path learned
+  from the device's own install records) — full listings happen only as a
+  fallback on devices with no install history or releases that reject the
+  narrowed queries. A `logging discriminator` covers the residual noise from
+  human `show` commands.
 
 ## Deferred (by agreement — not built yet)
 
