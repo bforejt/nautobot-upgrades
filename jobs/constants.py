@@ -101,6 +101,13 @@ QFS_READ_RETRIES = 3
 COPY_TIMEOUT = 3600
 
 POLL_INTERVAL = 30
+
+#: RESTCONF `fields` sub-selection for partition-level q-filesystem reads
+#: (discovery, free-space gate): requesting ONLY the partition stats means the
+#: device never builds the per-file partition-content listing — the walk whose
+#: SELinux side effects flood the console with smand AVC denials. Releases
+#: that ignore/reject `fields` fall back to the full read automatically.
+QFS_PARTITIONS_FIELDS = "partitions(name;total-size;used-size)"
 #: How long to wait for "install add" to finish staging the package. The target
 #: version appears in install-oper as soon as the add STARTS, so the gate waits
 #: for an add-complete state (added/inactive or beyond), not mere presence.
