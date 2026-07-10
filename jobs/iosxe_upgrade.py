@@ -1209,38 +1209,67 @@ class IOSXEUpgrade(Job):
             return self._read_q_filesystem(client, retries=retries)
 
     @staticmethod
-    def _ledger_dest_dir(client):
-        """The writable partition's mount root, from the device's OWN records.
+    def _ledger_mount_root(client, target_fs):
+        """The target media's mount root, from the device's OWN install records.
 
-        Add/download ledger records echo their parameters, including dest-dir
-        (e.g. '/mnt/sd3/user') — the root the q-filesystem partition-content
-        list uses. NOTE the history is a rolling window: after cleans and
-        commit/remove-heavy churn the surviving records may carry NO dest-dir
-        at all, and some trains may echo non-'/'-prefixed forms. Returns
-        (root_or_None, raw_values_seen) so callers can say precisely why
-        resolution failed instead of guessing.
+        Three state signals, strongest first, all in the one install-oper-data
+        document this job already reads:
+          * install-packages rows' pkg-dir — a LIST KEY, so it is always
+            populated on an install-mode device, and device-derived: the
+            expanded packages live at the boot media root;
+          * '/'-rooted src-filename values (the recorded install source of a
+            version) — their directory;
+          * the most recent add record's dest-dir echo — populated only when
+            the add itself DOWNLOADED the package. This job copies first and
+            adds from local media, and local adds download nothing, so this
+            echo is typically absent here.
+        A value is only accepted when its last path component matches the
+        target filesystem name — evidence for OTHER media is real state but
+        the wrong hypothesis for where THIS copy lands.
+
+        Returns (root_or_None, info, error_or_None). info carries the raw
+        values seen per signal (plus 'source' on success) so the caller can
+        say precisely what the device published; error is set when the ledger
+        could not be read at all — which is NOT the same as an empty history.
         """
         try:
-            data = client.get(C.DATA_INSTALL_OPER, ok_404=True) or {}
-        except RestconfError:
-            return None, []
-        # ADD records only: dest-dir also appears in remove-param / stale
-        # download-param records pointing at USB sticks, subdirectories, or
-        # other members — the review proved first-hit-anywhere selection can
-        # poison the whole run. Prefer the most recent add by start-time.
-        candidates = []
-        seen = []
+            data = client.get(C.DATA_INSTALL_OPER, ok_404=True)
+        except RestconfError as exc:
+            return None, {}, f"install history read failed: {exc}"
+        if data is None:
+            return None, {}, "the install-oper endpoint returned 404"
+        pkg_dirs = []
+        src_roots = []
+        add_dirs = []  # (start-time, dir): recency decides within this signal
+        raw_odd = []  # non-absolute values, reported verbatim on failure
+
+        def _keep(pool, text):
+            if text.startswith("/"):
+                pool.append(text.rstrip("/") or "/")
+            elif text and text not in raw_odd:
+                raw_odd.append(text)
 
         def _walk(node, start_time=""):
             if isinstance(node, dict):
                 stamp = str(node.get("start-time", start_time))
+                if "pkg-dir" in node and "pkg-name" in node:
+                    _keep(pkg_dirs, str(node.get("pkg-dir", "")).strip())
+                # src-filename ALSO appears in add-param records — a verbatim
+                # echo of whatever path the operator typed (review finding).
+                # Only version rows (they carry version/src-checksum) count.
+                if "version" in node or "src-checksum" in node:
+                    src = str(node.get("src-filename", "")).strip()
+                    if src.startswith("/") and "/" in src[1:]:
+                        src_roots.append(src.rsplit("/", 1)[0] or "/")
+                    elif src and src not in raw_odd:
+                        raw_odd.append(src)
                 add_param = node.get("add-param")
                 if isinstance(add_param, dict):
                     text = str(add_param.get("dest-dir", "")).strip()
-                    if text and text not in seen:
-                        seen.append(text)
                     if text.startswith("/"):
-                        candidates.append((stamp, text.rstrip("/")))
+                        add_dirs.append((stamp, text.rstrip("/") or "/"))
+                    elif text and text not in raw_odd:
+                        raw_odd.append(text)
                 for value in node.values():
                     _walk(value, stamp)
             elif isinstance(node, list):
@@ -1248,9 +1277,31 @@ class IOSXEUpgrade(Job):
                     _walk(item, start_time)
 
         _walk(data)
-        if candidates:
-            return max(candidates)[1], seen
-        return None, seen
+        info = {
+            "pkg-dir": sorted(set(pkg_dirs)),
+            "src-root": sorted(set(src_roots)),
+            "add-dest-dir": sorted({d for _, d in add_dirs}),
+            "other": raw_odd,
+        }
+        wanted = str(target_fs).rstrip(":/").lower()
+        pools = (
+            ("install package records (pkg-dir)", pkg_dirs),
+            ("installed-version source paths", src_roots),
+            # most recent add first: the reviewed recency rule for echoes
+            ("install add dest-dir echoes", [d for _, d in sorted(add_dirs, reverse=True)]),
+        )
+        # A candidate is only usable when its last path component matches the
+        # target filesystem name: pkg-dir names the BOOT media root, version
+        # sources may live in subdirectories, and echoes may point at other
+        # media entirely (review findings) — a non-matching root would send
+        # every keyed read to the wrong address, and a same-named file there
+        # can even fake a hit. No match anywhere -> no hypothesis; the copy
+        # watcher's first-sighting observation takes over.
+        for label, pool in pools:
+            named = [d for d in pool if d.rsplit("/", 1)[-1].lower() == wanted]
+            if named:
+                return named[0], {"source": label, **info}, None
+        return None, info, None
 
     def _locate_target_partition(self, client, target_fs):
         """(q-filesystem entry keys, partition name) for the target filesystem.
@@ -1327,21 +1378,51 @@ class IOSXEUpgrade(Job):
         switches to keyed reads for the remaining polls — so this returning
         None costs at most a couple of walks, not the whole run.
         """
-        dest_dir, seen = self._ledger_dest_dir(client)
-        if not dest_dir:
-            if seen:
+        root, info, error = self._ledger_mount_root(client, target_fs)
+        if error:
+            self.logger.info(
+                "Could not read the install ledger for the mount root (%s) — "
+                "the copy watcher will learn the file's path from its first "
+                "sighting instead.",
+                error,
+                extra=log,
+            )
+            return None
+        if not root:
+            absolute = sorted(
+                set(
+                    (info.get("pkg-dir") or [])
+                    + (info.get("src-root") or [])
+                    + (info.get("add-dest-dir") or [])
+                )
+            )
+            odd = info.get("other") or []
+            if absolute:
                 self.logger.info(
-                    "Install history exists but exposes no usable mount root "
-                    "(dest-dir values seen: %s) — the copy watcher will learn "
-                    "the file's path from its first sighting instead.",
-                    seen,
+                    "The install ledger publishes directory evidence (%s) but "
+                    "none of it matches the %s filesystem — the copy watcher "
+                    "will learn the file's path from its first sighting "
+                    "instead.",
+                    absolute,
+                    target_fs,
+                    extra=log,
+                )
+                return None
+            if odd:
+                self.logger.info(
+                    "The install ledger carries no absolute directory "
+                    "evidence (non-path values seen: %s) — the copy watcher "
+                    "will learn the file's path from its first sighting "
+                    "instead.",
+                    odd,
                     extra=log,
                 )
             else:
                 self.logger.info(
-                    "No dest-dir-bearing records in the install history "
-                    "(add records may have aged out of the rolling window, or "
-                    "the device has never run an install add) — the copy "
+                    "The install ledger carries no directory evidence — "
+                    "normal when every install add ran against local media "
+                    "(local adds download nothing, so their records echo no "
+                    "dest-dir) and no package rows are exposed. The copy "
                     "watcher will learn the file's path from its first "
                     "sighting instead.",
                     extra=log,
@@ -1349,9 +1430,23 @@ class IOSXEUpgrade(Job):
             return None
         located = self._locate_target_partition(client, target_fs)
         if located is None:
+            self.logger.info(
+                "The %s partition could not be located in the partitions "
+                "listing — the copy watcher will learn the file's path from "
+                "its first sighting instead.",
+                target_fs,
+                extra=log,
+            )
             return None
         keys, pname = located
-        return keys, pname, f"{dest_dir}/{image_file_name}"
+        self.logger.info(
+            "Mount root %s resolved from the device's %s — progress reads "
+            "will use keyed queries instead of per-poll filesystem walks.",
+            root,
+            info.get("source", "install records"),
+            extra=log,
+        )
+        return keys, pname, f"{root.rstrip('/')}/{image_file_name}"
 
     def _member_roster(self, client):
         """Stack member roster: {(hw-dev-index, serial)} for chassis entries.
@@ -1444,18 +1539,32 @@ class IOSXEUpgrade(Job):
         pre_size = self._read_file_size(client, image.image_file_name, ref_cell, log)
         if expected and pre_size is not None and pre_size == expected:
             # Idempotent short-circuit — but a SKIP is consequential, and the
-            # keyed hit rests on a ledger-derived path hypothesis (a stale
-            # subdirectory could hold an old same-named exact-size file). Spend
-            # ONE authoritative full read to confirm before skipping.
+            # keyed hit rests on a ledger-derived path hypothesis. Spend ONE
+            # authoritative full read and require it to corroborate the SAME
+            # address (a stale subdirectory or another stack member can hold a
+            # same-named exact-size file — basename-anywhere matching would
+            # rubber-stamp the very hit it is meant to check; review finding).
+            # Known limit: q-filesystem does not say which member owns flash:
+            # after a failover, so a wrong-member skip still fails loudly at
+            # 'install add' (file not found) rather than silently.
             data = self._read_q_filesystem(client) or {}
-            confirmed = _file_size_bytes(data, image.image_file_name)
-            if confirmed == expected:
-                context = _find_file_context(data, image.image_file_name)
-                if context is not None and str(context[2].get("full-path", "")).startswith("/"):
-                    ref_cell["ref"] = (context[0], context[1], str(context[2]["full-path"]))
+            context = _find_file_context(data, image.image_file_name)
+            confirmed = None
+            confirmed_path = ""
+            if context is not None:
+                try:
+                    confirmed = int(context[2].get("file-size") or context[2].get("size"))
+                except (TypeError, ValueError):
+                    confirmed = None
+                confirmed_path = str(context[2].get("full-path", ""))
+            ref = ref_cell.get("ref")
+            same_address = ref is None or (ref is not None and confirmed_path == ref[2])
+            if confirmed == expected and same_address:
+                if confirmed_path.startswith("/") and context[0] is not None:
+                    ref_cell["ref"] = (context[0], context[1], confirmed_path)
                 self.logger.info(
                     "Image already present on %s with the expected size (%s bytes); "
-                    "skipping copy (confirmed by a full listing).",
+                    "skipping copy (address and size confirmed by a full listing).",
                     dest,
                     expected,
                     extra=log,
@@ -1463,9 +1572,10 @@ class IOSXEUpgrade(Job):
                 return
             self.logger.warning(
                 "Keyed read reported the image present at the expected size, but "
-                "the full listing disagrees (%s) — copying anyway; the ledger-"
-                "derived path may be stale.",
+                "the full listing does not corroborate it (size: %s, path: %s) — "
+                "copying anyway; the ledger-derived path may be stale.",
                 confirmed if confirmed is not None else "file not found",
+                confirmed_path or "none",
                 extra=log,
             )
         if pre_size is not None:
@@ -1611,17 +1721,14 @@ class IOSXEUpgrade(Job):
                 f"The copy was rejected by the device: {error_text}. "
                 + _fetch_hints(image.download_url)
             )
-        # RPC returned success — verify what actually landed on flash. The
-        # keyed read is only an optimization here: if it 404s (possibly-stale
-        # path), is disabled, or DISAGREES with the expected size, the full
-        # authoritative listing decides — the byte-exact gate must never be
-        # downgraded to a warning by a wrong address (review finding), nor
-        # abort a good copy because a stale path holds an old file.
-        size = self._read_file_size(poll_client, image.image_file_name, ref_cell, log)
-        if size is None or (expected and abs(size - expected) > C.SIZE_MATCH_TOLERANCE_BYTES):
-            size = _file_size_bytes(
-                self._read_q_filesystem(poll_client) or {}, image.image_file_name
-            )
+        # RPC returned success — verify what actually landed on flash from
+        # the authoritative full listing, ALWAYS. A keyed read here can 404
+        # on a stale path (downgrading the abort gate to a warning) or, worse,
+        # HIT a same-named file at a wrong address and fake exact agreement —
+        # each review round produced one of those. One full walk per copy is
+        # the price of an honest transfer-integrity gate; keyed reads keep
+        # serving the ~30 progress polls where the AVC flood actually was.
+        size = _file_size_bytes(self._read_q_filesystem(poll_client) or {}, image.image_file_name)
         elapsed = int(time.monotonic() - started)
         if expected and size is not None:
             if abs(size - expected) > C.SIZE_MATCH_TOLERANCE_BYTES:
