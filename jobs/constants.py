@@ -131,12 +131,29 @@ POLL_INTERVAL = 30
 #: device never builds the per-file partition-content listing — the walk whose
 #: SELinux side effects flood the console with smand AVC denials. Releases
 #: that ignore/reject `fields` fall back to the full read automatically.
+#: The device's image catalog: every recognized image file's exact byte size
+#: and SHA1, keyed by its IOS-form address ("flash:cat9k_....bin") — the SAME
+#: string this job uses as a copy destination, so presence/size questions
+#: need no mount-root resolution at all. FIELD-PROVEN (real 9300,
+#: 2026-07-10): returns in ~1s with cached SHA1s and costs ~ONE smand AVC
+#: line, vs ~100 for any partition-content walk. Keyed GETs on image-files
+#: are REJECTED on 17.15 ("invalid value") — only this fields form works.
+QFS_IMAGE_FILES_FIELDS = "fru;slot;bay;chassis;image-files"
+
 #: FIELD FACT (real 9300, 2026-07-10): without the four location-key leaves
 #: selected EXPLICITLY, the fields-scoped response returns partitions but
 #: omits the entries' fru/slot/bay/chassis keys — partition names resolve
 #: (discovery, space gate) while keyed partition-content addressing is
 #: impossible. RFC 8040 does not promise ancestor keys; ask for them.
 QFS_PARTITIONS_FIELDS = "fru;slot;bay;chassis;partitions(name;total-size;used-size)"
+#: FIELD FACT (same probes): `fields` is a POST-filter on this release — a
+#: partitions read walks partition-content server-side no matter how narrow
+#: the selection (~100 AVC lines). The job therefore shares ONE partitions
+#: read per device run (discovery + space gate + locate) via a per-client
+#: cache. CISCO-FLASH-MIB was probed as a walk-free alternative and
+#: DISQUALIFIED (2026-07-10): the SNMP-bridge read hung on the real 9300 and
+#: would add an snmp-server dependency — one shared walk per run is the
+#: accepted resting point.
 #: How long to wait for "install add" to finish staging the package. The target
 #: version appears in install-oper as soon as the add STARTS, so the gate waits
 #: for an add-complete state (added/inactive or beyond), not mere presence.

@@ -610,14 +610,25 @@ Everything actually depended on (`requests`, Nautobot core) is permissive
   platform names its flash differently.
 - Stack/SVL handling checks that **all members** report install mode, have the
   free space, and rejoin after reload; per-member deep health checks are
-  minimal. **17.15.x devices emit SELinux AVC log noise** when anything
-  requests a full q-filesystem file listing (Cisco policy defect, cosmetic).
-  The job now avoids triggering it: partition reads use `fields`
-  sub-selection and file-size reads address one keyed entry (path learned
-  from the device's own install records) — full listings happen only as a
-  fallback on devices with no install history or releases that reject the
-  narrowed queries. A `logging discriminator` covers the residual noise from
-  human `show` commands.
+  minimal. **17.15.x devices emit SELinux AVC log noise** whenever `smand`
+  walks a filesystem listing (Cisco policy defect, cosmetic) — and lab probes
+  proved the `fields` sub-selection is a *post-filter* on this release, so
+  even a narrowed partitions read costs the walk (~100 console lines). The
+  job's reads are therefore tiered by what real hardware showed to be quiet:
+  progress polls address **one keyed `partition-content` entry** (zero AVC,
+  field-proven); presence checks and the transfer verify use the device's
+  **image catalog** (`image-files` — exact `flash:<name>` address and byte
+  size for ~1 AVC line, SHA1s served from cache in ~1 s); and discovery, the
+  free-space gate, and the partition locate share **one** partitions read
+  per device run. Full listings remain only as the authoritative fallback
+  (verify disagreements, devices whose catalog/ledger cannot answer,
+  releases that reject the narrowed queries, or when the destination file
+  already existed before the copy — an overwritten file's catalog entry is
+  treated as untrusted cache, so overwrite runs verify by full listing —
+  always logged, never silent).
+  Expected console cost per fresh Full run: one partitions walk at the
+  gates plus a line or two from the catalog reads. A `logging
+  discriminator` covers residual noise from human `show` commands.
 
 ## Deferred (by agreement — not built yet)
 
