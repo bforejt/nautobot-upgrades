@@ -1175,7 +1175,7 @@ class IOSXEUpgrade(Job):
         when nothing matches: every later step (space gate, copy destination,
         install add path) depends on it.
         """
-        data = self._read_partitions(client) or {}
+        data = self._read_partitions(client, log=log) or {}
         names = {
             str(partition.get("name", "")).strip().rstrip(":").lower()
             for partition in _find_partitions(data)
@@ -1262,22 +1262,31 @@ class IOSXEUpgrade(Job):
                 time.sleep(C.POLL_INTERVAL)
         return None
 
-    def _read_partitions(self, client, retries=None):
+    def _read_partitions(self, client, retries=None, log=None):
         """Partition stats ONLY (name/total/used) — never the per-file listing.
 
-        Uses RESTCONF `fields` sub-selection so the device does not walk the
-        filesystem to build partition-content (that walk is what sprays smand
-        SELinux AVC denials on the console). A release that rejects or ignores
-        `fields` falls back to the full read — the parsers handle either shape.
+        FIELD-PROVEN caveat (real 9300 probes, 2026-07-10): `fields` is a
+        post-filter on this release, so even this narrowed read makes smand
+        walk partition-content server-side (~100 AVC console lines). The
+        result is therefore CACHED per client: discovery, the free-space
+        gate, and the partition locate share ONE walk per device run (all
+        three read moments-apart, after any clean). A release that rejects
+        `fields` falls back to the full read — the parsers handle either
+        shape.
         """
+        cached = getattr(client, "_partitions_cache", None)
+        if cached is not None:
+            return cached
         try:
-            return (
+            data = (
                 client.get(
                     f"{C.DATA_Q_FILESYSTEM}?fields={C.QFS_PARTITIONS_FIELDS}",
                     ok_404=True,
                 )
                 or {}
             )
+            client._partitions_cache = data
+            return data
         except RestconfError as exc:
             # fields unsupported or a transient error — the full read (with
             # its own retry policy) is the fallback; parsers handle either
@@ -1290,8 +1299,58 @@ class IOSXEUpgrade(Job):
                 "console noise). Rejected fields expression: %s",
                 exc,
                 C.QFS_PARTITIONS_FIELDS,
+                extra=log,
             )
-            return self._read_q_filesystem(client, retries=retries)
+            data = self._read_q_filesystem(client, retries=retries)
+            if data:
+                client._partitions_cache = data
+            return data
+
+    def _read_image_files(self, client, log):
+        """The device's image catalog, or None when it cannot answer.
+
+        One fields-scoped read returning every recognized image file's exact
+        byte size (and SHA1) keyed by its IOS-form address — the same
+        'flash:<name>' string this job copies to, so presence and size
+        questions need no mount-root resolution. FIELD-PROVEN cheap (~1s,
+        ~one smand AVC line vs ~100 for any partition-content walk; SHA1s
+        served from cache). Rejection is STICKY per client and warned once —
+        callers then fall back to full listings, never silently.
+        """
+        if getattr(client, "_image_files_rejected", False):
+            return None
+        try:
+            data = client.get(
+                f"{C.DATA_Q_FILESYSTEM}?fields={C.QFS_IMAGE_FILES_FIELDS}",
+                ok_404=True,
+            )
+            # A 404, empty body, or shapeless reply is NOT an answer — typing
+            # it as a readable-empty catalog would turn 'no data' into
+            # positive absence evidence (review finding). Usable means at
+            # least one entry actually carries an image-files list.
+            if data and _has_image_files(data):
+                return data
+            client._image_files_rejected = True
+            self.logger.warning(
+                "Image-catalog read returned no usable answer (%s) — presence "
+                "and verify checks fall back to keyed reads and full listings "
+                "for this session.",
+                "endpoint absent (404)" if data is None else "no image-files entries in the reply",
+                extra=log,
+            )
+            return None
+        except RestconfError as exc:
+            client._image_files_rejected = True
+            self.logger.warning(
+                "Image-catalog read rejected by this release (%s) — presence "
+                "and verify checks fall back to keyed reads and full listings "
+                "for this session (expect smand AVC console noise). Rejected "
+                "fields expression: %s",
+                exc,
+                C.QFS_IMAGE_FILES_FIELDS,
+                extra=log,
+            )
+            return None
 
     @staticmethod
     def _ledger_mount_root(client, target_fs):
@@ -1883,9 +1942,80 @@ class IOSXEUpgrade(Job):
             "disabled": False,
             "misses": 0,
         }
-        pre_size = self._read_file_size(client, image.image_file_name, ref_cell, log)
+        # POSITIVE presence/absence from the device's image catalog: one
+        # ~1-AVC read listing every image's exact byte size keyed by the SAME
+        # 'flash:<name>' address this copy writes to — no mount-root
+        # hypothesis involved, so a catalog answer needs no corroborating
+        # walk. fresh_dest tells the verify gate whether any catalog entry
+        # it later sees is NEW observation (dest absent now) or a possibly
+        # stale cache of a file this copy overwrites.
+        catalog = self._read_image_files(client, log)
+        listed = _image_file_size(catalog, dest) if catalog is not None else None
+        fresh_dest = catalog is not None and listed is None
+        keyed_usable = ref_cell.get("ref") is not None and not ref_cell.get("disabled")
+        pre_size = None
+        if catalog is not None:
+            # Catalog answered: the keyed read is corroboration only.
+            if keyed_usable:
+                pre_size = self._read_file_size(client, image.image_file_name, ref_cell, log)
+        else:
+            # Catalog cannot answer: the ENTIRE previous presence check runs —
+            # including the no-ref full-read fallback inside _read_file_size,
+            # so a staged image is still skipped and a pre-existing file still
+            # warned even on devices with an empty ledger (review finding: the
+            # first cut silently lost this whole column of the matrix).
+            pre_size = self._read_file_size(client, image.image_file_name, ref_cell, log)
+        if expected and listed == expected:
+            if pre_size is not None and pre_size != expected:
+                self.logger.warning(
+                    "The image catalog lists %s at the expected size, but the "
+                    "keyed partition read reports %s bytes — conflicting "
+                    "device state, copying anyway (the byte-exact verify "
+                    "decides afterwards).",
+                    dest,
+                    pre_size,
+                    extra=log,
+                )
+            else:
+                # Known limit (inherited, matches the walk-based confirm): the
+                # catalog is device-wide, so on a stack another member's entry
+                # at the same address can satisfy this — a wrong-member skip
+                # still fails LOUDLY at 'install add' (file not found).
+                self.logger.info(
+                    "Image already present at %s with the expected size (%s "
+                    "bytes); skipping copy (exact address and size confirmed "
+                    "by the device's image catalog).",
+                    dest,
+                    expected,
+                    extra=log,
+                )
+                return
+        elif catalog is not None and listed is not None:
+            self.logger.warning(
+                "A file named %s already exists at %s (%s bytes, expected %s); "
+                "it will be overwritten by the copy.",
+                image.image_file_name,
+                dest,
+                listed,
+                expected or "unknown",
+                extra=log,
+            )
+        elif catalog is not None and pre_size is not None:
+            # The catalog's silence covers only RECOGNIZED image files; a
+            # positive keyed sighting (e.g. a partial file from an aborted
+            # transfer) still deserves the overwrite breadcrumb (review
+            # finding).
+            self.logger.warning(
+                "The keyed read reports a file at the ledger path (%s bytes, "
+                "expected %s) that the image catalog does not list — possibly "
+                "a partial or unrecognized file; it will be overwritten by "
+                "the copy.",
+                pre_size,
+                expected or "unknown",
+                extra=log,
+            )
         pre_context = None
-        if pre_size is None and ref_cell.get("ref") is not None and not ref_cell.get("disabled"):
+        if catalog is None and pre_size is None and keyed_usable:
             # A keyed 404 is NOT positive evidence of absence — the address
             # is a ledger-derived hypothesis. One full listing decides:
             # genuinely absent, or present at a DIFFERENT address (then the
@@ -1911,7 +2041,7 @@ class IOSXEUpgrade(Job):
                     pre_size = int(entry.get("file-size") or entry.get("size"))
                 except (TypeError, ValueError):
                     pre_size = None
-        if expected and pre_size is not None and pre_size == expected:
+        if catalog is None and expected and pre_size is not None and pre_size == expected:
             if pre_context is not None:
                 # Size AND address both just came from the full listing —
                 # already observation-corroborated; no second walk needed.
@@ -1963,7 +2093,7 @@ class IOSXEUpgrade(Job):
                 confirmed_path or "none",
                 extra=log,
             )
-        if pre_size is not None:
+        if catalog is None and pre_size is not None:
             self.logger.warning(
                 "A file named %s already exists on flash (%s bytes, expected %s); "
                 "it will be overwritten by the copy.",
@@ -1998,11 +2128,28 @@ class IOSXEUpgrade(Job):
         # Poll from a SEPARATE session: requests.Session is not thread-safe and
         # the original one is occupied by the blocking copy.
         self._watch_copy(
-            client.clone(), copy_thread, result, image, expected, log, target_fs, ref_cell
+            client.clone(),
+            copy_thread,
+            result,
+            image,
+            expected,
+            log,
+            target_fs,
+            ref_cell,
+            fresh_dest,
         )
 
     def _watch_copy(
-        self, poll_client, copy_thread, result, image, expected, log, target_fs, ref_cell
+        self,
+        poll_client,
+        copy_thread,
+        result,
+        image,
+        expected,
+        log,
+        target_fs,
+        ref_cell,
+        fresh_dest,
     ):
         """Report progress while the copy thread runs; verify when it finishes.
 
@@ -2106,14 +2253,47 @@ class IOSXEUpgrade(Job):
                 f"The copy was rejected by the device: {error_text}. "
                 + _fetch_hints(image.download_url)
             )
-        # RPC returned success — verify what actually landed on flash from
-        # the authoritative full listing, ALWAYS. A keyed read here can 404
-        # on a stale path (downgrading the abort gate to a warning) or, worse,
-        # HIT a same-named file at a wrong address and fake exact agreement —
-        # each review round produced one of those. One full walk per copy is
-        # the price of an honest transfer-integrity gate; keyed reads keep
-        # serving the ~30 progress polls where the AVC flood actually was.
-        size = _file_size_bytes(self._read_q_filesystem(poll_client) or {}, image.image_file_name)
+        # RPC returned success — verify what actually landed on flash. The
+        # image catalog answers first (~1 AVC, exact 'flash:<name>' address)
+        # but ONLY when the pre-check observed that address ABSENT before the
+        # copy (fresh_dest): then a listing now is new observation, not a
+        # stale cache of whatever this copy overwrote. In every other case —
+        # dest pre-existed, catalog unreadable, entry missing, or size
+        # disagreement — the authoritative full listing DECIDES, exactly as
+        # before: the byte-exact gate never weakens, it just stops costing a
+        # ~100-AVC walk in the common case. Keyed reads are never consulted
+        # here (a wrong-address hit can fake agreement — review finding).
+        dest = f"{target_fs}{image.image_file_name}"
+        size = None
+        verified_by_catalog = False
+        catalog_missed = False
+        if fresh_dest and expected:
+            catalog = self._read_image_files(poll_client, log)
+            listed = _image_file_size(catalog, dest) if catalog is not None else None
+            if listed is not None and abs(listed - expected) <= C.SIZE_MATCH_TOLERANCE_BYTES:
+                size = listed
+                verified_by_catalog = True
+            else:
+                catalog_missed = catalog is not None and listed is None
+        if not verified_by_catalog:
+            size = _file_size_bytes(
+                self._read_q_filesystem(poll_client) or {}, image.image_file_name
+            )
+            if catalog_missed and size is not None:
+                # The catalog answered but never resolved our destination form
+                # even though the file exists — its address spelling may
+                # differ on this platform (only 'flash:<name>' on a 9300 is
+                # field-proven). Say so, or the tier is silently inert and
+                # every run pays walks that look unexplained (review finding).
+                self.logger.info(
+                    "The image catalog answers but does not list %s even "
+                    "though the file exists — the catalog may not have "
+                    "refreshed for the new file yet, or its address form may "
+                    "differ on this platform; this verify used a full listing "
+                    "instead.",
+                    dest,
+                    extra=log,
+                )
         elapsed = int(time.monotonic() - started)
         if expected and size is not None:
             if abs(size - expected) > C.SIZE_MATCH_TOLERANCE_BYTES:
@@ -2122,7 +2302,11 @@ class IOSXEUpgrade(Job):
                     f"{expected} — transfer incomplete or wrong file on the server."
                 )
             self.logger.info(
-                "Copy complete and size verified (%s bytes, %ss).", size, elapsed, extra=log
+                "Copy complete and size verified (%s bytes, %ss; %s).",
+                size,
+                elapsed,
+                "image catalog, exact address" if verified_by_catalog else "full listing",
+                extra=log,
             )
         else:
             self.logger.warning(
@@ -3432,6 +3616,43 @@ def _flash_frees(data, fs_names):
                     out.append((name, free))
                 break
     return out
+
+
+def _has_image_files(data):
+    """True when the document carries at least one image-files list."""
+    if isinstance(data, dict):
+        if isinstance(data.get("image-files"), list):
+            return True
+        return any(_has_image_files(v) for v in data.values())
+    if isinstance(data, list):
+        return any(_has_image_files(item) for item in data)
+    return False
+
+
+def _image_file_size(data, dest):
+    """Byte size of the catalog entry whose full-path EXACTLY equals dest.
+
+    dest is the IOS-form copy destination ('flash:<name>'). Exact-address
+    matching is deliberate: basename-anywhere matching is how a same-named
+    file elsewhere once rubber-stamped a false skip (review finding).
+    Returns None when the catalog does not list that exact address.
+    """
+    if isinstance(data, dict):
+        if str(data.get("full-path", "")) == dest and "file-size" in data:
+            try:
+                return int(data["file-size"])
+            except (TypeError, ValueError):
+                return None
+        for value in data.values():
+            found = _image_file_size(value, dest)
+            if found is not None:
+                return found
+    elif isinstance(data, list):
+        for item in data:
+            found = _image_file_size(item, dest)
+            if found is not None:
+                return found
+    return None
 
 
 def _find_file_context(data, image_file_name):
