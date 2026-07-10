@@ -131,7 +131,12 @@ POLL_INTERVAL = 30
 #: device never builds the per-file partition-content listing — the walk whose
 #: SELinux side effects flood the console with smand AVC denials. Releases
 #: that ignore/reject `fields` fall back to the full read automatically.
-QFS_PARTITIONS_FIELDS = "partitions(name;total-size;used-size)"
+#: FIELD FACT (real 9300, 2026-07-10): without the four location-key leaves
+#: selected EXPLICITLY, the fields-scoped response returns partitions but
+#: omits the entries' fru/slot/bay/chassis keys — partition names resolve
+#: (discovery, space gate) while keyed partition-content addressing is
+#: impossible. RFC 8040 does not promise ancestor keys; ask for them.
+QFS_PARTITIONS_FIELDS = "fru;slot;bay;chassis;partitions(name;total-size;used-size)"
 #: How long to wait for "install add" to finish staging the package. The target
 #: version appears in install-oper as soon as the add STARTS, so the gate waits
 #: for an add-complete state (added/inactive or beyond), not mere presence.
