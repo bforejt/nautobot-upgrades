@@ -379,8 +379,8 @@ upgrade ran from 3.1.
 **Expected device log noise during an upgrade** (benign — do not stop on these):
 `%ISSU-3-ISSU_COMP_CHECK_FAILED` appears on every `install add` (the engine
 auto-probes for a hitless ISSU path that Catalyst 9300s in normal deployments
-don't have; our upgrade is reload-based by design), and 17.15.x emits SELinux
-`%SELINUX-1-VIOLATION` AVC-denial bursts whenever ANY process asks `smand`
+don't have; our upgrade is reload-based by design), and affected releases emit
+SELinux `%SELINUX-1-VIOLATION` AVC-denial bursts whenever ANY process asks `smand`
 for a filesystem listing — including this job's own file reads (copy
 pre-check, progress polls, transfer verify — see
 [SELinux AVC log events](#selinux-avc-log-events-cause-and-workaround)
@@ -571,7 +571,7 @@ verb, which stays human:
 | Clean device first | no | ⚠️ **Default off.** Before upgrading, remove ALL software the device is not running — including **any version another engineer staged** (overrides the staged-conflict stop). See [Cleaning a device first](#cleaning-a-device-first). |
 | Run scope | no | Order of operations, safest first: **Step 1 - Copy image** (**default** — a forgotten dropdown can never reload a device), **Steps 1 & 2 - Copy image and prep** (`install add`, no reload), **Full - Copy, Activate, Reload** (the only choice that reloads; a real upgrade requires selecting it deliberately). See [Pre-staging](#pre-staging-stage-now-activate-in-the-window). |
 | Save running-config before reload | no | **Default off.** RPC reloads never prompt to save, and the job cannot detect whether a save is needed (SNMP-only source — dependency declined). This box makes the job save (`cisco-ia:save-config`) before activating, aborting if the save is refused or fails. See [Saving running-config](#saving-running-config-before-the-reload-full-runs). |
-| Quiet SELinux log noise on terminals | no | **Default off.** Quiets the harmless SELinux AVC-denial flood some releases (17.15.x; fixed by 17.18.3 — skipped there) show during upgrade activity, exactly where people are watching: the **physical console and terminal-monitor (SSH) sessions**. `show logging` and syslog servers still record everything. Applied to the RUNNING config at the start of the run; unsaved — erased by the reload — unless combined with *Save running-config before reload* on a **Full** run. See [SELinux AVC log events](#selinux-avc-log-events-cause-and-workaround). |
+| Quiet SELinux log noise on terminals | no | **Default off.** The harmless SELinux AVC-denial messages come from how the job watches files during an upgrade; enable this if you watch the **physical console or terminal-monitor (SSH)** and want them quieted there. `show logging` and syslog servers still record everything. Applied to the RUNNING config at the start of the run (every release); unsaved — erased by the reload — unless combined with *Save running-config before reload* on a **Full** run. See [SELinux AVC log events](#selinux-avc-log-events-cause-and-workaround). |
 | Secrets group override | no | Force one Secrets Group for the whole run; by default each device uses its own assigned group. |
 | Remove inactive | no | After commit, reclaim space (default **off** — keeps the rollback image for a soak period). |
 | Parallelism | no | Devices upgraded concurrently (default **4**, max 16; 1 = serial). Size to the firmware server's capacity for simultaneous image pulls. |
@@ -644,13 +644,13 @@ Everything actually depended on (`requests`, Nautobot core) is permissive
 - Stack/SVL handling checks that **all members** report install mode, have the
   free space, and rejoin after reload; per-member deep health checks are
   minimal.
-- 17.15.x consoles show SELinux AVC bursts around filesystem listings — see
-  [SELinux AVC log events](#selinux-avc-log-events-cause-and-workaround)
-  for the cause, when the job triggers them, and the workaround.
+- Some IOS-XE releases show harmless SELinux AVC bursts around filesystem
+  listings — see [SELinux AVC log events](#selinux-avc-log-events-cause-and-workaround)
+  for the cause, when the job triggers them, and the optional quieting.
 
 ## SELinux AVC log events (cause and workaround)
 
-**What they are.** On 17.15.x, the platform's SELinux policy denies `smand`
+**What they are.** On affected IOS-XE releases, the platform's SELinux policy denies `smand`
 (the shell/storage manager) read access to a handful of on-flash paths
 (`biosupgrade`, `yang-infra`, and similar) that it touches whenever it builds
 a **filesystem listing**. Each listing therefore sprays a burst of
@@ -669,32 +669,32 @@ terminals. Earlier versions of this job carried a tiered read design
 (keyed per-file reads, an image-catalog side channel, ledger mount-root
 inference) purely to dodge this cosmetic defect; it was removed
 deliberately (2026-07-10) — reliability and simplicity outrank quiet
-reads for a bug Cisco has already fixed. Two aspects of the read design
+reads for cosmetic, harmless messages the Quiet option handles
+directly. Two aspects of the read design
 survive on their own merits: the partition-stats reads (discovery and
 the free-space gate) stay `fields`-scoped — a payload/parse-size choice;
 on affected releases the device still walks server-side, so those two
 reads burst like any other listing — and every fallback (a release
 rejecting `fields`) still logs a breadcrumb attributed to its device.
 
-**Fixed upstream.** Field observation (2026-07-10): a switch running
-**17.18.3 no longer emits these messages at all** — Cisco has fixed the
-policy defect, so this whole topic ages out of the fleet as devices move to
-17.18.3+.
-
-**Job-managed quieting (opt-in).** The *Quiet SELinux log noise on
-terminals* checkbox makes the job apply the workaround itself, scoped to
-where the noise actually bothers people: it inserts the `NBAVC`
-discriminator into the **running config** as early in the run as possible
-(so even the gates read is filtered) and attaches it to the **physical
-console and terminal-monitor (SSH) sessions only**. The `show logging`
-buffer and syslog hosts deliberately stay unfiltered — they are the
-record (genuine SELinux events share this facility and remain fully
-visible there); the terminals are the noise. Releases at or above 17.18.3
-are skipped as already fixed. The job never replaces an existing operator
-discriminator, logging mode, or an operator-owned `NBAVC` entry with
-different content; `no logging console/monitor` and filtered/XML modes
-are skipped rather than flipped; and any refused write warns instead of
-failing the run. The change is unsaved — the activation reload erases it
+**Job-managed quieting (opt-in).** The messages are harmless — a result
+of how the job (and any `show` command) watches files on the filesystem —
+so most operators can simply ignore them. But if your upgrade process
+involves watching the physical console or terminal-monitor over SSH, you
+may want to enable the *Quiet SELinux log noise on terminals* checkbox to
+quiet them. It makes the job apply the workaround itself, scoped to where
+the noise actually bothers people: it inserts the `NBAVC` discriminator
+into the **running config** as early in the run as possible (so even the
+gates read is filtered) and attaches it to the **physical console and
+terminal-monitor (SSH) sessions only**. The `show logging` buffer and
+syslog hosts deliberately stay unfiltered — they are the record (genuine
+SELinux events share this facility and remain fully visible there); the
+terminals are the noise. The filter is applied on every release (the
+messages are not tied to one train). The job never replaces an existing
+operator discriminator, logging mode, or an operator-owned `NBAVC` entry
+with different content; `no logging console/monitor` and filtered/XML
+modes are skipped rather than flipped; and any refused write warns instead
+of failing the run. The change is unsaved — the activation reload erases it
 — unless combined with *Save running-config before reload* on a Full run,
 which makes it persistent. Confirm with `show run | include NBAVC` —
 three lines:
