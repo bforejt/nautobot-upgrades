@@ -116,12 +116,6 @@ OP_REMOVE = "operations/Cisco-IOS-XE-install-rpc:remove"
 # --- Timeouts / polling (seconds) -------------------------------------------
 
 GET_TIMEOUT = 30
-#: One bounded wait before the post-copy verify re-reads the image catalog:
-#: the catalog is a device-side cache the pre-check just observed WITHOUT the
-#: new file, so an immediate re-read structurally misses and forces the
-#: ~100-AVC full-listing fallback. A short labeled pause gives the cache one
-#: chance to refresh; the full listing remains the decider either way.
-VERIFY_CATALOG_RETRY_DELAY = 20
 RPC_TIMEOUT = 120
 #: Retries for the q-filesystem read (free-space / copied-file-size) so a transient
 #: blip right after a long copy isn't mistaken for "no data".
@@ -133,33 +127,16 @@ COPY_TIMEOUT = 3600
 POLL_INTERVAL = 30
 
 #: RESTCONF `fields` sub-selection for partition-level q-filesystem reads
-#: (discovery, free-space gate): requesting ONLY the partition stats means the
-#: device never builds the per-file partition-content listing — the walk whose
-#: SELinux side effects flood the console with smand AVC denials. Releases
-#: that ignore/reject `fields` fall back to the full read automatically.
-#: The device's image catalog: every recognized image file's exact byte size
-#: and SHA1, keyed by its IOS-form address ("flash:cat9k_....bin") — the SAME
-#: string this job uses as a copy destination, so presence/size questions
-#: need no mount-root resolution at all. FIELD-PROVEN (real 9300,
-#: 2026-07-10): returns in ~1s with cached SHA1s and costs ~ONE smand AVC
-#: line, vs ~100 for any partition-content walk. Keyed GETs on image-files
-#: are REJECTED on 17.15 ("invalid value") — only this fields form works.
-QFS_IMAGE_FILES_FIELDS = "fru;slot;bay;chassis;image-files"
-
-#: FIELD FACT (real 9300, 2026-07-10): without the four location-key leaves
-#: selected EXPLICITLY, the fields-scoped response returns partitions but
-#: omits the entries' fru/slot/bay/chassis keys — partition names resolve
-#: (discovery, space gate) while keyed partition-content addressing is
-#: impossible. RFC 8040 does not promise ancestor keys; ask for them.
+#: (discovery, free-space gate): the partition stats are the wanted answer,
+#: so ask for only them instead of parsing the full multi-hundred-entry file
+#: listing. Releases that ignore/reject `fields` fall back to the full read
+#: automatically (loudly logged). FIELD FACTS (real 9300, 2026-07-10):
+#: `fields` is a POST-filter on this release (the device still walks
+#: server-side, so this is a payload-size choice, not a log-noise one), and
+#: without the four location-key leaves selected EXPLICITLY the response
+#: omits the entries' fru/slot/bay/chassis keys — RFC 8040 does not promise
+#: ancestor keys; ask for them.
 QFS_PARTITIONS_FIELDS = "fru;slot;bay;chassis;partitions(name;total-size;used-size)"
-#: FIELD FACT (same probes): `fields` is a POST-filter on this release — a
-#: partitions read walks partition-content server-side no matter how narrow
-#: the selection (~100 AVC lines). The job therefore shares ONE partitions
-#: read per device run (discovery + space gate + locate) via a per-client
-#: cache. CISCO-FLASH-MIB was probed as a walk-free alternative and
-#: DISQUALIFIED (2026-07-10): the SNMP-bridge read hung on the real 9300 and
-#: would add an snmp-server dependency — one shared walk per run is the
-#: accepted resting point.
 #: How long to wait for "install add" to finish staging the package. The target
 #: version appears in install-oper as soon as the add STARTS, so the gate waits
 #: for an add-complete state (added/inactive or beyond), not mere presence.
