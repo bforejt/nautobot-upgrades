@@ -293,10 +293,11 @@ class IOSXEUpgrade(Job):
             "show harmless SELinux AVC-denial messages on the console when "
             "filesystem listings are read. When ticked, the job attempts to "
             "suppress them by inserting a 'logging discriminator NBAVC' "
-            "filter into the RUNNING config as early in the run as possible "
-            "(console only — 'show logging' keeps everything, and the filter "
-            "also hides any other SELINUX-facility console message while "
-            "active). Existing operator logging config is never replaced, a "
+            "filter into the RUNNING config as early in the run as possible, "
+            "attached to the console, terminal-monitor sessions, AND the "
+            "'show logging' buffer — while active, SELINUX-facility messages "
+            "leave no local trace (configured syslog hosts still receive "
+            "them). Existing operator logging config is never replaced, a "
             "refused write only warns, and releases at or above 17.18.3 are "
             "skipped as already fixed. The change is UNSAVED — the reload "
             "erases it — unless combined with 'Save running-config before "
@@ -1750,12 +1751,12 @@ class IOSXEUpgrade(Job):
         Affected releases (observed on 17.15.x; FIXED by 17.18.3) spray
         harmless %SELINUX-1-VIOLATION console bursts whenever smand builds a
         filesystem listing. When ticked, the job inserts 'logging
-        discriminator NBAVC facility drops SELINUX' and attaches it to the
-        CONSOLE only — deliberately not the buffer: genuine SELinux events
-        share the same facility, so 'show logging' stays intact as the local
-        forensic record (review finding), and not touching buffered-config
-        also avoids flipping a 'no logging buffered' device back on through
-        the YANG choice. Properties, all deliberate:
+                discriminator NBAVC facility drops SELINUX' and attaches it to ALL
+        THREE local destinations — console, terminal monitor, and the
+        'show logging' buffer (operator decision 2026-07-10: suppressed
+        means suppressed everywhere; genuine SELinux events share the
+        facility, so while active they reach only configured syslog hosts,
+        which stay unfiltered). Properties, all deliberate:
           * Skipped on releases the field proved FIXED (>= 17.18.3) — the
             filter would only ever hide real events there.
           * UNSAVED: running-config only; the activation reload erases it
@@ -1819,38 +1820,92 @@ class IOSXEUpgrade(Job):
                     entry_conflict = entry
                 break
 
+        # Three destinations, one hazard matrix each. Every attach point
+        # lives inside YANG CHOICES, so merging blindly could flip an
+        # operator's 'no logging console/monitor/buffered' or filtered/XML
+        # mode — each destination is skipped (warned) unless attaching is a
+        # pure addition. Decision (2026-07-10): the operator wants the
+        # messages suppressed EVERYWHERE on the device, so the buffer is
+        # filtered too — while active, SELinux-facility messages leave no
+        # local trace; syslog hosts (logging host) remain unfiltered.
+        attach = {}
+        skipped = []
+        already = []
+
         console_cfg = cfg.get("console-config") or {}
         console_cc = (console_cfg.get("common-config") or {}).get("console") or {}
         console_attached = str((console_cc.get("discriminator") or {}).get("name", ""))
-        console_off = console_cfg.get("console") is False
-        console_mode_conflict = "filtered" in console_cc or "xxml" in console_cc
+        if console_attached == name:
+            already.append("console")
+        elif console_attached:
+            skipped.append(f"console (operator discriminator '{console_attached}' attached)")
+        elif console_cfg.get("console") is False:
+            skipped.append("console ('no logging console' is configured)")
+        elif "filtered" in console_cc or "xxml" in console_cc:
+            skipped.append("console (filtered/XML logging mode)")
+        else:
+            attach["console-config"] = {
+                "common-config": {"console": {"discriminator": {"name": name}}}
+            }
 
-        if console_attached == name and entry_conflict is None:
-            self.logger.info(
-                "SELinux AVC suppression already in place (discriminator %s attached to console).",
+        # NOTE: target monitor-config, never the legacy 'monitor' container
+        # (status obsolete in the model).
+        monitor_cfg = cfg.get("monitor-config") or {}
+        monitor_cc = (monitor_cfg.get("common-config") or {}).get("monitor") or {}
+        monitor_attached = str((monitor_cc.get("discriminator") or {}).get("name", ""))
+        if monitor_attached == name:
+            already.append("monitor")
+        elif monitor_attached:
+            skipped.append(f"monitor (operator discriminator '{monitor_attached}' attached)")
+        elif monitor_cfg.get("monitor") is False:
+            skipped.append("monitor ('no logging monitor' is configured)")
+        elif "filtered" in monitor_cc or "xxml" in monitor_cc:
+            skipped.append("monitor (filtered/XML logging mode)")
+        else:
+            attach["monitor-config"] = {
+                "common-config": {"monitor": {"discriminator": {"name": name}}}
+            }
+
+        buffered_cfg = cfg.get("buffered-config") or {}
+        buffered_cc = (buffered_cfg.get("common-config") or {}).get("buffered") or {}
+        buffered_attached = str(buffered_cc.get("discriminator-config", ""))
+        if buffered_attached == name:
+            already.append("buffered")
+        elif buffered_attached:
+            skipped.append(f"buffered (operator discriminator '{buffered_attached}' attached)")
+        elif buffered_cfg.get("buffered") is False:
+            skipped.append("buffered ('no logging buffered' is configured)")
+        elif "yxml" in buffered_cc:
+            skipped.append("buffered (XML logging buffer configured)")
+        else:
+            attach["buffered-config"] = {
+                "common-config": {"buffered": {"discriminator-config": name}}
+            }
+
+        if entry_conflict is not None:
+            self.logger.warning(
+                "AVC suppression skipped: an operator-owned 'logging "
+                "discriminator %s' already exists with different content — "
+                "existing operator logging config is never replaced.",
                 name,
                 extra=log,
             )
             return
-        reason = None
-        if entry_conflict is not None:
-            reason = (
-                f"an operator-owned 'logging discriminator {name}' already "
-                "exists with different content"
-            )
-        elif console_attached:
-            reason = f"operator discriminator '{console_attached}' is attached to console"
-        elif console_off:
-            reason = "'no logging console' is configured — nothing displays there anyway"
-        elif console_mode_conflict:
-            reason = "console uses filtered/XML logging mode"
-        if reason:
+        if skipped:
             self.logger.warning(
-                "AVC suppression skipped (%s) — existing operator logging "
+                "AVC suppression skipped for %s — existing operator logging "
                 "config is never replaced.",
-                reason,
+                "; ".join(skipped),
                 extra=log,
             )
+        if not attach:
+            if not skipped:
+                self.logger.info(
+                    "SELinux AVC suppression already in place (discriminator %s attached to %s).",
+                    name,
+                    ", ".join(already) or "all destinations",
+                    extra=log,
+                )
             return
         try:
             # Entry first (the model's own rule: created first, deleted last).
@@ -1867,21 +1922,12 @@ class IOSXEUpgrade(Job):
             )
             return
         try:
-            client.patch(
-                C.DATA_NATIVE_LOGGING,
-                {
-                    "Cisco-IOS-XE-native:logging": {
-                        "console-config": {
-                            "common-config": {"console": {"discriminator": {"name": name}}}
-                        }
-                    }
-                },
-            )
+            client.patch(C.DATA_NATIVE_LOGGING, {"Cisco-IOS-XE-native:logging": attach})
         except RestconfError as exc:
             self.logger.warning(
                 "AVC suppression partially applied: the 'logging "
                 "discriminator %s' entry LANDED in running-config but the "
-                "console attach failed (%s). The unattached entry is "
+                "destination attach failed (%s). The unattached entry is "
                 "harmless; remove it with 'no logging discriminator %s' if "
                 "unwanted. Continuing.",
                 name,
@@ -1891,12 +1937,14 @@ class IOSXEUpgrade(Job):
             )
             return
         self.logger.info(
-            "SELinux AVC console suppression applied to running-config "
-            "(logging discriminator %s, facility drops SELINUX, console "
-            "only — 'show logging' keeps everything). UNSAVED: the reload "
-            "erases it unless 'Save running-config before reload' is ticked "
-            "on this Full run.",
+            "SELinux AVC suppression applied to running-config (logging "
+            "discriminator %s, facility drops SELINUX; attached: %s). While "
+            "active, SELINUX-facility messages leave no local trace — "
+            "console, sessions, and 'show logging' are all filtered; syslog "
+            "hosts still receive them. UNSAVED: the reload erases it unless "
+            "'Save running-config before reload' is ticked on this Full run.",
             name,
+            ", ".join(sorted(already + [k.replace("-config", "") for k in attach])),
             extra=log,
         )
 
