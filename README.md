@@ -381,9 +381,10 @@ upgrade ran from 3.1.
 auto-probes for a hitless ISSU path that Catalyst 9300s in normal deployments
 don't have; our upgrade is reload-based by design), and 17.15.x emits SELinux
 `%SELINUX-1-VIOLATION` AVC-denial bursts whenever ANY process asks `smand`
-for a filesystem listing — including a small number of this job's own reads
-(see [SELinux AVC log events](#selinux-avc-log-events-cause-budget-workaround)
-for exactly which, when, and the workaround). The repeated `%DMI-5-AUTH_PASSED`
+for a filesystem listing — including this job's own file reads (copy
+pre-check, progress polls, transfer verify — see
+[SELinux AVC log events](#selinux-avc-log-events-cause-and-workaround)
+for the cause and the workaround). The repeated `%DMI-5-AUTH_PASSED`
 entries are this job's own RESTCONF polling.
 
 ### Parallel batches
@@ -536,7 +537,7 @@ verb, which stays human:
 | Clean device first | no | ⚠️ **Default off.** Before upgrading, remove ALL software the device is not running — inactive packages, leftover files, **and any version another engineer staged** (deliberately overrides the staged-conflict stop) plus the soak-period rollback image. For engineers who know the state of the network. Failures abort; dry-run reports what would be removed. Independent of *Remove inactive (after commit)*. |
 | Run scope | no | Order of operations, safest first: **Step 1 - Copy image** (**default** — a forgotten dropdown can never reload a device), **Steps 1 & 2 - Copy image and prep** (`install add`, no reload), **Full - Copy, Activate, Reload** (the only choice that reloads; a real upgrade requires selecting it deliberately). See [Pre-staging](#pre-staging-stage-now-activate-in-the-window). |
 | Save running-config before reload | no | **Default off.** RPC reloads never prompt to save, and the job cannot detect whether a save is needed (SNMP-only source — dependency declined). This box makes the job save (`cisco-ia:save-config`) before activating, aborting if the save is refused or fails. See [Saving running-config](#saving-running-config-before-the-reload-full-runs). |
-| Quiet SELinux log noise on terminals | no | **Default off.** Quiets the harmless SELinux AVC-denial flood some releases (17.15.x; fixed by 17.18.3 — skipped there) show during upgrade activity, exactly where people are watching: the **physical console and terminal-monitor (SSH) sessions**. `show logging` and syslog servers still record everything. Applied to the RUNNING config at the start of the run; unsaved — erased by the reload — unless combined with *Save running-config before reload* on a **Full** run. See [SELinux AVC log events](#selinux-avc-log-events-cause-budget-workaround). |
+| Quiet SELinux log noise on terminals | no | **Default off.** Quiets the harmless SELinux AVC-denial flood some releases (17.15.x; fixed by 17.18.3 — skipped there) show during upgrade activity, exactly where people are watching: the **physical console and terminal-monitor (SSH) sessions**. `show logging` and syslog servers still record everything. Applied to the RUNNING config at the start of the run; unsaved — erased by the reload — unless combined with *Save running-config before reload* on a **Full** run. See [SELinux AVC log events](#selinux-avc-log-events-cause-and-workaround). |
 | Secrets group override | no | Force one Secrets Group for the whole run; by default each device uses its own assigned group. |
 | Remove inactive | no | After commit, reclaim space (default **off** — keeps the rollback image for a soak period). |
 | Parallelism | no | Devices upgraded concurrently (default **4**, max 16; 1 = serial). Size to the firmware server's capacity for simultaneous image pulls. |
@@ -549,11 +550,9 @@ verb, which stays human:
 | --- | --- |
 | Read version | `GET .../Cisco-IOS-XE-device-hardware-oper:device-hardware-data/device-hardware/device-system-data` |
 | Stack member roster | `GET .../Cisco-IOS-XE-device-hardware-oper:device-hardware-data/device-hardware/device-inventory` |
-| Install state / mode / ledger / mount root | `GET .../Cisco-IOS-XE-install-oper:install-oper-data` |
-| Partition stats (discovery + space gate + locate, **one read per run**) | `GET .../q-filesystem?fields=fru;slot;bay;chassis;partitions(name;total-size;used-size)` |
-| Image catalog (presence check + verify) | `GET .../q-filesystem?fields=fru;slot;bay;chassis;image-files` |
-| Per-poll copy progress (zero-AVC) | `GET .../q-filesystem=<fru>,<slot>,<bay>,<chassis>/partitions=<name>/partition-content=<full-path>` |
-| Full file listing (authoritative fallback only) | `GET .../Cisco-IOS-XE-platform-software-oper:cisco-platform-software/q-filesystem` |
+| Install state / mode / ledger | `GET .../Cisco-IOS-XE-install-oper:install-oper-data` |
+| Partition stats (discovery + space gate) | `GET .../q-filesystem?fields=fru;slot;bay;chassis;partitions(name;total-size;used-size)` |
+| Full file listing (copy pre-check, per-poll progress, transfer verify) | `GET .../Cisco-IOS-XE-platform-software-oper:cisco-platform-software/q-filesystem` |
 | Copy image | `POST .../operations/Cisco-IOS-XE-rpc:copy` (worker thread) |
 | Add / activate / commit / remove | `POST .../operations/Cisco-IOS-XE-install-rpc:{install,activate,install-commit,remove}` |
 | Save running-config (opt-in) | `POST .../operations/cisco-ia:save-config` |
@@ -597,7 +596,7 @@ Everything actually depended on (`requests`, Nautobot core) is permissive
 - **Hardware validation covers 17.12, 17.15, 17.18, and 26.1** on single
   switches and a 2-member stack, from Nautobot 3.1 and 2.4 — other platforms
   (9200, 9400–9600, C8000V) are admitted on model evidence (see the
-  [support matrix](#support-matrix) and platform row); do one supervised run
+  [support posture](#support-posture) and platform row); do one supervised run
   per newly-encountered train or platform. On releases whose devices don't populate
   the operation ledger or `sys-activity` at runtime, the job degrades to
   version-state inference and a settle timer — clearly labeled in the logs.
@@ -612,10 +611,10 @@ Everything actually depended on (`requests`, Nautobot core) is permissive
   free space, and rejoin after reload; per-member deep health checks are
   minimal.
 - 17.15.x consoles show SELinux AVC bursts around filesystem listings — see
-  [SELinux AVC log events](#selinux-avc-log-events-cause-budget-workaround)
-  for the cause, exactly when the job triggers them, and the workaround.
+  [SELinux AVC log events](#selinux-avc-log-events-cause-and-workaround)
+  for the cause, when the job triggers them, and the workaround.
 
-## SELinux AVC log events (cause, budget, workaround)
+## SELinux AVC log events (cause and workaround)
 
 **What they are.** On 17.15.x, the platform's SELinux policy denies `smand`
 (the shell/storage manager) read access to a handful of on-flash paths
@@ -625,35 +624,23 @@ a **filesystem listing**. Each listing therefore sprays a burst of
 9300). This is a **Cisco policy defect and cosmetic**: the denials do not
 fail the operation — the listing still returns, transfers and installs are
 unaffected. Anything that requests a listing triggers it: this job's
-fallback reads, human `show` commands (`dir`, `show platform software ...`),
+file reads, human `show` commands (`dir`, `show platform software ...`),
 and the install engine's own add/activate/clean activity.
 
-**Why the job still triggers some.** Lab probes proved RESTCONF `fields`
-sub-selection is a *post-filter* on this release — even a narrowed
-partitions read costs the full walk. The job's reads are therefore tiered by
-what real hardware showed to be quiet: progress polls address **one keyed
-`partition-content` entry** (zero AVC, field-proven); presence checks and
-the transfer verify use the device's **image catalog** (`image-files` —
-exact `flash:<name>` address and byte size for ~1 AVC line, SHA1s served
-from cache in ~1 s; on a verify miss the job waits once briefly for the
-catalog cache to refresh before falling back); and discovery, the
-free-space gate, and the partition locate share **one** partitions read per
-device run.
-
-**The per-run budget** (the job's own reads; the install engine adds its own
-noise during add/activate/clean):
-
-| Scenario | Bursts (~100 lines each) | Catalog lines |
-| --- | --- | --- |
-| Staged re-run (image already on flash) | 1 (gates) | 1 |
-| Fresh copy, catalog refreshed in time | 1 (gates) | 2–3 |
-| Fresh copy, catalog cache lagging | 2 (gates + verify fallback) | 2–3 |
-| Overwrite re-run, or image size unset in Nautobot | 2 (gates + verify — an overwritten file's catalog entry is untrusted cache, and without an expected size the byte gate needs the full listing) | 1–2 |
-| Degraded tiers (ledger empty, catalog rejected, wrong mount root) | + learn/heal fallback walks, each individually logged | — |
-
-Every fallback that costs a walk leaves a matching breadcrumb in the job
-log, attributed to its device — if the console shows a burst, the job log
-says why.
+**Why the job triggers them.** The job asks the device about files the
+simple way: the standard full q-filesystem listing, used for the copy
+pre-check, per-poll transfer progress, and the byte-exact verify. On an
+affected release each of those listings logs one burst on unquieted
+terminals. Earlier versions of this job carried a tiered read design
+(keyed per-file reads, an image-catalog side channel, ledger mount-root
+inference) purely to dodge this cosmetic defect; it was removed
+deliberately (2026-07-10) — reliability and simplicity outrank quiet
+reads for a bug Cisco has already fixed. Two aspects of the read design
+survive on their own merits: the partition-stats reads (discovery and
+the free-space gate) stay `fields`-scoped — a payload/parse-size choice;
+on affected releases the device still walks server-side, so those two
+reads burst like any other listing — and every fallback (a release
+rejecting `fields`) still logs a breadcrumb attributed to its device.
 
 **Fixed upstream.** Field observation (2026-07-10): a switch running
 **17.18.3 no longer emits these messages at all** — Cisco has fixed the
