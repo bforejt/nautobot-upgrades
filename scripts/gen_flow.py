@@ -45,7 +45,7 @@ SPINE = [
       "passlabel": "No"}),
     ("avcsup", "proc",
      "Opt-in: quiet SELinux noise on terminals\n(running-config; console + term-mon only;\n"
-     "skipped >=17.18.3; read-first; warn-only)", {}),
+     "all releases; read-first; warn-only)", {}),
     ("d_floor", "dec", "Version parses\n& ≥ 17.9.1?",
      {"abort": ("No", "Unknown version, or below the\n17.9.1 support floor"),
       "passlabel": "Yes"}),

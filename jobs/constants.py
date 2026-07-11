@@ -101,8 +101,8 @@ OP_SAVE_CONFIG = "operations/cisco-ia:save-config"
 #: native model since 16.9.1 ('Add full support for logging discriminator',
 #: rev 2018-07-11) — verified present at 17.9.1/17.12.1/17.15.1/26.1.1, so
 #: every release this job supports can accept the filter. FIELD FACT
-#: (2026-07-10): 17.18.3 no longer emits the AVC messages at all — Cisco
-#: fixed the policy defect, so suppression is a bridge for older trains.
+#: (2026-07-11): the AVC messages are NOT tied to one train — observed on
+#: 17.15.x AND 17.18.3 — so suppression is applied regardless of version.
 DATA_NATIVE_LOGGING = "data/Cisco-IOS-XE-native:native/logging"
 #: Discriminator name (YANG caps it at 8 chars); distinctive so operators can
 #: grep for the job's filter: 'show run | include NBAVC'.

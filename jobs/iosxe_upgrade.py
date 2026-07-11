@@ -626,12 +626,12 @@ class IOSXEUpgrade(Job):
                 self.logger.info(
                     "DRY-RUN: would insert the SELinux AVC suppression filter "
                     "(logging discriminator %s, console + terminal-monitor) "
-                    "into running-config on affected releases.",
+                    "into running-config.",
                     C.AVC_DISCRIMINATOR_NAME,
                     extra=log,
                 )
             else:
-                self._apply_avc_suppression(client, log, current_version=current)
+                self._apply_avc_suppression(client, log)
 
         # -- 2. Pre-flight gates ---------------------------------------------
         self._gate_version_floor(current, log)
@@ -1329,20 +1329,21 @@ class IOSXEUpgrade(Job):
             )
             return self._read_q_filesystem(client, retries=retries)
 
-    def _apply_avc_suppression(self, client, log, current_version=""):
+    def _apply_avc_suppression(self, client, log):
         """Insert the SELinux AVC console filter into running-config (opt-in).
 
-        Affected releases (observed on 17.15.x; FIXED by 17.18.3) spray
-        harmless %SELINUX-1-VIOLATION console bursts whenever smand builds a
-        filesystem listing. When ticked, the job inserts 'logging
-                discriminator NBAVC facility drops SELINUX' and attaches it to the
-        TERMINALS only — the physical console and terminal-monitor (SSH)
-        sessions. The 'show logging' buffer and syslog hosts deliberately
-        stay unfiltered (they are the record; genuine SELinux events share
-        this facility and remain fully visible there). Properties, all
-        deliberate:
-          * Skipped on releases the field proved FIXED (>= 17.18.3) — the
-            filter would only ever hide real events there.
+        The %SELINUX-1-VIOLATION console bursts are harmless — a side effect
+        of how smand watches files whenever anything (this job, or a human
+        'show' command) builds a filesystem listing — but they clutter the
+        physical console and terminal-monitor (SSH) sessions during an
+        upgrade. When ticked, the job inserts 'logging discriminator NBAVC
+        facility drops SELINUX' and attaches it to the TERMINALS only. The
+        'show logging' buffer and syslog hosts deliberately stay unfiltered
+        (they are the record; genuine SELinux events share this facility and
+        remain fully visible there). Properties, all deliberate:
+          * Applied on EVERY release regardless of version — the messages
+            are not tied to one train (field-observed on 17.15.x AND on
+            17.18.3, which an earlier read had wrongly assumed was fixed).
           * UNSAVED: running-config only; the activation reload erases it
             unless 'Save running-config before reload' is also ticked on a
             Full run (stage scopes never save — documented on the checkbox).
@@ -1356,24 +1357,13 @@ class IOSXEUpgrade(Job):
             a partial failure names the residue it leaves.
         """
         name = C.AVC_DISCRIMINATOR_NAME
-        fixed_floor = (17, 18, 3)
-        running = _version_tuple(current_version)
-        if running and running >= fixed_floor:
-            self.logger.info(
-                "SELinux AVC suppression not needed: this release (%s) no "
-                "longer emits the messages (fixed by 17.18.3) — filter not "
-                "applied.",
-                ".".join(str(p) for p in running),
-                extra=log,
-            )
-            return
         try:
             raw = client.get(C.DATA_NATIVE_LOGGING, ok_404=True)
         except RestconfError as exc:
             self.logger.warning(
                 "Could not read the logging config to apply AVC suppression "
                 "(%s) — continuing without it (console may show SELinux "
-                "bursts on affected releases).",
+                "bursts).",
                 exc,
                 extra=log,
             )
@@ -1644,8 +1634,8 @@ class IOSXEUpgrade(Job):
         # Pre-check from ONE full listing — the same read shape every file
         # question in this job now uses (simplification 2026-07-10:
         # reliability and simplicity outrank quiet reads; the keyed/catalog
-        # tiers this replaced existed to dodge a cosmetic, since-fixed
-        # SELinux logging defect and were the most delicate machinery in the
+        # tiers this replaced existed to dodge a cosmetic, harmless SELinux
+        # logging burst and were the most delicate machinery in the
         # project). The skip requires a sighting INSIDE the target
         # filesystem at the exact expected size — _find_target_file scopes
         # the match so a same-named file on crashinfo:/usb: or a stale
@@ -1710,10 +1700,9 @@ class IOSXEUpgrade(Job):
         """Report progress while the copy thread runs; verify when it finishes.
 
         Progress polls read the full q-filesystem listing each interval — the
-        one read shape used everywhere (simplification 2026-07-10; on the
-        affected 17.15.x releases each listing logs a cosmetic SELinux burst
-        on unquieted terminals — see the README and the 'Quiet SELinux log
-        noise' option; 17.18.3+ is silent regardless). Progress is
+        one read shape used everywhere (simplification 2026-07-10; each
+        listing logs a cosmetic SELinux burst on unquieted terminals — see
+        the README and the 'Quiet SELinux log noise' option). Progress is
         best-effort; there is deliberately NO stall abort — the blocking RPC
         itself is the liveness signal: server/TLS failures return quickly as
         errors, and hangs are bounded by COPY_TIMEOUT. The final byte-exact
