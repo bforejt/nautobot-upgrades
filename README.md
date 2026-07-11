@@ -20,6 +20,35 @@ devices — **Catalyst 9300** primarily — driven entirely over **RESTCONF**.
 
 ---
 
+## Background & intended use
+
+This project was built for a specific, common situation — and it is still a
+**prototype**:
+
+- **The fleet is uniform Cisco Catalyst 9300s.** A switching estate
+  standardized on one platform and one image family, where an upgrade playbook
+  that handles the 9300 well handles most of the network.
+- **The inventory already lives in Nautobot.** Devices, platforms, primary
+  IPs, and credentials (**Secrets**) are populated and maintained in a working
+  Nautobot — so the source of truth for *what to upgrade* and *how to reach it*
+  is already there, and this Job simply reads from it.
+- **The team values REST.** Operators comfortable with REST and what it buys —
+  structured request/response, idempotency, and true device state instead of
+  screen-scraping CLI — rather than a traditional SSH/TFTP-driven upgrade.
+
+It began as a **research question**: how much of an IOS-XE install-mode upgrade
+could be driven *purely* over RESTCONF, with no CLI and no SNMP? On the code
+trains this fleet runs, the answer turned out to be **essentially all of it** —
+image copy, `install add`/`activate`/`commit`, reload, rollback, and the state
+reads that gate each step. That result was strong enough to justify building
+this prototype rather than stopping at a feasibility note.
+
+**Where it stands:** the flow is working well and is thoroughly exercised in a
+**lab** on real Catalyst 9300 hardware (see [Status & testing](#status--testing)).
+The intended next step is deliberate **production vetting** — the design is
+conservative and its stability so far is encouraging, but "works in the lab" is
+not "proven in production," so every run should still start with **Dry-run**.
+
 ## What it does
 
 From the Nautobot **Jobs** page you scope a set of target devices — with optional
@@ -351,18 +380,50 @@ Job's only runtime dependency (`requests`, plus Nautobot core). Tested to date:
 installs on 2.4 and 3.1 nautobot-composer deployments; the end-to-end device
 upgrade ran from 3.1.
 
-## Installing into Nautobot
+## Installing into Nautobot (getting started)
 
-1. Ensure `requests` and Nautobot core are present (they always are). **No extra
-   packages are needed.**
-2. In Nautobot: **Extensibility → Git Repositories → Add**, set the repository
-   URL to this public repo, choose a branch, and select **Provides: Jobs**, then
-   **Sync**.
-3. **Jobs → Jobs**: under the **IOS-XE Upgrades** group, edit and **Enable**
-   **“Cisco IOS-XE Upgrade (RESTCONF)”**, **“Register IOS-XE Image”**, and
-   **“Cancel IOS-XE Upgrade Run”**.
-4. After changing job code, re-sync the repo and (for non-container installs)
-   restart the Celery worker.
+This project is consumed the standard Nautobot way — as a **Git Repository that
+provides Jobs**. Nautobot clones the repo, discovers the Jobs in
+[`jobs/`](jobs/), and runs them on its own Celery worker; there is nothing to
+`pip install`. The mechanics of Git data sources and Jobs are core Nautobot
+features maintained by Network to Code — this section covers the
+project-specific basics as bullets and links out to NTC's documentation for the
+detailed steps.
+
+**Prerequisites**
+
+- A working **Nautobot 2.4 or 3.x** with your devices, platforms, primary IPs,
+  and credentials (**Secrets**) already populated — see
+  [Requirements](#requirements) and [Authentication](#authentication).
+- A **firmware server** the devices can reach to pull images from — see
+  [Image storage](#image-storage).
+- No extra Python packages: the Job's only runtime dependency is `requests`,
+  which Nautobot core already provides.
+
+**Steps** (the basics — follow the linked NTC docs for the full how-to)
+
+- **Add the repository.** In Nautobot, go to **Extensibility → Git Repositories
+  → Add**, set the remote URL to this public repo, pick a branch, tick
+  **Provides: Jobs**, and **Sync**. Getting the URL into the right place and the
+  sync options are walked through in NTC's
+  [Git as a Data Source](https://docs.nautobot.com/projects/core/en/stable/user-guide/feature-guides/git-data-source/)
+  guide (and the
+  [Git Repositories](https://docs.nautobot.com/projects/core/en/stable/user-guide/platform-functionality/gitrepository/)
+  reference).
+- **Enable the Jobs.** Newly synced Jobs are **disabled** by default. Under
+  **Jobs → Jobs**, in the **IOS-XE Upgrades** group, edit and **Enable** each of
+  *Cisco IOS-XE Upgrade (RESTCONF)*, *Register IOS-XE Image*, and *Cancel IOS-XE
+  Upgrade Run*. How enabling works is documented in NTC's
+  [Managing Jobs](https://docs.nautobot.com/projects/core/en/stable/user-guide/platform-functionality/jobs/managing-jobs/).
+- **Know how Jobs run.** Jobs execute on Nautobot's Celery worker and log to a
+  **Job Result**; permissions, scheduling, and the run model are core Nautobot
+  behavior, covered in NTC's
+  [Jobs](https://docs.nautobot.com/projects/core/en/stable/user-guide/platform-functionality/jobs/)
+  guide.
+- **After changing Job code**, re-sync the repository; on non-container installs,
+  restart the Celery worker so the new code is loaded.
+
+Then head to [Running it](#running-it) for the first (Dry-run) execution.
 
 ## Running it
 
