@@ -472,6 +472,32 @@ Dry-run *and* selecting *Full* — and a forgotten dropdown can never reload a
 device (the run just stages and says so). Anyone automating runs via the API
 should pass `run_scope` explicitly.
 
+### Cleaning a device first
+
+The **Clean device first** checkbox tells the job to groom the device
+*before* upgrading: it runs the install engine's own `install remove
+inactive`, which deletes every piece of software the device is not
+currently running — inactive packages, leftover image files, **and any
+version another engineer may have staged**.
+
+⚠️ **What you are accepting when you tick it:**
+
+- **Anything in-flight is deleted.** A staged version usually means someone
+  else's change is already underway. Normally the job STOPS when it finds a
+  conflicting staged version (the staged-conflict safety stop); this
+  checkbox is the deliberate override. Tick it only when you know the state
+  of the network and nothing else is planned for this device.
+- **The soak-period rollback image goes with it.** The previous version kept
+  on flash for rollback is "software the device is not running" too.
+  Rolling back afterward means re-running this job targeting the old
+  version (a full re-copy).
+
+Mechanics: the clean runs before the free-space gate, so the gate evaluates
+the CLEANED flash (this is the **clean-then-stage** pattern for tight-flash
+devices described above). Clean failures abort the device's run; a dry-run
+only reports what would be removed. Independent of *Remove inactive (after
+commit)*, which reclaims space AFTER a successful upgrade instead.
+
 ### Saving running-config before the reload (Full runs)
 
 The CLI `reload` asks *"System configuration has been modified. Save?"* —
@@ -534,7 +560,7 @@ verb, which stays human:
 | Location / Role / Status / Platform / Device type / Current version / Tags | no | Optional filters that narrow the **Devices** picker for field operations. |
 | Devices | yes | Target devices to upgrade (narrowed by the filters above). |
 | Target version | yes | Core `SoftwareVersion` to upgrade to. |
-| Clean device first | no | ⚠️ **Default off.** Before upgrading, remove ALL software the device is not running — inactive packages, leftover files, **and any version another engineer staged** (deliberately overrides the staged-conflict stop) plus the soak-period rollback image. For engineers who know the state of the network. Failures abort; dry-run reports what would be removed. Independent of *Remove inactive (after commit)*. |
+| Clean device first | no | ⚠️ **Default off.** Before upgrading, remove ALL software the device is not running — including **any version another engineer staged** (overrides the staged-conflict stop) and the soak-period rollback image. See [Cleaning a device first](#cleaning-a-device-first). |
 | Run scope | no | Order of operations, safest first: **Step 1 - Copy image** (**default** — a forgotten dropdown can never reload a device), **Steps 1 & 2 - Copy image and prep** (`install add`, no reload), **Full - Copy, Activate, Reload** (the only choice that reloads; a real upgrade requires selecting it deliberately). See [Pre-staging](#pre-staging-stage-now-activate-in-the-window). |
 | Save running-config before reload | no | **Default off.** RPC reloads never prompt to save, and the job cannot detect whether a save is needed (SNMP-only source — dependency declined). This box makes the job save (`cisco-ia:save-config`) before activating, aborting if the save is refused or fails. See [Saving running-config](#saving-running-config-before-the-reload-full-runs). |
 | Quiet SELinux log noise on terminals | no | **Default off.** Quiets the harmless SELinux AVC-denial flood some releases (17.15.x; fixed by 17.18.3 — skipped there) show during upgrade activity, exactly where people are watching: the **physical console and terminal-monitor (SSH) sessions**. `show logging` and syslog servers still record everything. Applied to the RUNNING config at the start of the run; unsaved — erased by the reload — unless combined with *Save running-config before reload* on a **Full** run. See [SELinux AVC log events](#selinux-avc-log-events-cause-and-workaround). |
