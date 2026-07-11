@@ -647,8 +647,8 @@ class IOSXEUpgrade(Job):
             if dryrun:
                 self.logger.info(
                     "DRY-RUN: would insert the SELinux AVC suppression filter "
-                    "(logging discriminator %s, console only) into "
-                    "running-config on affected releases.",
+                    "(logging discriminator %s, console + terminal-monitor) "
+                    "into running-config on affected releases.",
                     C.AVC_DISCRIMINATOR_NAME,
                     extra=log,
                 )
