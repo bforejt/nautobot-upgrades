@@ -285,6 +285,24 @@ class IOSXEUpgrade(Job):
             "half-applied changes an engineer deliberately left unsaved."
         ),
     )
+    suppress_avc_noise = BooleanVar(
+        label="Suppress SELinux AVC console messages",
+        default=False,
+        description=(
+            "Some IOS-XE versions (observed on 17.15.x; fixed by 17.18.3) "
+            "show harmless SELinux AVC-denial messages on the console when "
+            "filesystem listings are read. When ticked, the job attempts to "
+            "suppress them by inserting a 'logging discriminator NBAVC' "
+            "filter into the RUNNING config as early in the run as possible "
+            "(console only — 'show logging' keeps everything, and the filter "
+            "also hides any other SELINUX-facility console message while "
+            "active). Existing operator logging config is never replaced, a "
+            "refused write only warns, and releases at or above 17.18.3 are "
+            "skipped as already fixed. The change is UNSAVED — the reload "
+            "erases it — unless combined with 'Save running-config before "
+            "reload' on a FULL run (stage scopes never save)."
+        ),
+    )
     secrets_group_override = ObjectVar(
         model=SecretsGroup,
         required=False,
@@ -357,6 +375,7 @@ class IOSXEUpgrade(Job):
             "run_scope",
             "clean_before",
             "save_config",
+            "suppress_avc_noise",
             "secrets_group_override",
             "remove_inactive",
             "parallelism",
@@ -381,6 +400,7 @@ class IOSXEUpgrade(Job):
         run_scope,
         clean_before,
         save_config,
+        suppress_avc_noise,
         secrets_group_override,
         remove_inactive,
         parallelism,
@@ -469,6 +489,7 @@ class IOSXEUpgrade(Job):
                     run_scope,
                     clean_before,
                     save_config,
+                    suppress_avc_noise,
                 )
                 # Total wall-clock per device — the number change windows are
                 # planned around.
@@ -594,6 +615,7 @@ class IOSXEUpgrade(Job):
         run_scope="full",
         clean_before=False,
         save_config=False,
+        suppress_avc_noise=False,
     ):
         log = {"object": device}
 
@@ -616,6 +638,23 @@ class IOSXEUpgrade(Job):
             return self._handle_already_on_target(
                 client, device, target_version, dryrun, log, run_scope=run_scope
             )
+
+        # Opt-in cosmetic write, applied as early as possible for runs that
+        # will actually DO something — after the already-on-target no-op
+        # branch (a lasting config write for zero benefit there — review
+        # finding), before the gates whose partitions read is the first
+        # filesystem walk. Never in dry-run.
+        if suppress_avc_noise:
+            if dryrun:
+                self.logger.info(
+                    "DRY-RUN: would insert the SELinux AVC suppression filter "
+                    "(logging discriminator %s, console only) into "
+                    "running-config on affected releases.",
+                    C.AVC_DISCRIMINATOR_NAME,
+                    extra=log,
+                )
+            else:
+                self._apply_avc_suppression(client, log, current_version=current)
 
         # -- 2. Pre-flight gates ---------------------------------------------
         self._gate_version_floor(current, log)
@@ -1704,6 +1743,162 @@ class IOSXEUpgrade(Job):
             extra=log,
         )
         return keys, pname, f"{root.rstrip('/')}/{image_file_name}"
+
+    def _apply_avc_suppression(self, client, log, current_version=""):
+        """Insert the SELinux AVC console filter into running-config (opt-in).
+
+        Affected releases (observed on 17.15.x; FIXED by 17.18.3) spray
+        harmless %SELINUX-1-VIOLATION console bursts whenever smand builds a
+        filesystem listing. When ticked, the job inserts 'logging
+        discriminator NBAVC facility drops SELINUX' and attaches it to the
+        CONSOLE only — deliberately not the buffer: genuine SELinux events
+        share the same facility, so 'show logging' stays intact as the local
+        forensic record (review finding), and not touching buffered-config
+        also avoids flipping a 'no logging buffered' device back on through
+        the YANG choice. Properties, all deliberate:
+          * Skipped on releases the field proved FIXED (>= 17.18.3) — the
+            filter would only ever hide real events there.
+          * UNSAVED: running-config only; the activation reload erases it
+            unless 'Save running-config before reload' is also ticked on a
+            Full run (stage scopes never save — documented on the checkbox).
+          * READ-BEFORE-WRITE, fail-CLOSED, never clobbers: a foreign
+            discriminator attached to console, an operator-owned NBAVC entry
+            with different content, 'no logging console', filtered/XML
+            console modes, or an unrecognizable config shape all skip with a
+            warning.
+          * NON-FATAL: cosmetic — every failure warns and the run proceeds.
+          * Ordering: entry PATCH before attach PATCH (the model's rule);
+            a partial failure names the residue it leaves.
+        """
+        name = C.AVC_DISCRIMINATOR_NAME
+        fixed_floor = (17, 18, 3)
+        running = _version_tuple(current_version)
+        if running and running >= fixed_floor:
+            self.logger.info(
+                "SELinux AVC suppression not needed: this release (%s) no "
+                "longer emits the messages (fixed by 17.18.3) — filter not "
+                "applied.",
+                ".".join(str(p) for p in running),
+                extra=log,
+            )
+            return
+        try:
+            raw = client.get(C.DATA_NATIVE_LOGGING, ok_404=True)
+        except RestconfError as exc:
+            self.logger.warning(
+                "Could not read the logging config to apply AVC suppression "
+                "(%s) — continuing without it (console may show SELinux "
+                "bursts on affected releases).",
+                exc,
+                extra=log,
+            )
+            return
+        if not raw:
+            cfg = {}  # 404/empty: no logging config exists — safe to create
+        elif isinstance(raw, dict) and isinstance(raw.get("Cisco-IOS-XE-native:logging"), dict):
+            cfg = raw["Cisco-IOS-XE-native:logging"]
+        else:
+            # Unrecognizable shape: a read-before-write guard must fail
+            # CLOSED — writing blind is the exact clobber the read prevents
+            # (review finding).
+            self.logger.warning(
+                "Logging config came back in an unrecognized shape — AVC "
+                "suppression skipped (never writing blind).",
+                extra=log,
+            )
+            return
+
+        # Ownership: an existing NBAVC ENTRY only counts as ours when its
+        # content is exactly our filter — otherwise merging would rewrite an
+        # operator's own discriminator semantics (review finding).
+        ours_entry = {"name": name, "facility": {"drops": "SELINUX"}}
+        entry_conflict = None
+        for entry in cfg.get("discriminator") or []:
+            if isinstance(entry, dict) and str(entry.get("name")) == name:
+                if entry != ours_entry:
+                    entry_conflict = entry
+                break
+
+        console_cfg = cfg.get("console-config") or {}
+        console_cc = (console_cfg.get("common-config") or {}).get("console") or {}
+        console_attached = str((console_cc.get("discriminator") or {}).get("name", ""))
+        console_off = console_cfg.get("console") is False
+        console_mode_conflict = "filtered" in console_cc or "xxml" in console_cc
+
+        if console_attached == name and entry_conflict is None:
+            self.logger.info(
+                "SELinux AVC suppression already in place (discriminator %s attached to console).",
+                name,
+                extra=log,
+            )
+            return
+        reason = None
+        if entry_conflict is not None:
+            reason = (
+                f"an operator-owned 'logging discriminator {name}' already "
+                "exists with different content"
+            )
+        elif console_attached:
+            reason = f"operator discriminator '{console_attached}' is attached to console"
+        elif console_off:
+            reason = "'no logging console' is configured — nothing displays there anyway"
+        elif console_mode_conflict:
+            reason = "console uses filtered/XML logging mode"
+        if reason:
+            self.logger.warning(
+                "AVC suppression skipped (%s) — existing operator logging "
+                "config is never replaced.",
+                reason,
+                extra=log,
+            )
+            return
+        try:
+            # Entry first (the model's own rule: created first, deleted last).
+            client.patch(
+                C.DATA_NATIVE_LOGGING,
+                {"Cisco-IOS-XE-native:logging": {"discriminator": [ours_entry]}},
+            )
+        except RestconfError as exc:
+            self.logger.warning(
+                "Applying AVC suppression failed before any change landed "
+                "(%s) — continuing without it.",
+                exc,
+                extra=log,
+            )
+            return
+        try:
+            client.patch(
+                C.DATA_NATIVE_LOGGING,
+                {
+                    "Cisco-IOS-XE-native:logging": {
+                        "console-config": {
+                            "common-config": {"console": {"discriminator": {"name": name}}}
+                        }
+                    }
+                },
+            )
+        except RestconfError as exc:
+            self.logger.warning(
+                "AVC suppression partially applied: the 'logging "
+                "discriminator %s' entry LANDED in running-config but the "
+                "console attach failed (%s). The unattached entry is "
+                "harmless; remove it with 'no logging discriminator %s' if "
+                "unwanted. Continuing.",
+                name,
+                exc,
+                name,
+                extra=log,
+            )
+            return
+        self.logger.info(
+            "SELinux AVC console suppression applied to running-config "
+            "(logging discriminator %s, facility drops SELINUX, console "
+            "only — 'show logging' keeps everything). UNSAVED: the reload "
+            "erases it unless 'Save running-config before reload' is ticked "
+            "on this Full run.",
+            name,
+            extra=log,
+        )
 
     def _save_config(self, client, log):
         """Write running-config to startup-config ('write memory' over RESTCONF).
@@ -3178,8 +3373,13 @@ def _progress_label(size, expected):
 
 
 def _redact_url(url):
-    """Strip userinfo (ftp://user:pass@host/...) before a URL reaches a log."""
-    return re.sub(r"://[^/@\s]+@", "://***@", str(url or ""))
+    """Strip userinfo (ftp://user:pass@host/...) before a URL reaches a log.
+
+    The class stops only at whitespace or '@' so passwords containing '/',
+    quotes, or ':' still redact ('@' in a password must be percent-encoded
+    in a valid URL, so first-'@' termination is sound).
+    """
+    return re.sub(r"://[^@\s]+@", "://***@", str(url or ""))
 
 
 def _fetch_hints(url):

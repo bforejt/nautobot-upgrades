@@ -536,6 +536,7 @@ verb, which stays human:
 | Clean device first | no | ⚠️ **Default off.** Before upgrading, remove ALL software the device is not running — inactive packages, leftover files, **and any version another engineer staged** (deliberately overrides the staged-conflict stop) plus the soak-period rollback image. For engineers who know the state of the network. Failures abort; dry-run reports what would be removed. Independent of *Remove inactive (after commit)*. |
 | Run scope | no | Order of operations, safest first: **Step 1 - Copy image** (**default** — a forgotten dropdown can never reload a device), **Steps 1 & 2 - Copy image and prep** (`install add`, no reload), **Full - Copy, Activate, Reload** (the only choice that reloads; a real upgrade requires selecting it deliberately). See [Pre-staging](#pre-staging-stage-now-activate-in-the-window). |
 | Save running-config before reload | no | **Default off.** RPC reloads never prompt to save, and the job cannot detect whether a save is needed (SNMP-only source — dependency declined). This box makes the job save (`cisco-ia:save-config`) before activating, aborting if the save is refused or fails. See [Saving running-config](#saving-running-config-before-the-reload-full-runs). |
+| Suppress SELinux AVC console messages | no | **Default off.** Some IOS-XE versions (observed on 17.15.x; fixed by 17.18.3 — such releases are skipped) show harmless SELinux AVC-denial console messages when filesystem listings are read. Ticked, the job inserts a `logging discriminator NBAVC` filter into the RUNNING config as early as possible — **console only**, so `show logging` keeps everything (the filter also hides any other SELINUX-facility console message while active). Existing operator logging config is never replaced; a refused write only warns. Unsaved — erased by the reload — unless combined with *Save running-config before reload* on a **Full** run (stage scopes never save). |
 | Secrets group override | no | Force one Secrets Group for the whole run; by default each device uses its own assigned group. |
 | Remove inactive | no | After commit, reclaim space (default **off** — keeps the rollback image for a soak period). |
 | Parallelism | no | Devices upgraded concurrently (default **4**, max 16; 1 = serial). Size to the firmware server's capacity for simultaneous image pulls. |
@@ -556,6 +557,7 @@ verb, which stays human:
 | Copy image | `POST .../operations/Cisco-IOS-XE-rpc:copy` (worker thread) |
 | Add / activate / commit / remove | `POST .../operations/Cisco-IOS-XE-install-rpc:{install,activate,install-commit,remove}` |
 | Save running-config (opt-in) | `POST .../operations/cisco-ia:save-config` |
+| AVC suppression filter (opt-in) | `GET`/`PATCH .../data/Cisco-IOS-XE-native:native/logging` (read-before-write; merge only) |
 
 ## Configuration
 
@@ -653,8 +655,28 @@ Every fallback that costs a walk leaves a matching breadcrumb in the job
 log, attributed to its device — if the console shows a burst, the job log
 says why.
 
-**Workaround** (suppresses the cosmetic denials from the console/buffer
-without touching the underlying policy):
+**Fixed upstream.** Field observation (2026-07-10): a switch running
+**17.18.3 no longer emits these messages at all** — Cisco has fixed the
+policy defect, so this whole topic ages out of the fleet as devices move to
+17.18.3+.
+
+**Job-managed suppression (opt-in).** The *Suppress SELinux AVC console
+messages* checkbox makes the job apply the workaround itself: it inserts
+the `NBAVC` discriminator into the **running config** as early in the run
+as possible (so even the gates read is filtered), attached to the
+**console only** — `show logging` deliberately keeps everything, because
+genuine SELinux events share the same facility and the buffer is the local
+forensic record. Releases at or above 17.18.3 are skipped as already
+fixed. The job never replaces an existing operator discriminator, logging
+mode, or an operator-owned `NBAVC` entry with different content, and any
+refused write warns instead of failing the run. The change is unsaved —
+the activation reload erases it — unless combined with *Save
+running-config before reload* on a Full run, which makes it persistent
+(`show run | include NBAVC` finds it).
+
+**Manual workaround** (same effect, applied by hand — suppresses the
+cosmetic denials from the console/buffer without touching the underlying
+policy):
 
 ```
 logging discriminator NOSEL msg-body drops SELINUX
