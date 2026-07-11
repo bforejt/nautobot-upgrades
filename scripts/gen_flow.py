@@ -44,8 +44,8 @@ SPINE = [
      {"okright": ("Yes", "Already on target → no-op if committed;\nelse install commit (commit-to-be-safe)"),
       "passlabel": "No"}),
     ("avcsup", "proc",
-     "Opt-in: SELinux AVC console filter\n(running-config, console only, skipped on\n"
-     ">=17.18.3; read-before-write; warn-only)", {}),
+     "Opt-in: quiet SELinux noise on terminals\n(running-config; console + term-mon only;\n"
+     "skipped >=17.18.3; read-first; warn-only)", {}),
     ("d_floor", "dec", "Version parses\n& ≥ 17.9.1?",
      {"abort": ("No", "Unknown version, or below the\n17.9.1 support floor"),
       "passlabel": "Yes"}),
