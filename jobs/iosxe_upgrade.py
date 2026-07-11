@@ -286,22 +286,22 @@ class IOSXEUpgrade(Job):
         ),
     )
     suppress_avc_noise = BooleanVar(
-        label="Suppress SELinux AVC console messages",
+        label="Quiet SELinux log noise on terminals",
         default=False,
         description=(
-            "Some IOS-XE versions (observed on 17.15.x; fixed by 17.18.3) "
-            "show harmless SELinux AVC-denial messages on the console when "
-            "filesystem listings are read. When ticked, the job attempts to "
-            "suppress them by inserting a 'logging discriminator NBAVC' "
-            "filter into the RUNNING config as early in the run as possible, "
-            "attached to the console, terminal-monitor sessions, AND the "
-            "'show logging' buffer — while active, SELINUX-facility messages "
-            "leave no local trace (configured syslog hosts still receive "
-            "them). Existing operator logging config is never replaced, a "
-            "refused write only warns, and releases at or above 17.18.3 are "
-            "skipped as already fixed. The change is UNSAVED — the reload "
+            "PURPOSE: some IOS-XE releases (seen on 17.15.x; fixed by "
+            "17.18.3) flood terminals with harmless SELinux AVC-denial "
+            "messages during upgrade activity. EFFECT: when ticked, the job "
+            "adds a small message filter (logging discriminator NBAVC) to "
+            "the RUNNING config at the start of the run, quieting that "
+            "noise exactly where people are watching — the physical console "
+            "and terminal-monitor (SSH) sessions. 'show logging' and any "
+            "syslog servers still record everything. Unsaved — the reload "
             "erases it — unless combined with 'Save running-config before "
-            "reload' on a FULL run (stage scopes never save)."
+            "reload' on a Full run. See the README section 'SELinux AVC "
+            "log events' for why these messages occur, exactly what is "
+            "written, and the safety rules (existing logging config is "
+            "never replaced; a refused write only warns)."
         ),
     )
     secrets_group_override = ObjectVar(
@@ -1751,12 +1751,12 @@ class IOSXEUpgrade(Job):
         Affected releases (observed on 17.15.x; FIXED by 17.18.3) spray
         harmless %SELINUX-1-VIOLATION console bursts whenever smand builds a
         filesystem listing. When ticked, the job inserts 'logging
-                discriminator NBAVC facility drops SELINUX' and attaches it to ALL
-        THREE local destinations — console, terminal monitor, and the
-        'show logging' buffer (operator decision 2026-07-10: suppressed
-        means suppressed everywhere; genuine SELinux events share the
-        facility, so while active they reach only configured syslog hosts,
-        which stay unfiltered). Properties, all deliberate:
+                discriminator NBAVC facility drops SELINUX' and attaches it to the
+        TERMINALS only — the physical console and terminal-monitor (SSH)
+        sessions. The 'show logging' buffer and syslog hosts deliberately
+        stay unfiltered (they are the record; genuine SELinux events share
+        this facility and remain fully visible there). Properties, all
+        deliberate:
           * Skipped on releases the field proved FIXED (>= 17.18.3) — the
             filter would only ever hide real events there.
           * UNSAVED: running-config only; the activation reload erases it
@@ -1820,14 +1820,14 @@ class IOSXEUpgrade(Job):
                     entry_conflict = entry
                 break
 
-        # Three destinations, one hazard matrix each. Every attach point
-        # lives inside YANG CHOICES, so merging blindly could flip an
-        # operator's 'no logging console/monitor/buffered' or filtered/XML
-        # mode — each destination is skipped (warned) unless attaching is a
-        # pure addition. Decision (2026-07-10): the operator wants the
-        # messages suppressed EVERYWHERE on the device, so the buffer is
-        # filtered too — while active, SELinux-facility messages leave no
-        # local trace; syslog hosts (logging host) remain unfiltered.
+        # TERMINALS ONLY — the two destinations humans watch live: the
+        # physical console and terminal-monitor (SSH) sessions. The 'show
+        # logging' buffer and syslog hosts stay UNFILTERED by decision
+        # (2026-07-10): they are the record; the terminals are the noise.
+        # Both attach points live inside YANG CHOICES, so merging blindly
+        # could flip an operator's 'no logging console/monitor' or
+        # filtered/XML mode — each destination is skipped (warned) unless
+        # attaching is a pure addition.
         attach = {}
         skipped = []
         already = []
@@ -1864,22 +1864,6 @@ class IOSXEUpgrade(Job):
         else:
             attach["monitor-config"] = {
                 "common-config": {"monitor": {"discriminator": {"name": name}}}
-            }
-
-        buffered_cfg = cfg.get("buffered-config") or {}
-        buffered_cc = (buffered_cfg.get("common-config") or {}).get("buffered") or {}
-        buffered_attached = str(buffered_cc.get("discriminator-config", ""))
-        if buffered_attached == name:
-            already.append("buffered")
-        elif buffered_attached:
-            skipped.append(f"buffered (operator discriminator '{buffered_attached}' attached)")
-        elif buffered_cfg.get("buffered") is False:
-            skipped.append("buffered ('no logging buffered' is configured)")
-        elif "yxml" in buffered_cc:
-            skipped.append("buffered (XML logging buffer configured)")
-        else:
-            attach["buffered-config"] = {
-                "common-config": {"buffered": {"discriminator-config": name}}
             }
 
         if entry_conflict is not None:
@@ -1937,12 +1921,11 @@ class IOSXEUpgrade(Job):
             )
             return
         self.logger.info(
-            "SELinux AVC suppression applied to running-config (logging "
-            "discriminator %s, facility drops SELINUX; attached: %s). While "
-            "active, SELINUX-facility messages leave no local trace — "
-            "console, sessions, and 'show logging' are all filtered; syslog "
-            "hosts still receive them. UNSAVED: the reload erases it unless "
-            "'Save running-config before reload' is ticked on this Full run.",
+            "SELinux noise filter applied to running-config (logging "
+            "discriminator %s, facility drops SELINUX; terminals quieted: "
+            "%s). 'show logging' and syslog hosts still record everything. "
+            "UNSAVED: the reload erases it unless 'Save running-config "
+            "before reload' is ticked on this Full run.",
             name,
             ", ".join(sorted(already + [k.replace("-config", "") for k in attach])),
             extra=log,
