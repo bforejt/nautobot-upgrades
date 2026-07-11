@@ -57,18 +57,18 @@ SPINE = [
     ("d_img", "dec", "Image has filename\n& download URL?",
      {"abort": ("No", "No compatible image, or missing\nfilename / download URL"),
       "passlabel": "Yes"}),
-    ("space", "proc", "Read free space\n(q-filesystem, exact flash: match)", {}),
-    ("d_space", "dec", "Free ≥ image × 2\n(or ≥ 2 GB if size unknown)?",
-     {"abort": ("No", "Free space unconfirmed or\ninsufficient"), "passlabel": "Yes"}),
     ("d_clean", "dec", "Clean device first\nticked? (default off)",
      {"warn": ("Yes", "Remove ALL inactive/staged software\n(engine-decided; overrides the staged-\nconflict stop; failures ABORT)"),
       "passlabel": "No"}),
+    ("space", "proc", "Read free space (ONE shared partitions\nread per run: discovery + gate + locate;\nevaluates the CLEANED flash)", {}),
+    ("d_space", "dec", "Free ≥ image × 2\n(or ≥ 2 GB if size unknown)?",
+     {"abort": ("No", "Free space unconfirmed or\ninsufficient"), "passlabel": "Yes"}),
     ("d_dry", "dec", "Dry-run?",
      {"okright": ("Yes", "DONE: DRY-RUN — pre-flight\npassed, no changes made"),
       "passlabel": "No"}),
     ("copy", "proc",
-     "URL preflight (404 aborts) → classic copy in\nworker thread + size-poll progress\n"
-     "(skipped if the exact file is already on flash)", {}),
+     "Image-catalog presence check (exact address;\nskip if staged) → classic copy in worker\n"
+     "thread + keyed size-poll progress", {}),
     ("d_size", "dec", "Transfer complete\n& size matches?",
      {"abort": ("error / timeout /\nmismatch", "Copy RPC failed/refused, timed out,\nor on-device size ≠ expected — abort"),
       "warn": ("size unknown", "No expected size → warn; rely on\ninstall add signature validation"),
@@ -84,8 +84,8 @@ SPINE = [
      {"okright": ("Yes", "DONE: STAGED (add) — marked for\nactivation; window run: activate →\nreload → commit only"),
       "passlabel": "full"}),
     ("cfgsync", "proc",
-     "Config-sync check (CONFIG-MAN timestamps):\nwarn if running-config unsaved (RPC reload\n"
-     "never prompts); opt-in save + verify", {}),
+     "Opt-in: save running-config before reload\n(RPC reloads never prompt; detection removed\n"
+     "— SNMP-only source); else a reminder logs", {}),
     ("idle", "proc",
      "Engine-idle gate before EVERY install write:\nsys-activity = no-activity on all members\n"
      "(settle delay only pre-activate w/o signal)", {}),

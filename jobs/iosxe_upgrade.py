@@ -100,11 +100,23 @@ from .restconf import RestconfClient, RestconfError
 
 name = "IOS-XE Upgrades"
 
-_VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)([a-z])?", re.IGNORECASE)
+# The lookbehind rejects candidates glued to an alphanumeric: real image
+# names like 'c8000v-universalk9.17.15.04a.SPA.bin' would otherwise match
+# '9.17.15' LEFTMOST (the platform token's trailing 'k9' donates its digit)
+# and misparse every standard C8000V/9800 filename (review finding).
+_VERSION_RE = re.compile(r"(?<![0-9A-Za-z])(\d+)\.(\d+)\.(\d+)([a-z])?", re.IGNORECASE)
 
 
 class UpgradeAbort(Exception):
     """A safety gate failed; abort this device's upgrade (not the whole job)."""
+
+
+class JobStopped(UpgradeAbort):
+    """Cooperative stop (cancel / time budget) — never a device-state verdict."""
+
+
+class EngineBusy(UpgradeAbort):
+    """The install engine positively reported another operation in flight."""
 
 
 class LedgerOpFailure(UpgradeAbort):
@@ -266,9 +278,9 @@ class IOSXEUpgrade(Job):
             "Before the activation reload, write running-config to "
             "startup-config ('write memory' over RESTCONF). RPC-triggered "
             "reloads never ask the CLI's 'System configuration has been "
-            "modified. Save?' question — unsaved changes are silently lost. "
-            "Full runs always CHECK the device's config timestamps and warn "
-            "if running-config looks unsaved; this box makes the job save it. "
+            "modified. Save?' question — unsaved changes are silently lost, "
+            "and the job cannot detect whether a save is needed (the only "
+            "source is an SNMP-bridged MIB this project does not depend on). "
             "Off by default: saving is itself a write, and it would persist "
             "half-applied changes an engineer deliberately left unsaved."
         ),
@@ -601,7 +613,9 @@ class IOSXEUpgrade(Job):
         # _version_key: rebuild letters count (17.15.4d is NOT 17.15.4), so a
         # base->rebuild upgrade (or a rebuild rollback) proceeds as a real run.
         if _version_key(current) and _version_key(current) == _version_key(target_str):
-            return self._handle_already_on_target(client, device, target_version, dryrun, log)
+            return self._handle_already_on_target(
+                client, device, target_version, dryrun, log, run_scope=run_scope
+            )
 
         # -- 2. Pre-flight gates ---------------------------------------------
         self._gate_version_floor(current, log)
@@ -674,7 +688,7 @@ class IOSXEUpgrade(Job):
         if dryrun:
             if run_scope == "stage-copy":
                 planned = (
-                    f"would PRE-STAGE (copy only): '{image.download_url}' to "
+                    f"would PRE-STAGE (copy only): '{_redact_url(image.download_url)}' to "
                     f"{target_fs}{image.image_file_name} — no install activity"
                 )
             elif run_scope == "stage-add":
@@ -683,7 +697,7 @@ class IOSXEUpgrade(Job):
                 )
             else:
                 planned = (
-                    f"would copy '{image.download_url}' to "
+                    f"would copy '{_redact_url(image.download_url)}' to "
                     f"{target_fs}{image.image_file_name} and install {target_str}"
                 )
             clean_note = ""
@@ -696,27 +710,17 @@ class IOSXEUpgrade(Job):
                 )
             cfg_note = ""
             if run_scope == "full":
-                # Read-only check, surfaced here because only Full reloads —
-                # and the RPC reload never prompts to save.
-                state, detail, _ticks = self._config_sync_state(client)
-                if state is False:
-                    action = (
-                        "would save before the reload"
-                        if save_config
-                        else "the reload would NOT save them (tick 'Save "
-                        "running-config before reload' or save manually)"
-                    )
-                    cfg_note = f" Running-config has UNSAVED changes ({detail}) — {action}."
-                elif state is None:
-                    cfg_note = f" Config-sync state could not be determined ({detail})" + (
-                        "; would save before the reload regardless."
-                        if save_config
-                        else "; save manually if in doubt."
-                    )
-                elif save_config:
-                    cfg_note = (
-                        " startup-config is already current; would save again anyway (harmless)."
-                    )
+                # Platform fact, not a device claim: RPC-triggered reloads
+                # never prompt to save (there is no non-SNMP source for the
+                # saved/unsaved determination, and the SNMP bridge is not a
+                # dependency this project accepts).
+                cfg_note = (
+                    " Would save running-config to startup-config before the reload."
+                    if save_config
+                    else " Reminder: the reload never prompts to save — unsaved "
+                    "running-config changes would be lost (tick 'Save "
+                    "running-config before reload' or save manually)."
+                )
             return f"DRY-RUN ok:{clean_note}{cfg_note} {planned}. All pre-flight gates passed."
 
         # -- 3. Transfer + integrity (classic copy in a worker thread, watched
@@ -761,37 +765,21 @@ class IOSXEUpgrade(Job):
                 "maintenance-window run (scope 'full') will skip the copy and "
                 "the add, and needs only activate → reload → commit."
             )
-        # -- Config-sync before the reload: the RPC-triggered activation
-        # reload never asks the CLI's 'configuration modified. Save?' question
-        # — unsaved running-config changes would be silently lost. Decision
-        # from device-published timestamps; warn-don't-gate (the operator owns
-        # the choice) unless the save was explicitly requested. Runs BEFORE
-        # the engine-idle gate so the idle-confirmation-to-activate gap stays
-        # minimal.
-        state, detail, ticks = self._config_sync_state(client)
+        # -- Config save before the reload: RPC-triggered activation reloads
+        # never ask the CLI's 'configuration modified. Save?' question —
+        # unsaved running-config changes are silently lost. The saved/unsaved
+        # DETERMINATION was removed by decision (2026-07-10): its only source
+        # is the SNMP-bridged CISCO-CONFIG-MAN-MIB, which hangs on devices
+        # without snmp-server (this fleet), so the check could never answer.
+        # What remains is the deliberate act (opt-in save, verified by the
+        # device's own RPC result) and a static platform-fact reminder.
         if save_config:
-            self._save_config(client, log, pre_ticks=ticks)
-        elif state is False:
-            self.logger.warning(
-                "Running-config has changes newer than startup-config (%s). "
-                "The activation reload will NOT save them — save manually now "
-                "('write memory') or re-run with 'Save running-config before "
-                "reload' ticked. (A device that has not saved since boot also "
-                "reads this way.)",
-                detail,
-                extra=log,
-            )
-        elif state is None:
-            self.logger.warning(
-                "Could not determine whether running-config is saved (%s) — "
-                "save manually if in doubt; the activation reload will not.",
-                detail,
-                extra=log,
-            )
+            self._save_config(client, log)
         else:
             self.logger.info(
-                "startup-config is current (%s) — nothing to lose in the reload.",
-                detail,
+                "Reminder: the activation reload never prompts to save — "
+                "unsaved running-config changes will be lost. The 'Save "
+                "running-config before reload' option does the save for you.",
                 extra=log,
             )
         self._wait_for_engine_idle(
@@ -856,7 +844,9 @@ class IOSXEUpgrade(Job):
             )
         return f"Upgraded and committed to {target_str}.{sync_note}"
 
-    def _handle_already_on_target(self, client, device, target_version, dryrun, log):
+    def _handle_already_on_target(
+        self, client, device, target_version, dryrun, log, run_scope="full"
+    ):
         """Device already runs the target version — but is it committed?
 
         Fail SAFE: treat it as a no-op only when we can positively confirm it is
@@ -869,6 +859,24 @@ class IOSXEUpgrade(Job):
         tokens = self._state_tokens(client, target_str)
         if _is_committed(tokens):
             return f"Already on target version {target_str} and committed; nothing to do."
+        if run_scope != "full":
+            # Stage scopes promise NO install activity (review finding: the
+            # commit-repair is an install write and belongs to Full runs).
+            self.logger.warning(
+                "On target %s but not confirmed committed (state: %s). Run "
+                "scope '%s' performs no install writes — run with scope "
+                "'full' (or commit manually) to clear any pending "
+                "auto-rollback.",
+                target_str,
+                tokens or "unknown",
+                run_scope,
+                extra=log,
+            )
+            return (
+                f"On target {target_str} but not confirmed committed; scope "
+                f"'{run_scope}' makes no install writes — run scope 'full' to "
+                "commit."
+            )
         if dryrun:
             return (
                 f"DRY-RUN: on target {target_str} but not confirmed committed "
@@ -882,7 +890,13 @@ class IOSXEUpgrade(Job):
             extra=log,
         )
         try:
-            self._install_commit(client, target_str, log)
+            committed = self._install_commit(client, target_str, log)
+        except (JobStopped, EngineBusy):
+            # Neither is a device-state verdict (review finding: swallowing
+            # them reported an UNCOMMITTED device as handled): the stop must
+            # end the run, and a busy engine means another operation is in
+            # flight — both surface to the per-device handler unchanged.
+            raise
         except LedgerOpFailure as exc:
             # The engine RECORDED a commit failure — device-published state, not
             # a benign "nothing to commit" refusal. The image is uncommitted and
@@ -917,7 +931,13 @@ class IOSXEUpgrade(Job):
                 exc,
                 extra=log,
             )
-        return f"On target {target_str}; ran install commit to ensure it is committed."
+        if committed:
+            return f"On target {target_str}; install commit confirmed."
+        return (
+            f"On target {target_str}; install commit issued but not yet "
+            "confirmed by the ledger — re-run to verify (auto-rollback, if "
+            "armed, is cancelled by a successful commit)."
+        )
 
     # -------------------------------------------------------- helpers: setup --
 
@@ -1152,7 +1172,10 @@ class IOSXEUpgrade(Job):
                 "string or map the correct image, then re-run."
             )
         self.logger.info(
-            "Resolved image '%s' (%s).", image.image_file_name, image.download_url, extra=log
+            "Resolved image '%s' (%s).",
+            image.image_file_name,
+            _redact_url(image.download_url),
+            extra=log,
         )
         return image
 
@@ -1285,7 +1308,8 @@ class IOSXEUpgrade(Job):
                 )
                 or {}
             )
-            client._partitions_cache = data
+            if data:
+                client._partitions_cache = data
             return data
         except RestconfError as exc:
             # fields unsupported or a transient error — the full read (with
@@ -1681,110 +1705,17 @@ class IOSXEUpgrade(Job):
         )
         return keys, pname, f"{root.rstrip('/')}/{image_file_name}"
 
-    def _config_sync_state(self, client):
-        """Has running-config been written to startup-config? Tri-state.
+    def _save_config(self, client, log):
+        """Write running-config to startup-config ('write memory' over RESTCONF).
 
-        Returns (state, detail, ticks): state True = startup-config is
-        current, False = running-config changed after startup was last
-        written, None = indeterminate; ticks is {"running": int, "startup":
-        int_or_None} whenever the leaves were readable (kept even when state
-        is None so a save can be verified by CHANGE — wrap-immune), else
-        None. Source: the CISCO-CONFIG-MAN-MIB ccmHistory timestamps
-        (device-published; present 17.9.1-26.1.1). The comparison uses
-        startup-last-changed, NOT running-last-saved — the MIB counts ANY
-        write (even 'show run' to a terminal) as 'saved', so only the startup
-        write time proves persistence.
-
-        The leaves are sysUpTime ticks (uint32 hundredths, wrap ~497 days).
-        A leaf LARGER than the device's current sysUpTime must predate a wrap
-        — comparisons would be unreliable, so that reads as indeterminate
-        (checked against the same SMIv2 bridge; if sysUpTime is unreadable
-        the plain comparison stands). A device that has not saved since boot
-        reports startup=0 and legitimately reads 'unsaved'. The MIB data is
-        served via the device's SNMP agent: with snmp-server unconfigured the
-        GET returns empty -> indeterminate, never assumed in-sync.
-        """
-        try:
-            data = client.get(C.DATA_CONFIG_MAN, ok_404=True)
-        except RestconfError as exc:
-            return None, f"config timestamps unreadable: {exc}", None
-        if data is None:
-            return None, "the device does not expose CISCO-CONFIG-MAN-MIB (404)", None
-
-        def _find_key(node, key):
-            if isinstance(node, dict):
-                if key in node:
-                    return node
-                for value in node.values():
-                    found = _find_key(value, key)
-                    if found is not None:
-                        return found
-            elif isinstance(node, list):
-                for item in node:
-                    found = _find_key(item, key)
-                    if found is not None:
-                        return found
-            return None
-
-        hist = _find_key(data, "ccmHistoryRunningLastChanged")
-        if hist is None:
-            return (
-                None,
-                "config timestamps empty — the MIB bridge needs the SNMP "
-                "agent enabled (snmp-server) to answer",
-                None,
-            )
-        try:
-            running = int(hist["ccmHistoryRunningLastChanged"])
-            raw_startup = hist.get("ccmHistoryStartupLastChanged")
-            startup = None if raw_startup is None else int(raw_startup)
-        except (KeyError, TypeError, ValueError):
-            return None, f"config timestamps unparsable: {hist}", None
-        ticks = {"running": running, "startup": startup}
-        # Wrap check from state: any tick beyond current uptime predates a
-        # sysUpTime wrap. Best-effort — an unreadable sysUpTime leaves the
-        # plain comparison in force (the save verify is wrap-immune anyway).
-        uptime = None
-        try:
-            sysdata = client.get(C.DATA_SNMP_SYSTEM, ok_404=True)
-        except RestconfError:
-            sysdata = None
-        entry = _find_key(sysdata, "sysUpTime") if sysdata else None
-        if entry is not None:
-            try:
-                uptime = int(entry["sysUpTime"])
-            except (TypeError, ValueError):
-                uptime = None
-        if uptime is not None and max(running, startup or 0) > uptime + 500:
-            return (
-                None,
-                f"config timestamps predate a sysUpTime counter wrap "
-                f"(uptime tick {uptime}, running-config tick {running}, "
-                f"startup tick {startup}) — tick comparison unreliable on "
-                f"~497-day+ uptimes",
-                ticks,
-            )
-        detail = (
-            f"running-config last changed at tick {running}, "
-            f"startup-config last written at tick "
-            f"{startup if startup is not None else '0 (never since boot)'}"
-        )
-        return (startup or 0) >= running, detail, ticks
-
-    def _save_config(self, client, log, pre_ticks=None):
-        """Write running-config to startup-config; verify from the timestamps.
-
-        Operator asked for the save (checkbox), so a refused save ABORTS
-        (clean-before precedent: a requested precondition that cannot be
-        delivered must not be silently skipped). Verification is state-based:
-        the PRIMARY proof is the startup tick CHANGING between the pre-save
-        read (pre_ticks) and the post-save read — immune to the ~497-day
-        sysUpTime tick wrap that makes plain tick comparison lie (review
-        finding: the naive predicate-as-gate aborted verified-good saves on
-        year-plus uptimes). Abort only on POSITIVE evidence the save did not
-        take (startup tick readable on both sides and unchanged while the
-        config still reads dirty); when the timestamps cannot answer, the
-        device's own result string is the labeled fallback.
+        Operator asked for the save (checkbox), so a refused or failed save
+        ABORTS before the reload (clean-before precedent: a requested
+        precondition that cannot be delivered must not be silently skipped).
+        Verification is the device's own answer to the RPC — the result
+        string. Independent timestamp verification was removed by decision
+        (2026-07-10): its only source is the SNMP-bridged config-management
+        MIB, which hangs on devices without snmp-server, so it could never
+        corroborate on this fleet.
         """
         self.logger.info(
             "Saving running-config to startup-config (cisco-ia:save-config)...",
@@ -1815,44 +1746,11 @@ class IOSXEUpgrade(Job):
                 f"'Save running-config before reload' was requested but the "
                 f"device reported: {result}."
             )
-        state, detail, ticks = self._config_sync_state(client)
-        pre_startup = (pre_ticks or {}).get("startup")
-        post_startup = (ticks or {}).get("startup")
-        if state is True:
-            self.logger.info(
-                "Running-config saved to startup-config and verified from the "
-                "device's config timestamps (%s).",
-                detail,
-                extra=log,
-            )
-        elif post_startup is not None and pre_startup is not None and post_startup != pre_startup:
-            # Wrap-immune: the startup timestamp MOVED across the save — the
-            # write landed even where raw tick comparison misreads.
-            self.logger.info(
-                "Running-config saved to startup-config — verified by the "
-                "startup timestamp advancing (tick %s -> %s).",
-                pre_startup,
-                post_startup,
-                extra=log,
-            )
-        elif post_startup is not None and pre_startup is not None:
-            # Both sides readable, startup tick UNCHANGED, config still reads
-            # dirty: positive evidence the save did not take.
-            raise UpgradeAbort(
-                f"save-config reported success ({result or 'empty result'}) but "
-                f"the startup-config timestamp did not move (tick {post_startup} "
-                f"before and after) and the config still reads unsaved ({detail}) "
-                "— refusing to reload past a save that did not take."
-            )
-        else:
-            self.logger.info(
-                "Running-config saved (device result: %s). Timestamp "
-                "verification unavailable (%s) — trusting the device's result "
-                "string as the fallback.",
-                result or "empty",
-                detail,
-                extra=log,
-            )
+        self.logger.info(
+            "Running-config saved to startup-config (device result: %s).",
+            result or "empty (2xx accepted)",
+            extra=log,
+        )
 
     def _member_roster(self, client):
         """Stack member roster: {(hw-dev-index, serial)} for chassis entries.
@@ -1933,10 +1831,11 @@ class IOSXEUpgrade(Job):
         """
         dest = f"{target_fs}{image.image_file_name}"
         expected = image.image_file_size
-        # Resolve the keyed file reference ONCE (ledger dest-dir + partition
-        # location): every file-size read this copy makes — pre-check, the
-        # ~30 progress polls, the final verify — then asks the device about
-        # exactly one path instead of requesting a full filesystem walk.
+        # Resolve the keyed file reference ONCE (ledger mount root + partition
+        # location): the ~30 progress polls then ask the device about exactly
+        # one path instead of requesting a full filesystem walk. (The final
+        # verify deliberately never consults this ref — a wrong-address keyed
+        # hit could fake agreement; it uses the catalog/full listing instead.)
         ref_cell = {
             "ref": self._resolve_file_ref(client, image.image_file_name, target_fs, log),
             "disabled": False,
@@ -2023,7 +1922,7 @@ class IOSXEUpgrade(Job):
             # heal tier — review finding: a wrong-but-accepted root otherwise
             # silently defeats the idempotent skip and re-copies a multi-GB
             # image, and suppresses the overwrite warning).
-            data = self._read_q_filesystem(client) or {}
+            data = self._read_q_filesystem(client, retries=1) or {}
             pre_context = _find_file_context(data, image.image_file_name)
             if pre_context is not None:
                 keys, pname, entry = pre_context
@@ -2062,7 +1961,7 @@ class IOSXEUpgrade(Job):
             # Known limit: q-filesystem does not say which member owns flash:
             # after a failover, so a wrong-member skip still fails loudly at
             # 'install add' (file not found) rather than silently.
-            data = self._read_q_filesystem(client) or {}
+            data = self._read_q_filesystem(client, retries=1) or {}
             context = _find_file_context(data, image.image_file_name)
             confirmed = None
             confirmed_path = ""
@@ -2219,8 +2118,13 @@ class IOSXEUpgrade(Job):
                             )
                         else:
                             ref_cell["misses"] = 0
-                elif heal_now:
-                    ref_cell["misses"] = 0  # file genuinely absent; keep keyed cadence
+                if heal_now:
+                    # ALWAYS reset after a heal walk — an unusable sighting
+                    # (non-'/' path, missing keys) previously left misses
+                    # parked at a multiple of 4, latching heal_now on and
+                    # silently walking EVERY poll for the rest of the copy
+                    # (review finding).
+                    ref_cell["misses"] = 0
             elapsed = int(time.monotonic() - started)
             if size is not None:
                 step = max((expected or 0) // 20, 25_000_000)  # ~5% or 25 MB
@@ -2268,13 +2172,25 @@ class IOSXEUpgrade(Job):
         verified_by_catalog = False
         catalog_missed = False
         if fresh_dest and expected:
-            catalog = self._read_image_files(poll_client, log)
-            listed = _image_file_size(catalog, dest) if catalog is not None else None
-            if listed is not None and abs(listed - expected) <= C.SIZE_MATCH_TOLERANCE_BYTES:
-                size = listed
-                verified_by_catalog = True
-            else:
+            # The catalog is a device-side CACHE, and the pre-check just
+            # proved it did NOT list this file — asking again seconds after
+            # the copy is structurally likely to miss (review finding: this
+            # made the verify walk near-unconditional on fresh copies, the
+            # very flurry the tier exists to avoid). Give the cache one
+            # bounded, labeled chance to refresh before paying the walk.
+            for attempt in range(2):
+                catalog = self._read_image_files(poll_client, log)
+                listed = _image_file_size(catalog, dest) if catalog is not None else None
+                if listed is not None and abs(listed - expected) <= C.SIZE_MATCH_TOLERANCE_BYTES:
+                    size = listed
+                    verified_by_catalog = True
+                    break
                 catalog_missed = catalog is not None and listed is None
+                if attempt == 0 and catalog_missed:
+                    self._check_stop()
+                    time.sleep(C.VERIFY_CATALOG_RETRY_DELAY)
+                else:
+                    break
         if not verified_by_catalog:
             size = _file_size_bytes(
                 self._read_q_filesystem(poll_client) or {}, image.image_file_name
@@ -2441,6 +2357,7 @@ class IOSXEUpgrade(Job):
         deadline = time.monotonic() + C.ADD_TIMEOUT
         started = time.monotonic()
         polls = 0
+        error_streak = 0
         while time.monotonic() < deadline:
             self._check_stop()
             # States that mean the add has finished (verified on a real 17.15.4):
@@ -2451,7 +2368,22 @@ class IOSXEUpgrade(Job):
             # of this version) and must never confirm an add. While the add is
             # still extracting, the version is absent or sits at 'invalid' →
             # keep waiting.
-            tokens = self._state_tokens(client, version_str)
+            try:
+                tokens = self._state_tokens(client, version_str)
+            except RestconfError as exc:
+                error_streak += 1
+                if error_streak >= C.LEDGER_BLIP_POLLS:
+                    raise
+                self.logger.info(
+                    "Add-state read failed (%s) — transient blip %d/%d, retrying.",
+                    exc,
+                    error_streak,
+                    C.LEDGER_BLIP_POLLS,
+                    extra=log,
+                )
+                time.sleep(C.POLL_INTERVAL)
+                continue
+            error_streak = 0
             states = {_classify_state(t) for t in tokens}
             if states & {"pending", "added", "activated", "uncommitted", "committed"}:
                 self.logger.info("install add complete (state: %s).", sorted(tokens), extra=log)
@@ -2540,7 +2472,7 @@ class IOSXEUpgrade(Job):
         """
         stop = getattr(self, "_stop", None)
         if stop is not None and stop.is_set():
-            raise UpgradeAbort(
+            raise JobStopped(
                 "stopped by the job's time budget before the next step — the "
                 "device was left at a safe boundary; re-run this job for it "
                 "(the gates make re-runs safe)"
@@ -2557,17 +2489,36 @@ class IOSXEUpgrade(Job):
         the ledger — the caller picks the fallback), or 'timeout' when records
         exist but never complete in time (the caller decides how fatal that is).
         A ledger-RECORDED failure raises with the engine's own phase detail.
-        RestconfError propagates (reload-tolerant callers interpret it).
+        Transient read errors are tolerated for LEDGER_BLIP_POLLS consecutive
+        polls before propagating (review finding: a single connection blip
+        mid-tracking aborted the whole device run); a PERSISTENT failure
+        still raises so reload-tolerant callers can interpret it.
         """
         deadline = time.monotonic() + timeout
         started = time.monotonic()
         polls = 0
         absent_streak = 0
+        error_streak = 0
         success_count = None
         detail = ""
         while time.monotonic() < deadline:
             self._check_stop()
-            data = client.get(C.DATA_INSTALL_OPER, ok_404=True) or {}
+            try:
+                data = client.get(C.DATA_INSTALL_OPER, ok_404=True) or {}
+            except RestconfError as exc:
+                error_streak += 1
+                if error_streak >= C.LEDGER_BLIP_POLLS:
+                    raise
+                self.logger.info(
+                    "Ledger read failed (%s) — transient blip %d/%d, retrying.",
+                    exc,
+                    error_streak,
+                    C.LEDGER_BLIP_POLLS,
+                    extra=log,
+                )
+                time.sleep(C.POLL_INTERVAL)
+                continue
+            error_streak = 0
             records = _find_op_records(data, op_uuid)
             status, detail = _classify_ops(records)
             if status == "success":
@@ -2698,7 +2649,7 @@ class IOSXEUpgrade(Job):
             time.sleep(C.POLL_INTERVAL)
         # The device POSITIVELY reported busy the whole window: writing now would
         # be silently dropped (field-verified). State says do not write — refuse.
-        raise UpgradeAbort(
+        raise EngineBusy(
             f"The install engine reported busy (sys-activity: {last_seen}) for "
             f"{C.ENGINE_IDLE_TIMEOUT}s before {context} — another install "
             "operation (CLI, or another job run) appears to be in progress. "
@@ -2809,7 +2760,20 @@ class IOSXEUpgrade(Job):
             time.sleep(C.POLL_INTERVAL)
             try:
                 data = client.get(C.DATA_INSTALL_OPER, ok_404=True) or {}
-            except RestconfError:
+            except RestconfError as exc:
+                if getattr(exc, "status_code", None) is not None:
+                    # The device ANSWERED (an HTTP error is a served response,
+                    # not a reload) — treat as a transient poll blip so the
+                    # resend machinery keeps working (review finding: a 500
+                    # during engine churn was misread as 'reload started').
+                    self.logger.info(
+                        "Activation poll returned HTTP %s (%s) — device still "
+                        "up; continuing to watch.",
+                        exc.status_code,
+                        exc,
+                        extra=log,
+                    )
+                    continue
                 self.logger.info(
                     "Device stopped answering — reload appears to have started.",
                     extra=log,
@@ -3065,9 +3029,25 @@ class IOSXEUpgrade(Job):
         started = time.monotonic()
         deadline = started + C.COMMIT_CONFIRM_TIMEOUT
         tokens = []
+        error_streak = 0
         while time.monotonic() < deadline:
             self._check_stop()
-            tokens = self._state_tokens(client, version_str)
+            try:
+                tokens = self._state_tokens(client, version_str)
+            except RestconfError as exc:
+                error_streak += 1
+                if error_streak >= C.LEDGER_BLIP_POLLS:
+                    raise
+                self.logger.info(
+                    "Commit-state read failed (%s) — transient blip %d/%d, retrying.",
+                    exc,
+                    error_streak,
+                    C.LEDGER_BLIP_POLLS,
+                    extra=log,
+                )
+                time.sleep(C.POLL_INTERVAL)
+                continue
+            error_streak = 0
             if _is_committed(tokens):
                 self.logger.info(
                     "Commit confirmed via install-oper (state: %s, %ds).",
@@ -3197,7 +3177,13 @@ def _progress_label(size, expected):
     return f"{label} (expected size unknown)"
 
 
+def _redact_url(url):
+    """Strip userinfo (ftp://user:pass@host/...) before a URL reaches a log."""
+    return re.sub(r"://[^/@\s]+@", "://***@", str(url or ""))
+
+
 def _fetch_hints(url):
+    url = _redact_url(url)
     """Actionable causes for a device failing to download from ``url``.
 
     The dominant real-world cause for an https source is TLS: the firmware
@@ -3222,6 +3208,7 @@ def _fetch_hints(url):
 
 
 def _interpret_copy_failure(exc, url):
+    url = _redact_url(url)
     """Turn a copy-RPC failure into an actionable message.
 
     The device reports fetch failures as an opaque '%Error opening ... (I/O

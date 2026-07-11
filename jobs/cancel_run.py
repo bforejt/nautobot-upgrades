@@ -33,7 +33,12 @@ class CancelUpgradeRun(Job):
             "Devices already mid-upgrade are recovered by simply re-running "
             "the upgrade job later (idempotent gates + commit-to-be-safe)."
         ),
-        query_params={"status": JobResultStatusChoices.STATUS_STARTED},
+        query_params={
+            "status": [
+                JobResultStatusChoices.STATUS_STARTED,
+                JobResultStatusChoices.STATUS_PENDING,
+            ]
+        },
     )
 
     class Meta:
@@ -56,7 +61,15 @@ class CancelUpgradeRun(Job):
                 f"is '{status}' (only running or queued runs can be cancelled)."
             )
         job_name = str(getattr(target_result, "name", "") or "")
-        if "IOS-XE" not in job_name and "iosxe" not in job_name.lower():
+        if getattr(self, "job_result", None) is not None and str(target_result.id) == str(
+            self.job_result.id
+        ):
+            raise RuntimeError("Refusing to cancel this Cancel job's own run.")
+        # Match the UPGRADE job specifically: the old 'IOS-XE' substring check
+        # whitelisted every sibling job in this repo, including this Cancel
+        # job itself, none of which implement the cooperative stop (review
+        # finding).
+        if "Cisco IOS-XE Upgrade" not in job_name:
             # Only warn: the graceful signal is only KNOWN-safe for our upgrade
             # job (whose loops implement the cooperative stop); other jobs get
             # celery's default soft-limit behavior, which may be less graceful.

@@ -85,29 +85,17 @@ DATA_Q_FILESYSTEM = "data/Cisco-IOS-XE-platform-software-oper:cisco-platform-sof
 #: the on-device file size can still be polled for progress reporting.
 OP_COPY = "operations/Cisco-IOS-XE-rpc:copy"
 
-#: Config-management timestamps (SMIv2 YANG mapping of CISCO-CONFIG-MAN-MIB,
-#: rev 2007-04-27 — byte-identical and advertised on every supported platform
-#: 17.9.1 through 26.1.1; verified against published capability files). The
-#: three ccmHistory leaves are yang:timeticks (sysUpTime hundredths). Served
-#: through the DMI's bridge to the LOCAL SNMP AGENT: with snmp-server not
-#: configured the GET returns empty — callers must treat that as
-#: INDETERMINATE, never as in-sync. No native oper replacement exists (26.1.1
-#: module list checked).
-DATA_CONFIG_MAN = "data/CISCO-CONFIG-MAN-MIB:CISCO-CONFIG-MAN-MIB/ccmHistory"
-
 #: Write running-config to startup-config (cisco-ia, no input; output is a
 #: result string). Advertised on every supported platform 17.9.1-26.1.1.
 #: The RPC-triggered activation reload never prompts to save (the reload
 #: rpc's own 'force' leaf description acknowledges unsaved config is simply
 #: not saved) — this is the programmatic equivalent of 'write memory'.
+#: NOTE (2026-07-10): the saved/unsaved DETERMINATION was removed by
+#: decision — its only source (the SNMP-bridged CISCO-CONFIG-MAN-MIB) hangs
+#: on devices without snmp-server, a dependency this project does not
+#: accept. The save is verified by the device's own RPC result string.
 OP_SAVE_CONFIG = "operations/cisco-ia:save-config"
 
-#: SNMPv2-MIB system group (sysUpTime) — same SMIv2 bridge as DATA_CONFIG_MAN,
-#: advertised on all captured platforms. Used ONLY to detect that a ccmHistory
-#: tick predates a sysUpTime wrap (~497 days: the leaves are uint32 hundredths
-#: relative to sysUpTime, so a leaf LARGER than current uptime is from before
-#: the wrap and tick comparisons are unreliable).
-DATA_SNMP_SYSTEM = "data/SNMPv2-MIB:SNMPv2-MIB/system"
 OP_INSTALL = "operations/Cisco-IOS-XE-install-rpc:install"
 OP_ACTIVATE = "operations/Cisco-IOS-XE-install-rpc:activate"
 OP_COMMIT = "operations/Cisco-IOS-XE-install-rpc:install-commit"
@@ -116,6 +104,12 @@ OP_REMOVE = "operations/Cisco-IOS-XE-install-rpc:remove"
 # --- Timeouts / polling (seconds) -------------------------------------------
 
 GET_TIMEOUT = 30
+#: One bounded wait before the post-copy verify re-reads the image catalog:
+#: the catalog is a device-side cache the pre-check just observed WITHOUT the
+#: new file, so an immediate re-read structurally misses and forces the
+#: ~100-AVC full-listing fallback. A short labeled pause gives the cache one
+#: chance to refresh; the full listing remains the decider either way.
+VERIFY_CATALOG_RETRY_DELAY = 20
 RPC_TIMEOUT = 120
 #: Retries for the q-filesystem read (free-space / copied-file-size) so a transient
 #: blip right after a long copy isn't mistaken for "no data".
@@ -201,6 +195,11 @@ ACTIVATE_SETTLE_DELAY = 120
 #: dropped the request (activate → re-send the same request) or the release
 #: does not populate the operation ledger (add/commit → legacy state inference).
 LEDGER_ABSENT_POLLS = 3
+#: Consecutive transient READ failures tolerated inside the ledger/state
+#: polling loops before the error propagates (review finding: a single
+#: connection blip mid-tracking aborted the whole device run; persistent
+#: failures must still surface for the reload-tolerant callers to interpret).
+LEDGER_BLIP_POLLS = 3
 #: After "install activate" the device reloads; how long to wait before it
 #: starts responding to RESTCONF again.
 RELOAD_INITIAL_SLEEP = 120

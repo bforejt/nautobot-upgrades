@@ -20,13 +20,13 @@
 <path d="M 400 1154 L 400 1180" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
 <rect x="402" y="1158" width="28" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="416" y="1171" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="416" dy="0">Yes</tspan></text>
 <path d="M 400 1236 L 400 1262" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
-<path d="M 400 1346 L 400 1372" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
-<rect x="402" y="1350" width="28" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="416" y="1363" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="416" dy="0">Yes</tspan></text>
-<path d="M 400 1428 L 400 1454" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
-<path d="M 400 1538 L 400 1550" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
-<rect x="402" y="1535" width="28" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="416" y="1548" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="416" dy="0">Yes</tspan></text>
+<path d="M 400 1346 L 400 1358" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="402" y="1343" width="28" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="416" y="1356" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="416" dy="0">Yes</tspan></text>
+<path d="M 400 1442 L 400 1468" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="406" y="1446" width="21" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="416" y="1459" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="416" dy="0">No</tspan></text>
+<path d="M 400 1524 L 400 1550" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
 <path d="M 400 1634 L 400 1646" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
-<rect x="406" y="1631" width="21" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="416" y="1644" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="416" dy="0">No</tspan></text>
+<rect x="402" y="1631" width="28" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="416" y="1644" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="416" dy="0">Yes</tspan></text>
 <path d="M 400 1730 L 400 1756" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
 <rect x="406" y="1734" width="21" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="416" y="1747" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="416" dy="0">No</tspan></text>
 <path d="M 400 1812 L 400 1838" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
@@ -98,17 +98,17 @@
 <rect x="600" y="1271" width="330" height="66" rx="6" ry="6" fill="#F8CECC" stroke="#B85450" stroke-width="1.5"/>
 <text x="765.0" y="1295" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#8a1f1f"><tspan x="765.0" dy="0">ABORT</tspan></text>
 <text x="765.0" y="1306" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#5b1414"><tspan x="765.0" dy="0">No compatible image, or missing</tspan><tspan x="765.0" dy="14">filename / download URL</tspan></text>
-<path d="M 525 1496 L 600 1496" fill="none" stroke="#B85450" stroke-width="1.5" marker-end="url(#arrow)"/>
-<rect x="552" y="1477" width="21" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="562.5" y="1490" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B85450"><tspan x="562.5" dy="0">No</tspan></text>
-<rect x="600" y="1463" width="330" height="66" rx="6" ry="6" fill="#F8CECC" stroke="#B85450" stroke-width="1.5"/>
-<text x="765.0" y="1487" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#8a1f1f"><tspan x="765.0" dy="0">ABORT</tspan></text>
-<text x="765.0" y="1498" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#5b1414"><tspan x="765.0" dy="0">Free space unconfirmed or</tspan><tspan x="765.0" dy="14">insufficient</tspan></text>
-<path d="M 275 1592 L 250 1592" fill="none" stroke="#D79B00" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
-<rect x="249" y="1573" width="28" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="262.5" y="1586" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B7791f"><tspan x="262.5" dy="0">Yes</tspan></text>
-<rect x="30" y="1562" width="220" height="60" rx="6" ry="6" fill="#FFE6CC" stroke="#D79B00" stroke-width="1.5"/>
-<text x="140.0" y="1578" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#7a4f00"><tspan x="140.0" dy="0">Remove ALL inactive/staged software</tspan><tspan x="140.0" dy="14">(engine-decided; overrides the staged-</tspan><tspan x="140.0" dy="14">conflict stop; failures ABORT)</tspan></text>
-<path d="M 140 1622 L 140 1688 L 275 1688" fill="none" stroke="#D79B00" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
-<rect x="178" y="1669" width="60" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="207.5" y="1682" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B7791f"><tspan x="207.5" dy="0">continue</tspan></text>
+<path d="M 275 1400 L 250 1400" fill="none" stroke="#D79B00" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+<rect x="249" y="1381" width="28" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="262.5" y="1394" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B7791f"><tspan x="262.5" dy="0">Yes</tspan></text>
+<rect x="30" y="1370" width="220" height="60" rx="6" ry="6" fill="#FFE6CC" stroke="#D79B00" stroke-width="1.5"/>
+<text x="140.0" y="1386" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#7a4f00"><tspan x="140.0" dy="0">Remove ALL inactive/staged software</tspan><tspan x="140.0" dy="14">(engine-decided; overrides the staged-</tspan><tspan x="140.0" dy="14">conflict stop; failures ABORT)</tspan></text>
+<path d="M 140 1430 L 140 1496 L 250 1496" fill="none" stroke="#D79B00" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+<rect x="165" y="1477" width="60" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="195.0" y="1490" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B7791f"><tspan x="195.0" dy="0">continue</tspan></text>
+<path d="M 525 1592 L 600 1592" fill="none" stroke="#B85450" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="552" y="1573" width="21" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="562.5" y="1586" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B85450"><tspan x="562.5" dy="0">No</tspan></text>
+<rect x="600" y="1559" width="330" height="66" rx="6" ry="6" fill="#F8CECC" stroke="#B85450" stroke-width="1.5"/>
+<text x="765.0" y="1583" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#8a1f1f"><tspan x="765.0" dy="0">ABORT</tspan></text>
+<text x="765.0" y="1594" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#5b1414"><tspan x="765.0" dy="0">Free space unconfirmed or</tspan><tspan x="765.0" dy="14">insufficient</tspan></text>
 <path d="M 525 1688 L 600 1688" fill="none" stroke="#2E7D32" stroke-width="1.5" marker-end="url(#arrow)"/>
 <rect x="549" y="1669" width="28" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="562.5" y="1682" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#2E7D32"><tspan x="562.5" dy="0">Yes</tspan></text>
 <rect x="600" y="1660" width="330" height="56" rx="22" ry="22" fill="#D5E8D4" stroke="#2E7D32" stroke-width="1.5"/>
@@ -192,16 +192,16 @@
 <text x="400" y="1201" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Resolve image (device override →</tspan><tspan x="400" dy="14">device-type map → default)</tspan></text>
 <polygon points="400,1262.0 525.0,1304 400,1346.0 275.0,1304" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
 <text x="400" y="1297" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Image has filename</tspan><tspan x="400" dy="14">&amp; download URL?</tspan></text>
-<rect x="250" y="1372" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
-<text x="400" y="1393" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Read free space</tspan><tspan x="400" dy="14">(q-filesystem, exact flash: match)</tspan></text>
-<polygon points="400,1454.0 525.0,1496 400,1538.0 275.0,1496" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
-<text x="400" y="1489" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Free ≥ image × 2</tspan><tspan x="400" dy="14">(or ≥ 2 GB if size unknown)?</tspan></text>
+<polygon points="400,1358.0 525.0,1400 400,1442.0 275.0,1400" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
+<text x="400" y="1393" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Clean device first</tspan><tspan x="400" dy="14">ticked? (default off)</tspan></text>
+<rect x="250" y="1468" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
+<text x="400" y="1482" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Read free space (ONE shared partitions</tspan><tspan x="400" dy="14">read per run: discovery + gate + locate;</tspan><tspan x="400" dy="14">evaluates the CLEANED flash)</tspan></text>
 <polygon points="400,1550.0 525.0,1592 400,1634.0 275.0,1592" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
-<text x="400" y="1585" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Clean device first</tspan><tspan x="400" dy="14">ticked? (default off)</tspan></text>
+<text x="400" y="1585" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Free ≥ image × 2</tspan><tspan x="400" dy="14">(or ≥ 2 GB if size unknown)?</tspan></text>
 <polygon points="400,1646.0 525.0,1688 400,1730.0 275.0,1688" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
 <text x="400" y="1688" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Dry-run?</tspan></text>
 <rect x="250" y="1756" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
-<text x="400" y="1770" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">URL preflight (404 aborts) → classic copy in</tspan><tspan x="400" dy="14">worker thread + size-poll progress</tspan><tspan x="400" dy="14">(skipped if the exact file is already on flash)</tspan></text>
+<text x="400" y="1770" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Image-catalog presence check (exact address;</tspan><tspan x="400" dy="14">skip if staged) → classic copy in worker</tspan><tspan x="400" dy="14">thread + keyed size-poll progress</tspan></text>
 <polygon points="400,1838.0 525.0,1880 400,1922.0 275.0,1880" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
 <text x="400" y="1873" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Transfer complete</tspan><tspan x="400" dy="14">&amp; size matches?</tspan></text>
 <polygon points="400,1934.0 525.0,1976 400,2018.0 275.0,1976" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
@@ -213,7 +213,7 @@
 <polygon points="400,2222.0 525.0,2264 400,2306.0 275.0,2264" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
 <text x="400" y="2257" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Run scope =</tspan><tspan x="400" dy="14">stage-add?</tspan></text>
 <rect x="250" y="2332" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
-<text x="400" y="2346" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Config-sync check (CONFIG-MAN timestamps):</tspan><tspan x="400" dy="14">warn if running-config unsaved (RPC reload</tspan><tspan x="400" dy="14">never prompts); opt-in save + verify</tspan></text>
+<text x="400" y="2346" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Opt-in: save running-config before reload</tspan><tspan x="400" dy="14">(RPC reloads never prompt; detection removed</tspan><tspan x="400" dy="14">— SNMP-only source); else a reminder logs</tspan></text>
 <rect x="250" y="2428" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
 <text x="400" y="2442" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Engine-idle gate before EVERY install write:</tspan><tspan x="400" dy="14">sys-activity = no-activity on all members</tspan><tspan x="400" dy="14">(settle delay only pre-activate w/o signal)</tspan></text>
 <rect x="250" y="2524" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
