@@ -3,20 +3,42 @@
 A native **Nautobot Job** that reliably and cautiously upgrades **Cisco IOS-XE**
 devices — **Catalyst 9300** primarily — driven entirely over **RESTCONF**.
 
-> ### Status: work in progress — core flow thoroughly lab-proven, active development ongoing
->
-> The core upgrade/downgrade flow is **thoroughly tested on real Catalyst
-> 9300 hardware**: repeated upgrades **and downgrades**, entirely over
-> RESTCONF, across **17.12 → 17.15 ↔ 17.18 ↔ 26.1** — single switches, a
-> **2-member stack**, **lettered rebuilds** (17.15.4 ↔ 17.15.4d), serial
-> **batches** (including correct already-on-target short-circuits and a batch
-> downgrade), remove-inactive cleanup, and interrupted-run recovery — all
-> driven by the operation-ledger tracking and engine-idle gating the job
-> decides by. That said, this project is under **active development**: new
-> capabilities land frequently (parallel batches and pre-staging are the most
-> recent), each marked with its validation state in
-> [Status & testing](#status--testing). Expect change between releases, read
-> the Job Result logs, and **always run with Dry-run first**.
+## Current status: lab-proven
+
+**Thoroughly exercised on real Catalyst 9300 hardware, entirely over RESTCONF —
+but not yet production-vetted.** It is a working prototype under active
+development: expect change between releases, read the Job Result logs, and
+**always run Dry-run first**.
+
+**Validated on real Catalyst 9300 hardware** (from Nautobot 3.1):
+
+- **Full upgrade _and_ downgrade** on **single switches**, repeatedly, across
+  **17.12 → 17.15 ↔ 17.18 ↔ 26.1**.
+- **Lettered rebuilds** as distinct versions (17.15.4 ↔ 17.15.4d), up and down.
+- **Serial batches**, including a batch downgrade and correct already-on-target
+  short-circuits.
+- **2-member stack**, up and down the **17.12 → 17.15** boundary (17.12.4 →
+  17.15.5 → 17.15.4): per-member free-space gating, package distribution, and
+  the all-members-rejoined gate.
+- **Ledger-tracked** add/activate/commit, engine-idle gating, byte-exact copy
+  verification, auto-rollback-timer arming, remove-inactive, and interrupted-run
+  (commit-to-be-safe) recovery.
+- Installs and runs as a Git Repository job on **Nautobot 2.4 and 3.1**; a full
+  26.1.1 → 17.18.3 device install ran from a stock 2.4.36.
+
+**Not yet proven — treat as experimental:**
+
+- **Parallel batches** (serial is fully validated) and the **timed pre-staging**
+  cycle — both implemented and lab-run, not yet fully measured.
+- **Stack reload on 17.18 / 26.1** — the stack has only been reloaded across the
+  17.12 → 17.15 boundary so far; **stacks larger than 2 members** are also
+  untested.
+- **9300L/LM/X**, **C8000V**, and **9200 / 9400–9600** — identical image, flow,
+  and models on paper, hardware runs pending; **17.9–17.11**.
+- **Failure paths on hardware**: auto-rollback expiry, a genuinely corrupt image,
+  a member failing to rejoin.
+
+Per-train and per-platform detail is in [Versions & support](#versions--support).
 
 ---
 
@@ -44,267 +66,93 @@ reads that gate each step. That result was strong enough to justify building
 this prototype rather than stopping at a feasibility note.
 
 **Where it stands:** the flow is working well and is thoroughly exercised in a
-**lab** on real Catalyst 9300 hardware (see [Status & testing](#status--testing)).
+**lab** on real Catalyst 9300 hardware (see [Current status](#current-status-lab-proven)).
 The intended next step is deliberate **production vetting** — the design is
 conservative and its stability so far is encouraging, but "works in the lab" is
 not "proven in production," so every run should still start with **Dry-run**.
 
+**Key design choices** (from an up-front analysis, to avoid reinvention):
+
+- **RESTCONF drives the entire upgrade** on modern IOS-XE — the
+  `Cisco-IOS-XE-install-rpc` model (`install`/`activate`/`commit`/`remove`) plus
+  the classic `Cisco-IOS-XE-rpc:copy`. The floor is **17.9.1**, the lowest
+  model-complete release; older is refused. (The async `xcopy` was tried and
+  abandoned — a real 17.15.05 silently broke it.)
+- **Integrity without the on-device `verify` RPC**: optional server-side
+  **hash-verify** at registration, a **byte-exact size match** after every copy,
+  and `install add`'s **mandatory signature validation** before activation —
+  stronger than an MD5 self-check because it catches tampering too. (The native
+  `verify` RPC exists but returns only async event notifications with no pollable
+  result, so it isn't used; it becomes a clean addition if Cisco ever makes the
+  result pollable.)
+- **Reuses Nautobot core, adds no data models of its own**: `dcim.SoftwareVersion`
+  and `dcim.SoftwareImageFile` (core since Nautobot 2.2) already hold the image
+  name, checksum, size, download URL, and device-type map.
+- **Shipped as a Git Repository, not a packaged app** — the idiomatic way to
+  deliver jobs from public GitHub. Its one constraint (git-delivered jobs can't
+  install their own pip dependencies) is a non-issue here: the only dependency is
+  **`requests`**, always present with Nautobot core.
+
 ## What it does
 
-From the Nautobot **Jobs** page you scope a set of target devices — with optional
-filters for **location, role, status, platform, device type, current version, and
-tags** — pick a target software version, and the job performs an **install-mode**
-upgrade the way a conservative engineer would — as a series of PASS/FAIL gates,
-stopping on the first failure for a device:
+From the Nautobot **Jobs** page you scope target devices — filtering by
+**location, role, status, platform, device type, current version, and tags** —
+pick a target version, and the job runs an **install-mode** upgrade as a series
+of PASS/FAIL gates, stopping at the first failure for a device. In one picture:
 
-1. **Connect** — resolve the device's primary IP and credentials (from core
-   Secrets), confirm RESTCONF is reachable.
-2. **Pre-flight gates** — read the running version; skip if already on target;
-   confirm the device is **≥ 17.9.1** and in **install mode**; resolve the image
-   from Nautobot and confirm device-type compatibility; **confirm enough free
-   space** before copying anything.
-3. **Transfer + integrity** — the device pulls the image via the **classic
-   copy RPC** (run in a worker thread) while the job polls the growing on-device
-   file, logging **progress (MB / % / elapsed)**, and requiring an **exact size
-   match** when the transfer finishes — backed by `install add`'s mandatory
-   image signature validation (which aborts on a corrupt/untrusted image). If
-   the exact file is already on flash, the copy is skipped (idempotent re-runs).
-   The fancier async `xcopy` RPC was deliberately abandoned after a real
-   17.15.05 silently broke it while the classic path kept working.
-4. **Install** — every engine write follows one pattern: **gate → submit →
-   track**. The job waits for the engine to report **idle** (`sys-activity`),
-   submits with a per-operation uuid, then tracks that uuid in the device's own
-   **operation ledger** (`install-oper`/`install-oper-hist`) to true
-   op-completion — never trusting the RPC's 2xx, which the engine returns even
-   when it refuses. `install add` → engine-idle gate → `install activate`
-   (**explicitly non-ISSU**, by the device's **full internal version
-   identifier**; silently-dropped requests are detected via the ledger and
-   re-sent) → reload, with the **auto-rollback timer** checked after boot.
-   Ledger-recorded failures abort quoting the engine's own failing phase; on
-   releases that don't populate these signals, the job degrades to
-   version-state inference and a settle timer — labeled as fallbacks in the
-   logs.
-5. **Verify, then commit** — reconnect, confirm the device actually booted the
-   target version, and **only then** `install commit`. If it didn't come back or
-   booted the wrong version, the job does **not** commit and the device
-   auto-rolls-back to the previous image.
-6. **Sync + (optional) cleanup** — update `Device.software_version` in Nautobot;
+[![IOS-XE upgrade — high-level overview](docs/overview-flow.svg)](docs/overview-flow.md)
+
+The six phases:
+
+1. **Connect** — resolve the primary IP + credentials (from core Secrets),
+   confirm RESTCONF is reachable.
+2. **Pre-flight gates** — running version and already-on-target short-circuit;
+   **≥ 17.9.1**; **install mode**; image resolved from Nautobot with device-type
+   compatibility; **enough free space**.
+3. **Copy + verify** — the device pulls the image (classic `copy` RPC, watched
+   for live progress), gated on a **byte-exact size match** and backed by
+   `install add` signature validation. Skipped if the file is already on flash.
+4. **Install** — `install add` → **activate** (explicitly non-ISSU, by the
+   device's full internal version; a silently-dropped activate is detected via
+   the ledger and re-sent) → **reload**. Every engine write is **gated on
+   engine-idle and tracked to true completion in the device's operation
+   ledger** — never trusting the RPC's 2xx; a ledger-recorded failure aborts
+   quoting the engine's own failing phase. (Where a release doesn't populate
+   those signals, the job degrades to version-state inference and a settle
+   timer, labeled as fallbacks in the logs.)
+5. **Verify, then commit** — reconnect, confirm the target actually booted, and
+   **only then** `install commit`. If it didn't come back or booted wrong, the
+   job does **not** commit and the device auto-rolls-back.
+6. **Sync + optional cleanup** — update `Device.software_version` in Nautobot;
    optionally `install remove inactive` to reclaim space (off by default).
 
-Feedback is mandatory and built in: every gate logs to the Job Result with the
-device attached, and a **Debug** toggle logs every RESTCONF request/response.
-Batches run **in parallel** — see [Parallel batches](#parallel-batches) for
-mechanics, sizing guidance, and the time-budget behavior.
-Per-device failures don't stop the batch (the remaining devices still run),
-but **any device failure marks the whole Job Result FAILED** at the end — a
-green job means every selected device succeeded. **Durations are logged for
-change-window planning**: each device's result carries its total wall-clock
-time, and the reload reports the outage window (unreachable-for and
-reload-to-confirmed times), alongside the existing copy and install phase
-timings.
+Every gate logs to the Job Result with the device attached (a **Debug** toggle
+logs every RESTCONF call). Batches run **in parallel**
+([details](#parallel-batches)); a per-device failure doesn't stop the batch, but
+**any failure marks the whole Job Result FAILED**. Per-device durations and the
+reload outage window are logged for change-window planning.
 
-See **[docs/upgrade-flow.md](docs/upgrade-flow.md)** for a flowchart of the
-per-device decision logic (editable [`upgrade-flow.drawio`](docs/upgrade-flow.drawio)).
+See the **[full gate-by-gate decision logic](docs/upgrade-flow.md)** for every
+gate and abort.
 
-## Supported versions
+## Versions & support
 
 | Component | Supported | Notes |
 | --- | --- | --- |
-| **Nautobot** | **2.4 LTM** and **3.1+** | End-to-end upgrades verified from **3.1 and multiple independent 2.4 environments** (most testing volume on 3.1). **3.0 is untested and will stay that way** — it no longer receives maintenance now that 3.1 (the 3.x LTM designation) has shipped. Earlier 2.x (≥ 2.2) *may* work but is not tested or supported. |
-| **Deployment** | [nautobot-composer](#sister-project-nautobot-composer) | The sister Docker-Compose installer this Job is built to run on; it currently ships Nautobot 2.4 and 3.x. |
-| **Device OS** | Cisco IOS-XE **≥ 17.9.1** (incl. 26.x) | Hardware-validated on **17.15.x**; every YANG model the job touches verified against Cisco's published models from 17.9.1 through 26.1.1. See the [support posture](#support-posture) for the per-train breakdown. Model presence ≠ runtime behavior — run one supervised upgrade per new train before fleet use. Rebuild letters (e.g. 17.15.4**d**) are **distinct versions** — base → rebuild upgrades (and rebuild rollbacks) are supported. |
-| **Platform** | Catalyst **9300 family** + **C8000V** | 9300 hardware-tested; **9300L/LM/X** run the identical cat9k image, install flow, and YANG bundle (validation run pending). **Catalyst 8000V** (autonomous mode): all required models verified in Cisco's c8000v capability files; its `bootflash:` filesystem is **discovered from the device** (hardware run pending). **Catalyst 9200** and **9400/9500/9600**: model sets verified identical — validation runs pending. **Catalyst 9800 WLC**: mechanically compatible but **operationally out of scope** — the job upgrades the controller only, with no AP predownload; a full-scope run is warned in-job (extended wireless outage) and a wireless-aware mode is planned. Nexus/NX-OS is a different OS and API — not supported. **3650/3850 cannot be supported** (terminal 16.12 train lacks the install API; both at/near end of support — Cisco's replacement is the 9300L, which this job supports). |
+| **Nautobot** | **2.4 LTM** and **3.1+** | Job execution verified on **3.1 and multiple independent 2.4 environments** (most volume on 3.1). **3.0 is untested by choice** — unmaintained since 3.1 shipped. Earlier 2.x (≥ 2.2) *may* work but is untested. |
+| **Device OS** | Cisco IOS-XE **≥ 17.9.1** (incl. 26.x) | Hardware-validated across **17.12–26.1**; every YANG model the job touches verified against Cisco's published models 17.9.1–26.1.1. Model presence ≠ runtime behavior — do one supervised run per new train. Rebuild letters (17.15.4**d**) are **distinct versions**. |
+| **Platform** | Catalyst **9300 family** + **C8000V** | 9300 hardware-tested; **9300L/LM/X** run the identical cat9k image and flow (run pending). **C8000V** (autonomous): all models verified, `bootflash:` discovered from the device (run pending). **9200** and **9400/9500/9600**: model sets identical (runs pending). **9800 WLC**: mechanically compatible but **operationally out of scope** — controller only, no AP predownload; a full-scope run is warned in-job. Nexus/NX-OS is a different API — not supported. **3650/3850 cannot be supported** (their terminal 16.12 train lacks the install API; Cisco's replacement, the 9300L, is supported). |
 
-### Support posture
+**By IOS-XE train:**
 
-The posture is deliberate, in priority order:
-
-1. **17.15, 17.18, and 26.1 first** — current mainline code, all
-   hardware-tested; the platforms this job is built and validated against.
-2. **17.12** — aging but still supportable mainline; **hardware-validated in
-   both directions** (a 2-member stack was lifted 17.12.4 → 17.15.5, and a
-   downgrade to 17.12.6 completed successfully). Prefer current mainline as
-   an upgrade target; the 17.12 rollback path is proven.
-3. **17.9 – 17.11** — **not tested, but might work**: model-complete on paper
-   (17.9 is the floor), best suited as an escape source for parked fleets.
-4. **Older than 17.9** — **not supported.** The job cannot execute as
-   written there — key API components are missing — so it refuses these
-   releases.
-
-| IOS-XE train | Status | Basis |
+| Train | Status | Basis |
 | --- | --- | --- |
-| **17.12 / 17.15 / 17.18 / 26.1** | ✅ **Tested and working on real equipment** | Repeated full upgrades **and** downgrades across all four trains on Catalyst 9300s — single switches and a **2-member stack** (17.12.4 → 17.15.5 → 17.15.4), the **lettered rebuild cycle** (17.15.4 ↔ 17.15.4d), cross-era moves in both directions (17.15.5 ↔ 17.18.3, 17.15.5 → 26.1.1, 26.1.1 → 17.18.3 and back down to 17.15.x), and serial **batches** including a batch downgrade. Ledger-tracked add/activate/commit, engine-idle gating, member-rejoin gate, byte-exact copy verification, remove-inactive, and interrupted-run recovery all exercised live. |
-| **17.9 / 17.10 / 17.11** | ⚠️ **Not tested — might work** | Model-complete on paper (17.9 is the support floor; every YANG model the job touches verified against Cisco's published 17.9.1–17.11.1 models). Best suited as an *escape source*: 17.9 exited Cisco software maintenance in Aug 2025 — upgrade FROM it rather than to it. Run one supervised upgrade before relying on it. |
-| **< 17.9** | 🚫 **Not supported** | The job refuses these releases because it **cannot execute as written: key API components are missing** below the floor (the RESTCONF install models and reliable file-size reporting the job is built on). |
+| **17.12 / 17.15 / 17.18 / 26.1** | ✅ **Tested on real equipment** | Repeated upgrades **and** downgrades on 9300s — single switches across all four trains, plus a 2-member stack across the 17.12 → 17.15 boundary; lettered rebuilds; cross-era moves in both directions; serial batches. Ledger tracking, engine-idle gating, byte-exact verify, remove-inactive, and interrupted-run recovery exercised live; the member-rejoin gate on the stack run. |
+| **17.9 / 17.10 / 17.11** | ⚠️ **Not tested — might work** | Model-complete on paper (17.9 is the floor). Best used as an *escape source* (upgrade FROM it) — 17.9 left Cisco maintenance Aug 2025. Run one supervised upgrade first. |
+| **< 17.9** | 🚫 **Not supported** | Refused: key API components are missing below the floor (the RESTCONF install models and reliable file-size reporting the job relies on). |
 
-**Nautobot**: installed, synced, and **job execution verified on 3.1 and
-multiple independent 2.4 environments** (incl. a full 26.1.1 → 17.18.3 device
-install from a stock 2.4.36 outside nautobot-composer). Most testing volume
-remains on 3.1.
-
-There is no separate Python dependency matrix: the Job imports only `requests`
-plus Nautobot core, so whatever ships with the supported Nautobot release suffices.
-
-## Status & testing
-
-Hardware validation now spans **trains 17.12 → 17.15 ↔ 17.18, a 2-member
-stack, and lettered rebuilds** — all from Nautobot 3.1.
-
-**Verified on real hardware (Catalyst 9300, single switch + 2-member stack)**
-
-- ✅ **Full upgrade AND downgrade end-to-end, repeatedly**: reachability/auth,
-  all pre-flight gates, threaded classic copy with live progress and
-  **byte-exact size verification**, ledger-tracked `install add`, engine-idle
-  gate, full-internal-version activate (with drop detection + re-send), reload,
-  stable-boot confirm, ledger-confirmed commit, Nautobot sync.
-- ✅ **A 2-member stack**, up and down a train boundary: 17.12.4 → 17.15.5 →
-  17.15.4 — per-member free-space gating, package distribution, and the
-  **all-members-rejoined gate** all ran live.
-- ✅ **Cross-train moves in both directions**: 17.12 → 17.15, 17.15 ↔ 17.18
-  (17.15.5 → 17.18.3 → 17.15.5 on a single switch).
-- ✅ **26.1 in both directions**: single switch 17.15.5 → 26.1.1; batch
-  downgrade 26.1.1 → 17.15.4d (a lettered rebuild as the batch target).
-- ✅ **Batch mode (serial)**: a mixed batch (single switch + 2-member stack)
-  targeting 26.1.1 — the already-on-target device short-circuited correctly
-  while the batch proceeded — and a full batch downgrade.
-- ✅ **Lettered rebuilds as distinct versions**: 17.15.4 → **17.15.4d** →
-  17.15.4 — upgrade and rollback.
-- ✅ **Operation-ledger tracking live on-device**: op records keyed by the
-  job's own uuids, per-phase engine statuses driving the gates.
-- ✅ **Interrupted-run recovery** (commit-to-be-safe): a re-run against an
-  already-on-target, uncommitted device commits it and re-syncs Nautobot.
-- ✅ **Idempotent re-runs**: copy skipped when the exact file is on flash;
-  add skipped when already staged.
-- ✅ **Rollback timer** confirmed arming on real activations.
-- ✅ **Remove inactive**: ledger-confirmed by the job and CLI-verified on the
-  switch (nothing left to delete afterward).
-- ✅ **Register Image checksum verification**: worker-computed MD5 over the
-  internal repo route matched Cisco's published value (~3 s for a full image —
-  the transfer never leaves the Docker host).
-- ✅ Installs / syncs as a Git Repository on **Nautobot 2.4 and 3.1**; both Jobs
-  register. **Register IOS-XE Image**: upload → validate → record.
-- ✅ **Job execution from Nautobot 2.4.36**: a full 26.1.1 → 17.18.3 device
-  install ran end-to-end from a stock 2.4.36 outside nautobot-composer.
-- ✅ **Pre-staging exercised**: a version staged via Run scope was correctly
-  held on the device, and a follow-up run targeting a *different* version was
-  correctly refused by the install engine (the failure condition behaves).
-- ✅ A long list of real-device truths encoded and regression-tested: boot-mode
-  leaf naming, version-state semantics, silent RPC drops during the post-add
-  compatibility probe, junk version identifiers, KB-vs-byte size units.
-
-**Not yet tested — do not assume these work**
-
-- 🔶 **Parallel batch execution** — implemented and running in the lab; the
-  first parallel run surfaced worker-thread log loss (fixed — Celery task +
-  request context propagation). Recent feature: watch the first runs. Serial
-  batches (Parallelism = 1) are fully validated.
-- 🔶 **Pre-staging (Run scope)** — recent feature: staging itself has been
-  exercised on hardware, but the full timed cycle (stage midday → window run
-  collapsing to ~reload time) hasn't been measured yet. It is a strict subset
-  of the validated full flow that stops before activate.
-- ❌ **17.9 / 17.10 / 17.11** — not tested; might work (see the support
-  matrix). **Nautobot 3.0** is untested by choice: unmaintained since 3.1
-  shipped.
-- ❌ **9300L/LM/X validation run** (identical image/flow — expected boring)
-  and the **C8000V hardware run** (filesystem discovery + models verified on
-  paper); other 9300 models beyond those in the lab; stacks larger than
-  2 members; 17.18/26.1 on a stack.
-- ❌ **Failure paths on hardware**: auto-rollback expiry (activate without
-  commit), a genuinely corrupt image, a member failing to rejoin.
-
-
-**Suggested test order (lab only)**
-
-1. **Install + register.** Sync the repo on a **Nautobot 3.1** nautobot-composer
-   instance (the platform all hardware testing ran from) and enable both Jobs;
-   upload a `.bin` to the firmware server and run **Register IOS-XE Image** with
-   Dry-run, then for real; confirm the resulting `SoftwareImageFile` /
-   `SoftwareVersion` look correct.
-2. **Upgrade Dry-run.** Against one lab Catalyst 9300 (≥ 17.9.1, RESTCONF enabled,
-   a Secrets Group assigned): run **Cisco IOS-XE Upgrade** with Dry-run on and
-   confirm the reachability/auth, version-floor, install-mode, image-resolution,
-   and free-space gates all read correctly (the target filesystem is
-   discovered from the device automatically; `TARGET_FS_CANDIDATES` in
-   [`jobs/constants.py`](jobs/constants.py) covers platforms that name it
-   differently).
-3. **Single real upgrade.** One non-production device — watch the Job Result log
-   through copy → add → activate → reload → confirm → commit, and verify the
-   auto-rollback timer actually arms.
-4. **Broaden.** One supervised run per additional IOS-XE train (26.1 is the
-   open one), then multi-device batches, before any wider use.
-
-Until at least steps 1–3 pass in a lab, treat every run as experimental and keep
-Dry-run on.
-
-## Why these design choices
-
-The design follows a deep up-front analysis to avoid reinvention and respect the
-project's constraints. The key findings that shaped it:
-
-- **RESTCONF can drive the entire upgrade — on modern IOS-XE.** The install
-  workflow is exposed via the `Cisco-IOS-XE-install-rpc` YANG model
-  (`install` / `activate` / `install-commit` / `remove`), and the image transfer
-  via the classic `Cisco-IOS-XE-rpc:copy` — run in a worker thread so the job
-  can poll copy **progress** from the on-device file size. The
-  support floor is **17.9.1** — the lowest model-complete release; the job
-  refuses anything older (see the support posture above). (The async `xcopy` transfer was tried and
-  abandoned: 17.15.05 silently broke it in the field.)
-- **Image-file integrity is deliberately covered without the on-device
-  `verify` RPC.** Three layers: the Register job can download and
-  **hash-verify** the image server-side at registration (md5…sha512); every
-  copy ends with a **byte-exact size match** against Nautobot's recorded size
-  (tolerance 0); and `install add` performs Cisco's **mandatory signature
-  validation** of the signed image before anything can activate — strictly
-  stronger than an MD5 self-check, since it catches corruption *and*
-  tampering. The `Cisco-IOS-XE-verify-rpc:verify` RPC does exist (17.12+,
-  md5/sha512) but returns only a correlation UUID, with results delivered via
-  **event notifications** and no pollable operational state — the same
-  async-invisible shape as the abandoned `xcopy` — so it was considered and
-  deliberately not adopted. If Cisco ever exposes a pollable verify result,
-  it becomes a small, clean addition.
-- **Software version/image data is now Nautobot _core_, not a plugin.**
-  `dcim.SoftwareVersion` and `dcim.SoftwareImageFile` moved into core in
-  **Nautobot 2.2** (image file name, checksum + hashing algorithm, file size,
-  download URL, default-image flag, device-type compatibility), and
-  `Device.software_version` tracks assignment. We read all of this from core and
-  add **no data models of our own**.
-- **Delivery via Git Repository, not a packaged app.** This is the lightweight,
-  idiomatic way to ship jobs from public GitHub. Its one constraint —
-  git-delivered jobs **cannot install their own pip dependencies** — is a perfect
-  fit here because the job depends only on **`requests`** (RESTCONF over
-  HTTPS+JSON) and Nautobot core, both always present. **Zero new dependencies.**
-
-## Requirements
-
-**Nautobot side**
-
-- Nautobot **2.4 LTS** or **3.x** (see [Supported versions](#supported-versions)) —
-  typically deployed via [nautobot-composer](#sister-project-nautobot-composer),
-  the sister installer this Job targets.
-- The repository added as a **Git Repository** with the **`jobs`** provided
-  contents type (see below).
-- Each target device must have:
-  - a **primary IPv4** address reachable from the Nautobot worker;
-  - an assigned **Secrets Group** (or pass one as a job override) exposing a
-    **username** and **password** under the **RESTCONF** access type (see
-    [Authentication](#authentication));
-  - a **device type** mapped to the target version's **Software Image File**
-    (core's compatibility map), or a default image on the version.
-- A **Software Version** record for the target, with a **Software Image File**
-  that has at least a **download URL** and **image file name** (set the **file
-  size** too, to enable the post-copy size-integrity gate).
-
-**Device side**
-
-- Cisco IOS-XE **≥ 17.9.1**, Catalyst 9300, booted in **install mode**
-  (`flash:packages.conf`).
-- **RESTCONF enabled** (`restconf` + `ip http secure-server`). Enabling RESTCONF
-  on devices that lack it is intentionally **out of scope** for now.
-- A RESTCONF login account at **privilege 15** (or with exec authorization for
-  `install`/`copy`); a lower-privilege account authenticates but cannot run the
-  upgrade.
-- The image **download URL** must be reachable by the device over a transport it
-  supports (https/http/scp/ftp/tftp); embed credentials in the URL if required.
+The job imports only **`requests`** plus Nautobot core, so there is no separate
+Python dependency matrix — whatever ships with a supported Nautobot suffices.
 
 ## Authentication
 
@@ -366,20 +214,6 @@ ticked), and `FIRMWARE_INTERNAL_URL` (worker validation, default
 See **[docs/image-storage.md](docs/image-storage.md)** for the full design: URL
 formats, the acquire → upload → register workflow, TLS notes, and retention.
 
-## Sister project: nautobot-composer
-
-This Job is designed to run on **nautobot-composer** — a Docker-Compose-based
-installer for Nautobot and several related tools, by the same author, which
-currently supports **Nautobot 2.4 and 3.x**. It is also where the **firmware
-server** lives (its opt-in `firmware` profile — see [Image storage](#image-storage)).
-
-You can run this Job on any Nautobot 2.4/3.x instance, but nautobot-composer is
-the reference deployment: it provides a matching Nautobot version, the firmware
-host devices pull images from, and a worker environment that already has the
-Job's only runtime dependency (`requests`, plus Nautobot core). Tested to date:
-installs on 2.4 and 3.1 nautobot-composer deployments; the end-to-end device
-upgrade ran from 3.1.
-
 ## Installing into Nautobot (getting started)
 
 This project is consumed the standard Nautobot way — as a **Git Repository that
@@ -392,13 +226,28 @@ detailed steps.
 
 **Prerequisites**
 
-- A working **Nautobot 2.4 or 3.x** with your devices, platforms, primary IPs,
-  and credentials (**Secrets**) already populated — see
-  [Requirements](#requirements) and [Authentication](#authentication).
-- A **firmware server** the devices can reach to pull images from — see
-  [Image storage](#image-storage).
+- A working **Nautobot 2.4 or 3.1+** (see [Versions & support](#versions--support)).
+  Don't have one? The same author's
+  [nautobot-composer](https://github.com/bforejt/nautobot-composer) is a
+  Docker-Compose stack that ships a matching Nautobot **and** the firmware
+  server this job pulls images from.
+- **Inventory in Nautobot**: each target device needs a **primary IPv4**
+  reachable from the worker, a **device type** mapped to the target version's
+  **Software Image File** (or a default image on the version), and an assigned
+  **Secrets Group** exposing a username + password under the **RESTCONF** access
+  type (see [Authentication](#authentication)).
+- A **Software Version** record for the target with a **Software Image File**
+  carrying at least a **download URL** and **image file name** (add the **file
+  size** to enable the post-copy size gate). The device must be able to reach
+  that URL over a transport it supports (https/http/scp/ftp/tftp); embed
+  credentials in the URL if the host requires them. Binaries live on the
+  firmware server, not in Nautobot — see [Image storage](#image-storage).
+- **Devices**: Cisco IOS-XE **≥ 17.9.1**, booted in **install mode**
+  (`flash:packages.conf`), with **RESTCONF enabled** (`restconf` +
+  `ip http secure-server`) and a **privilege-15** account (or exec-authorized
+  for `install`/`copy`). Enabling RESTCONF where it is absent is out of scope.
 - No extra Python packages: the Job's only runtime dependency is `requests`,
-  which Nautobot core already provides.
+  already present with Nautobot core.
 
 **Steps** (the basics — follow the linked NTC docs for the full how-to)
 
@@ -690,8 +539,8 @@ Everything actually depended on (`requests`, Nautobot core) is permissive
 
 - **Hardware validation covers 17.12, 17.15, 17.18, and 26.1** on single
   switches and a 2-member stack, from Nautobot 3.1 and 2.4 — other platforms
-  (9200, 9400–9600, C8000V) are admitted on model evidence (see the
-  [support posture](#support-posture) and platform row); do one supervised run
+  (9200, 9400–9600, C8000V) are admitted on model evidence (see
+  [Versions & support](#versions--support)); do one supervised run
   per newly-encountered train or platform. On releases whose devices don't populate
   the operation ledger or `sys-activity` at runtime, the job degrades to
   version-state inference and a settle timer — clearly labeled in the logs.
@@ -824,7 +673,7 @@ kind, under the terms of the [Apache License 2.0](LICENSE) — including its
 
 Be aware of what this tool does: it **copies software to, and reloads, live
 network equipment**. If you choose to run it in your own environment, you do so
-entirely **at your own risk** — validate in a lab first, follow the
-[suggested test order](#status--testing), keep Dry-run on until proven, and
+entirely **at your own risk** — validate in a lab first (see
+[Current status](#current-status-lab-proven)), keep Dry-run on until proven, and
 maintain your own change-control and rollback procedures. Use of this software
 constitutes acceptance of the license terms above.
