@@ -254,52 +254,30 @@ class IOSXEUpgrade(Job):
         ),
     )
     clean_before = BooleanVar(
-        label="Clean device first (removes inactive & staged images!)",
+        label="Clean device first",
         default=False,
         description=(
-            "⚠️ BE CAREFUL. Before upgrading, remove ALL software this device "
-            "is not running: inactive packages, leftover image files, AND any "
-            "version another engineer may have staged — this deliberately "
-            "overrides the staged-conflict safety stop, which exists because a "
-            "staged version usually means a change is already in flight. It "
-            "also deletes the previous version kept for soak-period rollback "
-            "(rolling back afterward = re-run this job targeting the old "
-            "version). Tick only when you know the state of the network and "
-            "that nothing else is planned for this device. Independent of "
-            "'Remove inactive (after commit)'."
+            "Before upgrading, remove ALL software this device is not "
+            "running: inactive packages and leftover image files. See "
+            "'Cleaning a device first' in the project README."
         ),
     )
     save_config = BooleanVar(
-        label="Save running-config before reload (Full runs)",
+        label="Save running-config before reload",
         default=False,
         description=(
-            "Before the activation reload, write running-config to "
-            "startup-config ('write memory' over RESTCONF). RPC-triggered "
-            "reloads never ask the CLI's 'System configuration has been "
-            "modified. Save?' question — unsaved changes are silently lost, "
-            "and the job cannot detect whether a save is needed (the only "
-            "source is an SNMP-bridged MIB this project does not depend on). "
-            "Off by default: saving is itself a write, and it would persist "
-            "half-applied changes an engineer deliberately left unsaved."
+            "Write running-config to startup-config before activation "
+            "reload. Only effective for Full runs. See 'Saving "
+            "running-config before the reload' in the project README."
         ),
     )
     suppress_avc_noise = BooleanVar(
         label="Quiet SELinux log noise on terminals",
         default=False,
         description=(
-            "PURPOSE: some IOS-XE releases (seen on 17.15.x; fixed by "
-            "17.18.3) flood terminals with harmless SELinux AVC-denial "
-            "messages during upgrade activity. EFFECT: when ticked, the job "
-            "adds a small message filter (logging discriminator NBAVC) to "
-            "the RUNNING config at the start of the run, quieting that "
-            "noise exactly where people are watching — the physical console "
-            "and terminal-monitor (SSH) sessions. 'show logging' and any "
-            "syslog servers still record everything. Unsaved — the reload "
-            "erases it — unless combined with 'Save running-config before "
-            "reload' on a Full run. See the README section 'SELinux AVC "
-            "log events' for why these messages occur, exactly what is "
-            "written, and the safety rules (existing logging config is "
-            "never replaced; a refused write only warns)."
+            "Quiets SELinux chatter on the physical console and SSH "
+            "terminal-monitor sessions. No effect when Dry-run is selected. "
+            "See 'SELinux AVC log events' in the project README."
         ),
     )
     secrets_group_override = ObjectVar(
