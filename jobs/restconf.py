@@ -17,6 +17,16 @@ import requests
 from . import constants as C
 
 
+def _redact(payload):
+    """Blot out URL userinfo in a payload repr before it reaches any log.
+
+    The character class stops only at whitespace or '@' so passwords with
+    '/', quotes, or ':' still redact; '@' inside a password must be
+    percent-encoded in any valid URL, so first-'@' termination is sound.
+    """
+    return re.sub(r"://[^@\s]+@", "://***@", str(payload))
+
+
 class RestconfError(Exception):
     """Raised for any RESTCONF transport / HTTP-level failure.
 
@@ -126,6 +136,28 @@ class RestconfClient:
                 )
             return {}
 
+    def patch(self, path, payload, *, timeout=C.GET_TIMEOUT):
+        """RESTCONF plain PATCH (merge) against /restconf/data.
+
+        Used only for the opt-in cosmetic logging-discriminator write — the
+        job's sole running-config touch besides save-config. Merge semantics:
+        listed nodes are created/updated, everything else is untouched.
+        Raises RestconfError on any non-2xx or transport failure; callers
+        treat suppression failures as NON-fatal (warn and continue).
+        """
+        url = f"{self.base_url}/{path}"
+        self._debug(f"PATCH {url} body={self._truncate(_redact(payload))}")
+        try:
+            resp = self._session.patch(url, json=payload, timeout=timeout)
+        except requests.RequestException as exc:
+            raise RestconfError(f"PATCH {path} failed: {exc}") from exc
+        if not resp.ok:
+            raise RestconfError(
+                f"PATCH {path} -> HTTP {resp.status_code}: {self._truncate(resp.text)}",
+                status_code=resp.status_code,
+            )
+        return True
+
     def post_rpc(self, operation, payload, *, timeout=C.RPC_TIMEOUT, tolerate_disconnect=False):
         """POST a YANG RPC to /restconf/operations.
 
@@ -139,9 +171,9 @@ class RestconfClient:
         """
         url = f"{self.base_url}/{operation}"
         # Redact URL userinfo (ftp://user:pass@...) — copy payloads may carry
-        # credentialed source URLs (review finding).
-        body_repr = re.sub(r"://[^/@\s']+@", "://***@", self._truncate(payload))
-        self._debug(f"POST {url} body={body_repr}")
+        # credentialed source URLs. Redact BEFORE truncation so a cut cannot
+        # strip the trailing '@' the pattern needs (review finding).
+        self._debug(f"POST {url} body={self._truncate(_redact(payload))}")
         try:
             resp = self._session.post(url, json=payload, timeout=timeout)
         except requests.exceptions.ReadTimeout as exc:
