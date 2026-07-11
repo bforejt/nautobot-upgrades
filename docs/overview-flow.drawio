@@ -1,0 +1,36 @@
+<mxfile host="app.diagrams.net" type="device">
+  <diagram name="IOS-XE upgrade overview" id="iosxe-upgrade-overview">
+    <mxGraphModel dx="1000" dy="1400" grid="1" gridSize="10" guides="1" tooltips="1"
+        connect="1" arrows="1" fold="1" page="1" pageScale="1" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="start" value="Select devices + target version&amp;#10;(Nautobot → Jobs)" style="rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;" vertex="1" parent="1"><mxGeometry x="160" y="52" width="360" height="52" as="geometry"/></mxCell>
+        <mxCell id="connect" value="Connect &amp; authenticate&amp;#10;(RESTCONF over HTTPS, creds from Nautobot Secrets)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5B6B7B;" vertex="1" parent="1"><mxGeometry x="150" y="155" width="380" height="62" as="geometry"/></mxCell>
+        <mxCell id="gates" value="Pre-flight gates&amp;#10;≥ 17.9.1 · install mode · image resolved · free space" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5B6B7B;" vertex="1" parent="1"><mxGeometry x="150" y="263" width="380" height="62" as="geometry"/></mxCell>
+        <mxCell id="d_dry" value="Dry-run?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#E8EEF6;strokeColor=#3C6CA8;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="215" y="360" width="250" height="84" as="geometry"/></mxCell>
+        <mxCell id="copy" value="Copy image + verify exact size&amp;#10;(skipped if the file is already on flash)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5B6B7B;" vertex="1" parent="1"><mxGeometry x="150" y="479" width="380" height="62" as="geometry"/></mxCell>
+        <mxCell id="d_stage" value="Run scope =&amp;#10;stage only?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#E8EEF6;strokeColor=#3C6CA8;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="215" y="576" width="250" height="84" as="geometry"/></mxCell>
+        <mxCell id="install" value="Install: add → activate → reload&amp;#10;(gate → submit → track via the device&#x27;s ledger)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5B6B7B;" vertex="1" parent="1"><mxGeometry x="150" y="695" width="380" height="62" as="geometry"/></mxCell>
+        <mxCell id="d_boot" value="Booted the target&amp;#10;&amp; came back healthy?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#E8EEF6;strokeColor=#3C6CA8;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="215" y="792" width="250" height="84" as="geometry"/></mxCell>
+        <mxCell id="commit" value="install commit + sync Nautobot&amp;#10;(+ optional remove-inactive cleanup)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5B6B7B;" vertex="1" parent="1"><mxGeometry x="150" y="911" width="380" height="62" as="geometry"/></mxCell>
+        <mxCell id="done" value="DONE: Upgraded &amp; committed ✓" style="rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#2E7D32;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="180" y="1024" width="320" height="52" as="geometry"/></mxCell>
+        <mxCell id="d_dry_term" value="DONE: Dry-run — reports what&amp;#10;WOULD happen; no changes made" style="rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#2E7D32;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="580" y="370" width="320" height="64" as="geometry"/></mxCell>
+        <mxCell id="d_stage_term" value="DONE: Staged — image on the&amp;#10;device; nothing reloaded" style="rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#2E7D32;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="580" y="586" width="320" height="64" as="geometry"/></mxCell>
+        <mxCell id="d_boot_term" value="Auto-rollback to the previous&amp;#10;image — NOT committed" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;" vertex="1" parent="1"><mxGeometry x="580" y="802" width="320" height="64" as="geometry"/></mxCell>
+        <mxCell id="e_d_dry_term" value="Yes" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="d_dry" target="d_dry_term"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_d_stage_term" value="Yes" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="d_stage" target="d_stage_term"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_d_boot_term" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="d_boot" target="d_boot_term"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_start_connect" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="start" target="connect"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_connect_gates" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="connect" target="gates"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_gates_d_dry" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="gates" target="d_dry"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_d_dry_copy" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="d_dry" target="copy"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_copy_d_stage" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="copy" target="d_stage"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_d_stage_install" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="d_stage" target="install"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_install_d_boot" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="install" target="d_boot"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_d_boot_commit" value="Yes" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="d_boot" target="commit"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_commit_done" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="commit" target="done"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
