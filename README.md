@@ -17,6 +17,9 @@ development: expect change between releases, read the Job Result logs, and
 - **Lettered rebuilds** as distinct versions (17.15.4 ↔ 17.15.4d), up and down.
 - **Serial batches**, including a batch downgrade and correct already-on-target
   short-circuits.
+- **Parallel batches at Parallelism 2** — run repeatedly (10+ times across
+  various versions); the per-device isolation (own RESTCONF sessions, own
+  ledger uuids) holds up in practice.
 - **2-member stack**, up and down the **17.12 → 17.15** boundary (17.12.4 →
   17.15.5 → 17.15.4): per-member free-space gating, package distribution, and
   the all-members-rejoined gate.
@@ -28,8 +31,10 @@ development: expect change between releases, read the Job Result logs, and
 
 **Not yet proven — treat as experimental:**
 
-- **Parallel batches** (serial is fully validated) and the **timed pre-staging**
-  cycle — both implemented and lab-run, not yet fully measured.
+- **Parallelism above 2** — validated at 2 concurrent; larger fan-out (up to
+  16) and firmware-server contention at scale are not yet stress-tested.
+- **The timed pre-staging cycle** — staging itself runs on hardware, but the
+  full stage-ahead → window-run timing has not been measured.
 - **Stack reload on 17.18 / 26.1** — the stack has only been reloaded across the
   17.12 → 17.15 boundary so far; **stacks larger than 2 members** are also
   untested.
@@ -306,6 +311,12 @@ install, reload — so parallelism collapses batch wall-clock dramatically: a
 serial. Each device's result line carries its own `[total: …]` for the
 change-window arithmetic.
 
+**Validation to date is at Parallelism 2** (run 10+ times across versions in
+the lab). The per-device independence below is by construction, so higher
+fan-out is expected to behave — but treat anything above 2 as unproven: raise
+it deliberately and watch the first runs (see
+[Current status](#current-status-lab-proven)).
+
 **Why it's safe**: every device is fully independent by construction — its own
 RESTCONF sessions, its own per-operation correlation uuids in the device's
 install ledger, its own gates and timers. Nothing is shared between device
@@ -364,9 +375,11 @@ lets you do the harmless half ahead of time:
   flash (staged packages roughly double the image's footprint until the
   window).
 
-Staging causes **no outage**, so it is safe at high **Parallelism** during
-business hours, and pairs naturally with Nautobot's native job scheduling
-("stage the fleet overnight"). Structural guarantee: stage scopes return
+Staging causes **no outage** (it structurally can't reach `activate`), so it is
+the safe scope to run during business hours and to push **Parallelism** higher —
+with the same "validated at 2, raise deliberately" caveat as any batch (see
+[Parallel batches](#parallel-batches)) — and it pairs naturally with Nautobot's
+native job scheduling ("stage the fleet overnight"). Structural guarantee: stage scopes return
 before any code path that can reach `activate` — the only disruptive verb.
 If plans change, a staged image is inert; `install remove inactive` (or the
 Remove-inactive option on a later run) reclaims the space.
@@ -484,7 +497,7 @@ verb, which stays human:
 | Quiet SELinux log noise on terminals | no | **Default off.** The harmless SELinux AVC-denial messages come from how the job watches files during an upgrade; enable this if you watch the **physical console or terminal-monitor (SSH)** and want them quieted there. `show logging` and syslog servers still record everything. Applied to the RUNNING config at the start of the run (every release); unsaved — erased by the reload — unless combined with *Save running-config before reload* on a **Full** run. See [SELinux AVC log events](#selinux-avc-log-events-cause-and-workaround). |
 | Secrets group override | no | Force one Secrets Group for the whole run; by default each device uses its own assigned group. |
 | Remove inactive | no | After commit, reclaim space (default **off** — keeps the rollback image for a soak period). |
-| Parallelism | no | Devices upgraded concurrently (default **4**, max 16; 1 = serial). Size to the firmware server's capacity for simultaneous image pulls. |
+| Parallelism | no | Devices upgraded concurrently (default **4**, max 16; 1 = serial). **Hardware-validated at 2 so far**; higher fan-out is unproven. Size to the firmware server's capacity for simultaneous image pulls. |
 | Debug | no | Verbose RESTCONF request/response logging. |
 | Dry-run | — | Read-only pre-flight only (default **on**). |
 
