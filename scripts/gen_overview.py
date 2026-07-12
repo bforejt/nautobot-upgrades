@@ -55,6 +55,18 @@ SPINE = [
     ("done", "end", "DONE: Upgraded & committed ✓", None),
 ]
 
+# Phase-number keys off to the LEFT of a block, matching the README "What it
+# does" six-phase list. Install (4) spans two blocks; the commit block does
+# both verify-commit (5) and sync/cleanup (6). Decisions are not numbered phases.
+PHASE_TAGS = {
+    "connect": "1",
+    "gates": "2",
+    "copy": "3",
+    "add": "4",
+    "activate": "4",
+    "commit": "5·6",
+}
+
 CY = {nid: TOP + i * PITCH for i, (nid, *_r) in enumerate(SPINE)}
 NODES = {nid: (typ, text, branch) for nid, typ, text, branch in SPINE}
 ORDER = [nid for nid, *_ in SPINE]
@@ -63,6 +75,7 @@ WIDTH = RIGHT_X + TERM_W + 40
 HEIGHT = CY[ORDER[-1]] + 70
 
 LEGEND = ("Legend\n"
+          "numbers = the six phases (see the README)\n"
           "diamonds = decisions\n"
           "green = successful end state\n"
           "red = this device stops here\n"
@@ -119,6 +132,23 @@ def edge_label(x, y, text, color="#333"):
             + svg_text(x, y + 4, text, size=11, color=color))
 
 
+TAG_H = 32
+TAG_GAP = 16  # gap between the tag's right edge and the block's left edge
+
+
+def tag_geom(label, box_left, cy):
+    """(center-x, center-y, width) for a phase badge right-aligned left of a block."""
+    w = max(TAG_H, len(label) * 12 + 14)
+    cx = (box_left - TAG_GAP) - w / 2
+    return cx, cy, w
+
+
+def phase_badge(label, box_left, cy):
+    cx, cy, w = tag_geom(label, box_left, cy)
+    return (rect(cx, cy, w, TAG_H, "#DAE8FC", "#6C8EBF", rx=TAG_H / 2)
+            + svg_text(cx, cy, label, size=17, bold=True, color="#1b3a6b"))
+
+
 def build_svg():
     s = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {WIDTH} {HEIGHT}" '
          f'width="{WIDTH}" height="{HEIGHT}" font-family="Helvetica,Arial,sans-serif">']
@@ -128,8 +158,8 @@ def build_svg():
     s.append(f'<rect x="0" y="0" width="{WIDTH}" height="{HEIGHT}" fill="#ffffff"/>')
     s.append('<text x="20" y="30" font-size="18" font-weight="bold" fill="#111">'
              'Cisco IOS-XE Upgrade (RESTCONF) — what it does</text>')
-    s.append(rect(WIDTH - 200, 96, 384, 88, "#fbfbfb", "#bbb", rx=6))
-    s.append(svg_text(WIDTH - 200, 96, LEGEND, size=10, color="#333"))
+    s.append(rect(WIDTH - 200, 104, 400, 104, "#fbfbfb", "#bbb", rx=6))
+    s.append(svg_text(WIDTH - 200, 104, LEGEND, size=10, color="#333"))
 
     # down edges between consecutive spine nodes
     for a, b in zip(ORDER, ORDER[1:]):
@@ -173,6 +203,11 @@ def build_svg():
             s.append(rect(CX, cy, w, h, *FILLS["proc"], rx=6))
             s.append(svg_text(CX, cy, text, size=11, color="#1a1a1a"))
 
+    # phase-number badges, off to the left of their blocks (keys to the README)
+    for nid, label in PHASE_TAGS.items():
+        w = GEOM[NODES[nid][0]][0]
+        s.append(phase_badge(label, CX - w / 2, CY[nid]))
+
     s.append("</svg>")
     return "\n".join(s)
 
@@ -186,6 +221,7 @@ DRAWIO_STYLE = {
     "dec": "rhombus;whiteSpace=wrap;html=1;fillColor=#E8EEF6;strokeColor=#3C6CA8;fontStyle=1;",
     "okr": "rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#2E7D32;fontStyle=1;",
     "abort": "rounded=1;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;",
+    "tag": "rounded=1;arcSize=50;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontStyle=1;fontSize=16;",
 }
 
 
@@ -212,6 +248,11 @@ def build_drawio():
         typ, text, _ = NODES[nid]
         w, h = GEOM[typ]
         cells.append(cell(nid, dtext(text), DRAWIO_STYLE[typ], CX - w / 2, CY[nid] - h / 2, w, h))
+    for nid, label in PHASE_TAGS.items():
+        w = GEOM[NODES[nid][0]][0]
+        tcx, tcy, tw = tag_geom(label, CX - w / 2, CY[nid])
+        cells.append(cell(f"{nid}_tag", label, DRAWIO_STYLE["tag"],
+                          tcx - tw / 2, tcy - TAG_H / 2, tw, TAG_H))
     for nid in ORDER:
         _, _, branch = NODES[nid]
         if not branch:

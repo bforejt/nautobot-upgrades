@@ -2,8 +2,8 @@
 <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,3 L0,6 z" fill="#555"/></marker></defs>
 <rect x="0" y="0" width="940" height="1336" fill="#ffffff"/>
 <text x="20" y="30" font-size="18" font-weight="bold" fill="#111">Cisco IOS-XE Upgrade (RESTCONF) — what it does</text>
-<rect x="548" y="52" width="384" height="88" rx="6" ry="6" fill="#fbfbfb" stroke="#bbb" stroke-width="1.5"/>
-<text x="740" y="70" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333"><tspan x="740" dy="0">Legend</tspan><tspan x="740" dy="13">diamonds = decisions</tspan><tspan x="740" dy="13">green = successful end state</tspan><tspan x="740" dy="13">red = this device stops here</tspan><tspan x="740" dy="13">Detailed gate-by-gate flow: docs/upgrade-flow.svg</tspan></text>
+<rect x="540" y="52" width="400" height="104" rx="6" ry="6" fill="#fbfbfb" stroke="#bbb" stroke-width="1.5"/>
+<text x="740" y="72" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333"><tspan x="740" dy="0">Legend</tspan><tspan x="740" dy="13">numbers = the six phases (see the README)</tspan><tspan x="740" dy="13">diamonds = decisions</tspan><tspan x="740" dy="13">green = successful end state</tspan><tspan x="740" dy="13">red = this device stops here</tspan><tspan x="740" dy="13">Detailed gate-by-gate flow: docs/upgrade-flow.svg</tspan></text>
 <path d="M 340 104 L 340 155" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
 <path d="M 340 217 L 340 263" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
 <path d="M 340 325 L 340 360" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
@@ -59,4 +59,10 @@
 <text x="340" y="1151" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="340" dy="0">install commit + sync Nautobot</tspan><tspan x="340" dy="14">(+ optional remove-inactive cleanup)</tspan></text>
 <rect x="180" y="1240" width="320" height="52" rx="24" ry="24" fill="#D5E8D4" stroke="#2E7D32" stroke-width="1.5"/>
 <text x="340" y="1266" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#14532d"><tspan x="340" dy="0">DONE: Upgraded &amp; committed ✓</tspan></text>
+<rect x="102" y="170" width="32" height="32" rx="16.0" ry="16.0" fill="#DAE8FC" stroke="#6C8EBF" stroke-width="1.5"/><text x="118.0" y="186" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="17" font-weight="bold" fill="#1b3a6b"><tspan x="118.0" dy="0">1</tspan></text>
+<rect x="102" y="278" width="32" height="32" rx="16.0" ry="16.0" fill="#DAE8FC" stroke="#6C8EBF" stroke-width="1.5"/><text x="118.0" y="294" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="17" font-weight="bold" fill="#1b3a6b"><tspan x="118.0" dy="0">2</tspan></text>
+<rect x="102" y="494" width="32" height="32" rx="16.0" ry="16.0" fill="#DAE8FC" stroke="#6C8EBF" stroke-width="1.5"/><text x="118.0" y="510" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="17" font-weight="bold" fill="#1b3a6b"><tspan x="118.0" dy="0">3</tspan></text>
+<rect x="102" y="710" width="32" height="32" rx="16.0" ry="16.0" fill="#DAE8FC" stroke="#6C8EBF" stroke-width="1.5"/><text x="118.0" y="726" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="17" font-weight="bold" fill="#1b3a6b"><tspan x="118.0" dy="0">4</tspan></text>
+<rect x="102" y="926" width="32" height="32" rx="16.0" ry="16.0" fill="#DAE8FC" stroke="#6C8EBF" stroke-width="1.5"/><text x="118.0" y="942" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="17" font-weight="bold" fill="#1b3a6b"><tspan x="118.0" dy="0">4</tspan></text>
+<rect x="84" y="1142" width="50" height="32" rx="16.0" ry="16.0" fill="#DAE8FC" stroke="#6C8EBF" stroke-width="1.5"/><text x="109.0" y="1158" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="17" font-weight="bold" fill="#1b3a6b"><tspan x="109.0" dy="0">5·6</tspan></text>
 </svg>

@@ -10,6 +10,9 @@ decision logic (every abort and warning), see
 ## How to read it
 
 - **Blue** = start. **White boxes** = the phases. **Diamonds** = decisions.
+- The **numbered key** to the left of each white box is its phase number in the
+  README's "What it does" six-phase list (Install spans two boxes — both **4**;
+  the commit box does both verify-commit and sync — **5·6**).
 - **Green** = a successful end state. There are four, matching the **Run scope**
   input: a Dry-run report (no changes); a **Step 1** stop (image copied to flash,
   nothing else); a **Steps 1 & 2** stop (image also `install add`ed and marked
