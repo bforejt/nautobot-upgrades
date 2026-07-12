@@ -639,9 +639,13 @@ denies `smand` (the shell/storage manager) read access to a handful of on-flash
 paths (`biosupgrade`, `yang-infra`, and similar) that it touches whenever it
 builds a **filesystem listing**. Each listing sprays a burst of
 `%SELINUX-1-VIOLATION` AVC-denial lines (~100 observed per listing on a real
-9300 in our lab). Anything that requests a listing triggers it: this job's file
-reads, human `show` commands (`dir`, `show platform software ...`), and the
-install engine's own add/activate/clean activity.
+9300 in our lab). Anything that walks the filesystem can trip it. In one
+correlated capture (this job's log lined up against the device console), the
+**overwhelming majority came from our own q-filesystem reads** — ~318 of 319
+denials — while a single denial came from an `install remove` operation itself;
+an operator's `dir`/`show` would trip it too. How much `install add` and
+`activate` contribute we have **not yet measured** (that run stopped before
+those phases).
 
 **What Cisco documents — and what it does not.** `%SELINUX-1-VIOLATION` is a
 documented IOS-XE SELinux message, not an error unique to this job. Cisco's
