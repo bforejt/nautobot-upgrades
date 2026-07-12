@@ -1,14 +1,21 @@
 """Cancel a running IOS-XE Upgrade run — gracefully.
 
-Nautobot core has no cancel button for running jobs (nautobot/nautobot#2088),
-and a UI button would require a full Nautobot App. This companion Job is the
-git-deliverable equivalent: pick the running Job Result and run — it signals
-the upgrade run with the same mechanism as Celery's soft time limit, which the
-upgrade job already handles COOPERATIVELY: every in-flight device stops at its
-next safe step boundary (never mid-decision), queued devices are cancelled,
-every device's outcome is drained into the log, and the run fails honestly
-with a completed/stopped/never-started post-mortem. Devices are left in
-states the idempotent gates recover on re-run.
+Native job cancellation is landing in **Nautobot core 3.2** (a "Stop Job
+execution" control — nautobot/nautobot#2088, closed COMPLETED for the v3.2
+milestone). It is NOT yet on every supported train, though: the 2.4 LTM line
+and 3.1 both predate 3.2 and have no native control, and until now core had
+none at all. This companion Job stays the git-deliverable way to cancel a run
+UNTIL every supported Nautobot train can do it natively — revisit removing it
+once the supported floor is 3.2+. (A UI button on older trains would otherwise
+require a full Nautobot App.)
+
+Pick the running Job Result and run — it signals the upgrade run with the same
+mechanism as Celery's soft time limit, which the upgrade job already handles
+COOPERATIVELY: every in-flight device stops at its next safe step boundary
+(never mid-decision), queued devices are cancelled, every device's outcome is
+drained into the log, and the run fails honestly with a
+completed/stopped/never-started post-mortem. Devices are left in states the
+idempotent gates recover on re-run.
 """
 
 from __future__ import annotations

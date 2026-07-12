@@ -365,9 +365,13 @@ each device up where it stopped.
 
 ### Cancelling a run
 
-Nautobot core has no cancel button for running jobs
-([nautobot#2088](https://github.com/nautobot/nautobot/issues/2088)), so this
-repo ships one as a job: **Cancel IOS-XE Upgrade Run**. Pick the running Job
+Native job cancellation is coming to **Nautobot core in 3.2** (a "Stop Job
+execution" control —
+[nautobot#2088](https://github.com/nautobot/nautobot/issues/2088), closed for
+the v3.2 milestone). Until every supported train has it — the **2.4 LTM** line
+and **3.1** predate 3.2 — this repo ships cancellation as a job: **Cancel IOS-XE
+Upgrade Run**. It will remain here until all supported Nautobot trains can
+cancel jobs natively. Pick the running Job
 Result and run it — the upgrade run receives the same signal as the soft time
 limit, which it handles **gracefully by design**: every in-flight device stops
 at its next safe step boundary (never mid-decision, within ~one poll
