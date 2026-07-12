@@ -137,6 +137,9 @@ def edge_label(x, y, text, color="#333"):
 
 TAG_H = 32
 TAG_GAP = 16  # gap between the tag's right edge and the block's left edge
+# Purple, deliberately NOT the blue used by start/decision nodes — the badge
+# reads as an index key, not part of the flow.
+BADGE_FILL, BADGE_STROKE, BADGE_TEXT = "#EDE3F6", "#8E63B5", "#4A2A7A"
 
 
 def tag_geom(label, box_left, cy):
@@ -148,8 +151,10 @@ def tag_geom(label, box_left, cy):
 
 def phase_badge(label, box_left, cy):
     cx, cy, w = tag_geom(label, box_left, cy)
-    return (rect(cx, cy, w, TAG_H, "#DAE8FC", "#6C8EBF", rx=TAG_H / 2)
-            + svg_text(cx, cy, label, size=17, bold=True, color="#1b3a6b"))
+    # An svg <text> anchors on the baseline, so a single glyph centered on cy
+    # sits slightly high in the circle; nudge it down to optically center it.
+    return (rect(cx, cy, w, TAG_H, BADGE_FILL, BADGE_STROKE, rx=TAG_H / 2)
+            + svg_text(cx, cy + 6, label, size=17, bold=True, color=BADGE_TEXT))
 
 
 def build_svg():
@@ -224,7 +229,7 @@ DRAWIO_STYLE = {
     "dec": "rhombus;whiteSpace=wrap;html=1;fillColor=#E8EEF6;strokeColor=#3C6CA8;fontStyle=1;",
     "okr": "rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#2E7D32;fontStyle=1;",
     "abort": "rounded=1;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;",
-    "tag": "rounded=1;arcSize=50;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontStyle=1;fontSize=16;",
+    "tag": "rounded=1;arcSize=50;whiteSpace=wrap;html=1;fillColor=#EDE3F6;strokeColor=#8E63B5;fontStyle=1;fontSize=16;fontColor=#4A2A7A;",
 }
 
 
