@@ -5,8 +5,12 @@ execution" control — nautobot/nautobot#2088, closed COMPLETED for the v3.2
 milestone). It is NOT yet on every supported train, though: the 2.4 LTM line
 and 3.1 both predate 3.2 and have no native control, and until now core had
 none at all. This companion Job stays the git-deliverable way to cancel a run
-UNTIL every supported Nautobot train can do it natively — revisit removing it
-once the supported floor is 3.2+. (A UI button on older trains would otherwise
+UNTIL every supported Nautobot train can do it natively — AND even then, only
+once the native control is confirmed to give the SAME graceful result. This
+cooperative stop is tuned to the upgrade job: it lands on safe step boundaries
+and drains a per-device post-mortem, which is likely gentler than a hard /
+immediate kill. We are monitoring the 3.2 capability and will retire this job
+once it demonstrably matches. (A UI button on older trains would otherwise
 require a full Nautobot App.)
 
 Pick the running Job Result and run — it signals the upgrade run with the same
