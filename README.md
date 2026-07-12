@@ -20,9 +20,9 @@ development: expect change between releases, read the Job Result logs, and
 - **Parallel batches at Parallelism 2** — run repeatedly (10+ times across
   various versions); the per-device isolation (own RESTCONF sessions, own
   ledger uuids) holds up in practice.
-- **2-member stack**, up and down the **17.12 → 17.15** boundary (17.12.4 →
-  17.15.5 → 17.15.4): per-member free-space gating, package distribution, and
-  the all-members-rejoined gate.
+- **2-member stack**, up and down across **all tested trains** (17.12 ↔ 17.15 ↔
+  17.18 ↔ 26.1): per-member free-space gating, package distribution, and the
+  all-members-rejoined gate.
 - **Ledger-tracked** add/activate/commit, engine-idle gating, byte-exact copy
   verification, auto-rollback-timer arming, remove-inactive, and interrupted-run
   (commit-to-be-safe) recovery.
@@ -35,9 +35,8 @@ development: expect change between releases, read the Job Result logs, and
   16) and firmware-server contention at scale are not yet stress-tested.
 - **The timed pre-staging cycle** — staging itself runs on hardware, but the
   full stage-ahead → window-run timing has not been measured.
-- **Stack reload on 17.18 / 26.1** — the stack has only been reloaded across the
-  17.12 → 17.15 boundary so far; **stacks larger than 2 members** are also
-  untested.
+- **Stacks larger than 2 members** — the 2-member stack is validated across all
+  tested trains; larger stacks are not yet tested.
 - **9300L/LM/X**, **C8000V**, and **9200 / 9400–9600** — identical image, flow,
   and models on paper, hardware runs pending; **17.9–17.11**.
 - **Failure paths on hardware**: auto-rollback expiry, a genuinely corrupt image,
@@ -152,7 +151,7 @@ gate and abort.
 
 | Train | Status | Basis |
 | --- | --- | --- |
-| **17.12 / 17.15 / 17.18 / 26.1** | ✅ **Tested on real equipment** | Repeated upgrades **and** downgrades on 9300s — single switches across all four trains, plus a 2-member stack across the 17.12 → 17.15 boundary; lettered rebuilds; cross-era moves in both directions; serial batches. Ledger tracking, engine-idle gating, byte-exact verify, remove-inactive, and interrupted-run recovery exercised live; the member-rejoin gate on the stack run. |
+| **17.12 / 17.15 / 17.18 / 26.1** | ✅ **Tested on real equipment** | Repeated upgrades **and** downgrades on 9300s — single switches **and** a 2-member stack across all four trains; lettered rebuilds; cross-era moves in both directions; serial and Parallelism-2 batches. Ledger tracking, engine-idle gating, byte-exact verify, the all-members-rejoined gate, remove-inactive, and interrupted-run recovery all exercised live. |
 | **17.9 / 17.10 / 17.11** | ⚠️ **Not tested — might work** | Model-complete on paper (17.9 is the floor). Best used as an *escape source* (upgrade FROM it) — 17.9 left Cisco maintenance Aug 2025. Run one supervised upgrade first. |
 | **< 17.9** | 🚫 **Not supported** | Refused: key API components are missing below the floor (the RESTCONF install models and reliable file-size reporting the job relies on). |
 
