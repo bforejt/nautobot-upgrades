@@ -616,7 +616,7 @@ class IOSXEUpgrade(Job):
                 client, device, target_version, dryrun, log, run_scope=run_scope
             )
 
-        # Opt-in cosmetic write, applied as early as possible for runs that
+        # Opt-in log-only write, applied as early as possible for runs that
         # will actually DO something — after the already-on-target no-op
         # branch (a lasting config write for zero benefit there — review
         # finding), before the gates whose partitions read is the first
@@ -1332,9 +1332,11 @@ class IOSXEUpgrade(Job):
     def _apply_avc_suppression(self, client, log):
         """Insert the SELinux AVC console filter into running-config (opt-in).
 
-        The %SELINUX-1-VIOLATION console bursts are harmless — a side effect
-        of how smand watches files whenever anything (this job, or a human
-        'show' command) builds a filesystem listing — but they clutter the
+        The %SELINUX-1-VIOLATION console bursts are documented SELinux
+        alerts — benign in our testing, though NOT a Cisco-confirmed cosmetic
+        defect (see the README's SELinux section) — a side effect of how smand
+        watches files whenever anything (this job, or a human 'show' command)
+        builds a filesystem listing. They clutter the
         physical console and terminal-monitor (SSH) sessions during an
         upgrade. When ticked, the job inserts 'logging discriminator NBAVC
         facility drops SELINUX' and attaches it to the TERMINALS only. The
@@ -1352,7 +1354,7 @@ class IOSXEUpgrade(Job):
             with different content, 'no logging console', filtered/XML
             console modes, or an unrecognizable config shape all skip with a
             warning.
-          * NON-FATAL: cosmetic — every failure warns and the run proceeds.
+          * NON-FATAL: log-only — every failure warns and the run proceeds.
           * Ordering: entry PATCH before attach PATCH (the model's rule);
             a partial failure names the residue it leaves.
         """
@@ -1634,8 +1636,8 @@ class IOSXEUpgrade(Job):
         # Pre-check from ONE full listing — the same read shape every file
         # question in this job now uses (simplification 2026-07-10:
         # reliability and simplicity outrank quiet reads; the keyed/catalog
-        # tiers this replaced existed to dodge a cosmetic, harmless SELinux
-        # logging burst and were the most delicate machinery in the
+        # tiers this replaced existed to dodge a SELinux logging burst
+        # (benign in our testing) and were the most delicate machinery in the
         # project). The skip requires a sighting INSIDE the target
         # filesystem at the exact expected size — _find_target_file scopes
         # the match so a same-named file on crashinfo:/usb: or a stale
@@ -1701,7 +1703,7 @@ class IOSXEUpgrade(Job):
 
         Progress polls read the full q-filesystem listing each interval — the
         one read shape used everywhere (simplification 2026-07-10; each
-        listing logs a cosmetic SELinux burst on unquieted terminals — see
+        listing logs a SELinux AVC burst on unquieted terminals — see
         the README and the 'Quiet SELinux log noise' option). Progress is
         best-effort; there is deliberately NO stall abort — the blocking RPC
         itself is the liveness signal: server/TLS failures return quickly as
