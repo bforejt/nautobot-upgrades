@@ -3,8 +3,8 @@
 a HIGH-LEVEL 'what it does' overview of the upgrade.
 
 Companion to gen_flow.py, which renders the detailed per-device DECISION logic
-(every gate and abort). This one is the plain-language six-step summary for the
-top of the README; keep the two in sync at their respective altitudes.
+(every gate and abort). This one is the plain-language seven-phase summary for
+the top of the README; keep the two in sync at their respective altitudes.
 """
 
 import html
@@ -51,20 +51,23 @@ SPINE = [
      {"cond": "No", "pass": "Yes", "kind": "abort",
       "text": "Auto-rollback to the previous\nimage — NOT committed"}),
     ("commit", "proc",
-     "install commit + sync Nautobot\n(+ optional remove-inactive cleanup)", None),
+     "install commit\n(gate → track via the device's ledger)", None),
+    ("sync", "proc",
+     "Sync Nautobot software version\n(+ optional remove-inactive cleanup)", None),
     ("done", "end", "DONE: Upgraded & committed ✓", None),
 ]
 
-# Phase-number keys off to the LEFT of a block, matching the README "What it
-# does" six-phase list. Install (4) spans two blocks; the commit block does
-# both verify-commit (5) and sync/cleanup (6). Decisions are not numbered phases.
+# Phase-number keys off to the LEFT of a block, one per phase, matching the
+# README "What it does" seven-phase list (add and activate are distinct phases;
+# commit and sync are distinct blocks). Decisions are not numbered phases.
 PHASE_TAGS = {
     "connect": "1",
     "gates": "2",
     "copy": "3",
     "add": "4",
-    "activate": "4",
-    "commit": "5·6",
+    "activate": "5",
+    "commit": "6",
+    "sync": "7",
 }
 
 CY = {nid: TOP + i * PITCH for i, (nid, *_r) in enumerate(SPINE)}
@@ -75,7 +78,7 @@ WIDTH = RIGHT_X + TERM_W + 40
 HEIGHT = CY[ORDER[-1]] + 70
 
 LEGEND = ("Legend\n"
-          "numbers = the six phases (see the README)\n"
+          "numbers = the seven phases (see the README)\n"
           "diamonds = decisions\n"
           "green = successful end state\n"
           "red = this device stops here\n"

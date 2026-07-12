@@ -106,7 +106,7 @@ of PASS/FAIL gates, stopping at the first failure for a device. In one picture:
 
 [![IOS-XE upgrade — high-level overview](docs/overview-flow.svg)](docs/overview-flow.md)
 
-The six phases (the numbered keys on the diagram above map to this list):
+The seven phases (the numbered keys on the diagram above map to this list):
 
 1. **Connect** — resolve the primary IP + credentials (from core Secrets),
    confirm RESTCONF is reachable.
@@ -114,20 +114,23 @@ The six phases (the numbered keys on the diagram above map to this list):
    **≥ 17.9.1**; **install mode**; image resolved from Nautobot with device-type
    compatibility; **enough free space**.
 3. **Copy + verify** — the device pulls the image (classic `copy` RPC, watched
-   for live progress), gated on a **byte-exact size match** and backed by
-   `install add` signature validation. Skipped if the file is already on flash.
-4. **Install** — `install add` → **activate** (explicitly non-ISSU, by the
-   device's full internal version; a silently-dropped activate is detected via
-   the ledger and re-sent) → **reload**. Every engine write is **gated on
+   for live progress), gated on a **byte-exact size match**. Skipped if the file
+   is already on flash.
+4. **`install add`** — extract and stage the image to **every member**, with
+   Cisco's **mandatory image signature validation** (a corrupt or untrusted
+   image is rejected here). Like every engine write, it is **gated on
    engine-idle and tracked to true completion in the device's operation
-   ledger** — never trusting the RPC's 2xx; a ledger-recorded failure aborts
-   quoting the engine's own failing phase. (Where a release doesn't populate
-   those signals, the job degrades to version-state inference and a settle
-   timer, labeled as fallbacks in the logs.)
-5. **Verify, then commit** — reconnect, confirm the target actually booted, and
+   ledger** — never trusting the RPC's 2xx.
+5. **Activate + reload** — **activate** (explicitly non-ISSU, by the device's
+   full internal version; a silently-dropped activate is detected via the ledger
+   and re-sent) → **reload**. A ledger-recorded failure aborts quoting the
+   engine's own failing phase. (Where a release doesn't populate these signals,
+   the job degrades to version-state inference and a settle timer, labeled as
+   fallbacks in the logs.)
+6. **Verify, then commit** — reconnect, confirm the target actually booted, and
    **only then** `install commit`. If it didn't come back or booted wrong, the
    job does **not** commit and the device auto-rolls-back.
-6. **Sync + optional cleanup** — update `Device.software_version` in Nautobot;
+7. **Sync + optional cleanup** — update `Device.software_version` in Nautobot;
    optionally `install remove inactive` to reclaim space (off by default).
 
 Every gate logs to the Job Result with the device attached (a **Debug** toggle

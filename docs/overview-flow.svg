@@ -1,9 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 940 1336" width="940" height="1336" font-family="Helvetica,Arial,sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 940 1444" width="940" height="1444" font-family="Helvetica,Arial,sans-serif">
 <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,3 L0,6 z" fill="#555"/></marker></defs>
-<rect x="0" y="0" width="940" height="1336" fill="#ffffff"/>
+<rect x="0" y="0" width="940" height="1444" fill="#ffffff"/>
 <text x="20" y="30" font-size="18" font-weight="bold" fill="#111">Cisco IOS-XE Upgrade (RESTCONF) — what it does</text>
 <rect x="540" y="52" width="400" height="104" rx="6" ry="6" fill="#fbfbfb" stroke="#bbb" stroke-width="1.5"/>
-<text x="740" y="72" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333"><tspan x="740" dy="0">Legend</tspan><tspan x="740" dy="13">numbers = the six phases (see the README)</tspan><tspan x="740" dy="13">diamonds = decisions</tspan><tspan x="740" dy="13">green = successful end state</tspan><tspan x="740" dy="13">red = this device stops here</tspan><tspan x="740" dy="13">Detailed gate-by-gate flow: docs/upgrade-flow.svg</tspan></text>
+<text x="740" y="72" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333"><tspan x="740" dy="0">Legend</tspan><tspan x="740" dy="13">numbers = the seven phases (see the README)</tspan><tspan x="740" dy="13">diamonds = decisions</tspan><tspan x="740" dy="13">green = successful end state</tspan><tspan x="740" dy="13">red = this device stops here</tspan><tspan x="740" dy="13">Detailed gate-by-gate flow: docs/upgrade-flow.svg</tspan></text>
 <path d="M 340 104 L 340 155" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
 <path d="M 340 217 L 340 263" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
 <path d="M 340 325 L 340 360" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
@@ -18,7 +18,8 @@
 <path d="M 340 973 L 340 1008" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
 <path d="M 340 1092 L 340 1127" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
 <rect x="342" y="1100" width="28" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="356" y="1114" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="356" dy="0">Yes</tspan></text>
-<path d="M 340 1189 L 340 1240" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 340 1189 L 340 1235" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 340 1297 L 340 1348" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
 <path d="M 465 402 L 580 402" fill="none" stroke="#2E7D32" stroke-width="1.5" marker-end="url(#arrow)"/>
 <rect x="509" y="383" width="28" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="522.5" y="396" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#2E7D32"><tspan x="522.5" dy="0">Yes</tspan></text>
 <rect x="580" y="370" width="320" height="64" rx="22" ry="22" fill="#D5E8D4" stroke="#2E7D32" stroke-width="1.5"/>
@@ -56,13 +57,16 @@
 <polygon points="340,1008.0 465.0,1050 340,1092.0 215.0,1050" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
 <text x="340" y="1043" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="340" dy="0">Booted the target</tspan><tspan x="340" dy="14">&amp; came back healthy?</tspan></text>
 <rect x="150" y="1127" width="380" height="62" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
-<text x="340" y="1151" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="340" dy="0">install commit + sync Nautobot</tspan><tspan x="340" dy="14">(+ optional remove-inactive cleanup)</tspan></text>
-<rect x="180" y="1240" width="320" height="52" rx="24" ry="24" fill="#D5E8D4" stroke="#2E7D32" stroke-width="1.5"/>
-<text x="340" y="1266" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#14532d"><tspan x="340" dy="0">DONE: Upgraded &amp; committed ✓</tspan></text>
+<text x="340" y="1151" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="340" dy="0">install commit</tspan><tspan x="340" dy="14">(gate → track via the device&#x27;s ledger)</tspan></text>
+<rect x="150" y="1235" width="380" height="62" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
+<text x="340" y="1259" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="340" dy="0">Sync Nautobot software version</tspan><tspan x="340" dy="14">(+ optional remove-inactive cleanup)</tspan></text>
+<rect x="180" y="1348" width="320" height="52" rx="24" ry="24" fill="#D5E8D4" stroke="#2E7D32" stroke-width="1.5"/>
+<text x="340" y="1374" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#14532d"><tspan x="340" dy="0">DONE: Upgraded &amp; committed ✓</tspan></text>
 <rect x="102" y="170" width="32" height="32" rx="16.0" ry="16.0" fill="#DAE8FC" stroke="#6C8EBF" stroke-width="1.5"/><text x="118.0" y="186" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="17" font-weight="bold" fill="#1b3a6b"><tspan x="118.0" dy="0">1</tspan></text>
 <rect x="102" y="278" width="32" height="32" rx="16.0" ry="16.0" fill="#DAE8FC" stroke="#6C8EBF" stroke-width="1.5"/><text x="118.0" y="294" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="17" font-weight="bold" fill="#1b3a6b"><tspan x="118.0" dy="0">2</tspan></text>
 <rect x="102" y="494" width="32" height="32" rx="16.0" ry="16.0" fill="#DAE8FC" stroke="#6C8EBF" stroke-width="1.5"/><text x="118.0" y="510" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="17" font-weight="bold" fill="#1b3a6b"><tspan x="118.0" dy="0">3</tspan></text>
 <rect x="102" y="710" width="32" height="32" rx="16.0" ry="16.0" fill="#DAE8FC" stroke="#6C8EBF" stroke-width="1.5"/><text x="118.0" y="726" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="17" font-weight="bold" fill="#1b3a6b"><tspan x="118.0" dy="0">4</tspan></text>
-<rect x="102" y="926" width="32" height="32" rx="16.0" ry="16.0" fill="#DAE8FC" stroke="#6C8EBF" stroke-width="1.5"/><text x="118.0" y="942" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="17" font-weight="bold" fill="#1b3a6b"><tspan x="118.0" dy="0">4</tspan></text>
-<rect x="84" y="1142" width="50" height="32" rx="16.0" ry="16.0" fill="#DAE8FC" stroke="#6C8EBF" stroke-width="1.5"/><text x="109.0" y="1158" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="17" font-weight="bold" fill="#1b3a6b"><tspan x="109.0" dy="0">5·6</tspan></text>
+<rect x="102" y="926" width="32" height="32" rx="16.0" ry="16.0" fill="#DAE8FC" stroke="#6C8EBF" stroke-width="1.5"/><text x="118.0" y="942" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="17" font-weight="bold" fill="#1b3a6b"><tspan x="118.0" dy="0">5</tspan></text>
+<rect x="102" y="1142" width="32" height="32" rx="16.0" ry="16.0" fill="#DAE8FC" stroke="#6C8EBF" stroke-width="1.5"/><text x="118.0" y="1158" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="17" font-weight="bold" fill="#1b3a6b"><tspan x="118.0" dy="0">6</tspan></text>
+<rect x="102" y="1250" width="32" height="32" rx="16.0" ry="16.0" fill="#DAE8FC" stroke="#6C8EBF" stroke-width="1.5"/><text x="118.0" y="1266" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="17" font-weight="bold" fill="#1b3a6b"><tspan x="118.0" dy="0">7</tspan></text>
 </svg>
