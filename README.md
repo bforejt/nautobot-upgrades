@@ -102,7 +102,7 @@ of PASS/FAIL gates, stopping at the first failure for a device. In one picture:
 
 [![IOS-XE upgrade — high-level overview](docs/overview-flow.svg)](docs/overview-flow.md)
 
-The six phases:
+The six phases (the numbered keys on the diagram above map to this list):
 
 1. **Connect** — resolve the primary IP + credentials (from core Secrets),
    confirm RESTCONF is reachable.
