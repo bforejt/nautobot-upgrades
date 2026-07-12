@@ -70,7 +70,7 @@ SPINE = [
      {"okright": ("Yes", "DONE: DRY-RUN — pre-flight\npassed, no changes made"),
       "passlabel": "No"}),
     ("copy", "proc",
-     "File-listing pre-check (exact size in the\ntarget partition → skip if staged) → classic\ncopy in worker thread + size-poll progress", {}),
+     "File-listing pre-check (skip if staged) →\nclassic copy in worker thread; progress:\nlearn address at first sighting → keyed polls", {}),
     ("d_size", "dec", "Transfer complete\n& size matches?",
      {"abort": ("error / timeout /\nmismatch", "Copy RPC failed/refused, timed out,\nor on-device size ≠ expected — abort"),
       "warn": ("size unknown", "No expected size → warn; rely on\ninstall add signature validation"),

@@ -28,4 +28,5 @@ env/
 
 # local lab artifacts
 *.rtf
+*.log
 nautobot_joblogentry_data*.csv

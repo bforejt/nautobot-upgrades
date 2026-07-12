@@ -57,6 +57,7 @@ import math
 import re
 import threading
 import time
+import urllib.parse as urllib_parse
 import uuid as uuid_lib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -1701,13 +1702,27 @@ class IOSXEUpgrade(Job):
     def _watch_copy(self, poll_client, copy_thread, result, image, expected, log, target_fs):
         """Report progress while the copy thread runs; verify when it finishes.
 
-        Progress polls read the full q-filesystem listing each interval — the
-        one read shape used everywhere (simplification 2026-07-10; each
-        listing logs a SELinux AVC burst on unquieted terminals — see
-        the README and the 'Quiet SELinux log noise' option). Progress is
-        best-effort; there is deliberately NO stall abort — the blocking RPC
-        itself is the liveness signal: server/TLS failures return quickly as
-        errors, and hangs are bounded by COPY_TIMEOUT. The final byte-exact
+        Progress polls LEARN, then go quiet (2026-07-12). A full q-filesystem
+        listing makes the device walk the filesystem, and on affected releases
+        each walk bursts ~100 cosmetic SELinux AVC log lines — field-measured
+        at ~91% of a whole run's AVC noise (1,470 of 1,618; add/activate/commit
+        emitted zero — the one engine-side denial ever captured came from an
+        install remove). So the watcher full-reads only until it SIGHTS
+        the growing file, records that entry's own published address (keys +
+        partition + full-path — observation, never a guessed mount root), and
+        polls that single keyed entry from then on (field-proven zero-AVC).
+        These keyed reads are PROGRESS-ONLY, which is why none of the deleted
+        keyed-tier fragility returns: nothing correctness-bearing ever
+        consumes them. A missing keyed answer re-learns from the next full
+        listing; a 4xx (release rejects the URL form) or two consecutive
+        misses LATCH a loud full-listing fallback — the pre-change behavior
+        is the floor, entered with a breadcrumb, never silently. Transient
+        transport blips count as misses, not verdicts (the full-listing path
+        tolerates the identical blip). Progress is best-effort; there is
+        deliberately NO stall abort — the blocking RPC itself is the liveness
+        signal: server/TLS failures
+        return quickly as errors, and hangs are bounded by COPY_TIMEOUT. The
+        final byte-exact
         size match against the SAME authoritative listing — scoped to the
         target filesystem, so foreign-partition twins and stale image-files
         cache rows can't answer for the destination — is the
@@ -1718,6 +1733,9 @@ class IOSXEUpgrade(Job):
         deadline = started + C.COPY_TIMEOUT + 2 * C.POLL_INTERVAL
         last_logged = 0
         polls = 0
+        keyed_url = None  # learned from a real sighting; quiet single-entry reads
+        keyed_ok = True  # latched False when keyed reads are rejected or keep missing
+        keyed_misses = 0  # CONSECUTIVE keyed reads that answered nothing
         while copy_thread.is_alive():
             self._check_stop()
             if time.monotonic() > deadline:
@@ -1727,11 +1745,63 @@ class IOSXEUpgrade(Job):
                 )
             time.sleep(C.POLL_INTERVAL)
             polls += 1
-            _, size = _find_target_file(
-                self._read_q_filesystem(poll_client, retries=1) or {},
-                image.image_file_name,
-                target_fs,
-            )
+            size = None
+            if keyed_url is not None:
+                try:
+                    size = _keyed_size_read(poll_client, keyed_url, image.image_file_name)
+                except RestconfError as exc:
+                    status = getattr(exc, "status_code", None)
+                    if status is not None and 400 <= status < 500:
+                        # structural: this release rejects the keyed URL form
+                        keyed_ok = False
+                        self.logger.warning(
+                            "Keyed progress read rejected by this release (%s) — "
+                            "progress polls fall back to full filesystem listings "
+                            "(expect the SELinux log bursts on affected releases).",
+                            exc,
+                            extra=log,
+                        )
+                    else:
+                        # transient transport/5xx blip — a miss, not a verdict
+                        # (the full-listing path tolerates the identical blip)
+                        keyed_misses += 1
+                    keyed_url = None
+                else:
+                    if size is None:
+                        keyed_misses += 1
+                        keyed_url = None  # stale address — re-learn below
+                    else:
+                        keyed_misses = 0
+            if size is None:
+                ctx = _find_target_file_entry(
+                    self._read_q_filesystem(poll_client, retries=1) or {},
+                    image.image_file_name,
+                    target_fs,
+                )
+                if ctx is not None:
+                    keys, pname, path, size = ctx
+                    if keyed_ok and keyed_misses >= 2:
+                        # flap guard: re-learning the address is not helping —
+                        # stop pretending and stay on the full-listing floor
+                        keyed_ok = False
+                        self.logger.warning(
+                            "Keyed progress reads are not resolving on this "
+                            "release (%s consecutive misses) — progress polls "
+                            "stay on full filesystem listings for the rest of "
+                            "this copy (expect the SELinux log bursts on "
+                            "affected releases).",
+                            keyed_misses,
+                            extra=log,
+                        )
+                    if keyed_ok and keys is not None and path:
+                        keyed_url = _keyed_content_url(keys, pname, path)
+                        self.logger.info(
+                            "Learned the on-device file address (%s) from this "
+                            "sighting — remaining progress reads poll that single "
+                            "keyed entry (no filesystem walk).",
+                            path,
+                            extra=log,
+                        )
             elapsed = int(time.monotonic() - started)
             if size is not None:
                 step = max((expected or 0) // 20, 25_000_000)  # ~5% or 25 MB
@@ -3158,8 +3228,26 @@ def _partition_matches(raw_name, fs):
     return name == fs or name.startswith(fs + "-") or name.startswith(fs + ":")
 
 
-def _find_target_file(data, image_file_name, target_fs):
-    """(found, size-in-bytes-or-None) for the named file INSIDE target_fs.
+def _entry_size(entry):
+    """Size in BYTES from a partition-content entry, or None if unparsable.
+
+    Sizes (file-size/size) are BYTES on supported releases (>= 17.9 per the
+    model's 2022-07-01 revision; only partition total-size/used-size are
+    kilobytes). 0 is a REAL answer (an empty/dead file), distinct from a
+    missing or unparsable size leaf (None).
+    """
+    for leaf in ("file-size", "size"):
+        value = entry.get(leaf)
+        if value is not None:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _find_target_file_entry(data, image_file_name, target_fs):
+    """(entry_keys, partition_name, full_path, size) for the file INSIDE target_fs — or None.
 
     Scans ONLY the partition-content of partitions matching the target
     filesystem. Everything else in the full q-filesystem document must never
@@ -3172,27 +3260,21 @@ def _find_target_file(data, image_file_name, target_fs):
     another member's flash can still answer (documented residual limit — a
     wrong pass fails loudly at 'install add' signature validation).
 
-    Sizes (file-size/size) are BYTES on supported releases (>= 17.9 per the
-    model's 2022-07-01 revision; only partition total-size/used-size are
-    kilobytes). 0 is a REAL answer (an empty/dead file), distinct from a
-    missing or unparsable size leaf (None). Basenames match by EQUALITY so a
-    longer filename that merely contains the target name can't mask a
-    truncated copy.
+    The context parts are what a sighting OBSERVED, for callers that want a
+    walk-free keyed re-read of this exact entry: entry_keys is the enclosing
+    (fru, slot, bay, chassis) tuple or None when the document omits the key
+    leaves (RFC 8040 does not promise ancestor keys on filtered reads);
+    partition_name and full_path are exactly as published (partition list-key
+    names carry their trailing colon on real hardware). full_path is None for
+    name-only entries. Basenames match by EQUALITY so a longer filename that
+    merely contains the target name can't mask a truncated copy.
     """
     wanted = target_fs.rstrip(":").lower()
 
-    def _entry_size(entry):
-        for leaf in ("file-size", "size"):
-            value = entry.get(leaf)
-            if value is not None:
-                try:
-                    return int(value)
-                except (TypeError, ValueError):
-                    return None
-        return None
-
-    def _walk(node):
+    def _walk(node, keys):
         if isinstance(node, dict):
+            if all(k in node for k in ("fru", "slot", "bay", "chassis")):
+                keys = tuple(str(node[k]) for k in ("fru", "slot", "bay", "chassis"))
             content = node.get("partition-content")
             if isinstance(content, list) and _partition_matches(node.get("name"), wanted):
                 for entry in content:
@@ -3201,16 +3283,93 @@ def _find_target_file(data, image_file_name, target_fs):
                     path = entry.get("full-path") or entry.get("name") or entry.get("filename")
                     base = str(path).split(":")[-1].rsplit("/", 1)[-1] if path else ""
                     if base == image_file_name:
-                        return True, _entry_size(entry)
+                        return (keys, node.get("name"), entry.get("full-path"), _entry_size(entry))
             for value in node.values():
-                found = _walk(value)
+                found = _walk(value, keys)
                 if found is not None:
                     return found
         elif isinstance(node, list):
             for item in node:
-                found = _walk(item)
+                found = _walk(item, keys)
                 if found is not None:
                     return found
         return None
 
-    return _walk(data) or (False, None)
+    return _walk(data, None)
+
+
+def _find_target_file(data, image_file_name, target_fs):
+    """(found, size-in-bytes-or-None) for the named file INSIDE target_fs.
+
+    Thin wrapper over _find_target_file_entry (see its docstring for the
+    scoping rationale) for the callers that only decide on presence + size:
+    the copy pre-check and the byte-exact transfer verify.
+    """
+    ctx = _find_target_file_entry(data, image_file_name, target_fs)
+    return (False, None) if ctx is None else (True, ctx[3])
+
+
+def _keyed_content_url(keys, pname, path):
+    """RESTCONF URL for ONE observed partition-content entry (walk-free read).
+
+    A keyed single-entry GET makes the device read just that entry — no
+    filesystem walk, so none of the smand SELinux AVC log bursts a full
+    listing triggers on affected releases (field-proven zero-AVC). Built ONLY
+    from values a real listing published (observed state, never a guessed
+    mount root). Every key value is percent-encoded: full paths contain '/',
+    partition names carry a trailing ':' , and entry keys can be negative
+    (chassis=-1 on a real 9300) — all used exactly as observed.
+    """
+    q = urllib_parse.quote
+    fru, slot, bay, chassis = (q(str(k), safe="") for k in keys)
+    return (
+        f"{C.DATA_Q_FILESYSTEM}={fru},{slot},{bay},{chassis}"
+        f"/partitions={q(str(pname), safe='')}"
+        f"/partition-content={q(str(path), safe='')}"
+    )
+
+
+def _keyed_size_read(client, keyed_url, image_file_name):
+    """File size via a keyed partition-content read — or None on any miss.
+
+    Parse order: STRICT first (a response shaped like the keyed list
+    instance, {"...:partition-content": {...}} or a one-element list), then a
+    LENIENT scan for any entry whose basename equals the image file name —
+    the shape the field-proven pre-simplification parser accepted. The
+    lenient scan is safe here because the keyed URL already constrains the
+    response to the one addressed entry and these reads are PROGRESS-ONLY.
+    404/empty is None (the caller re-learns from a full listing — a keyed
+    404 is NEVER treated as file absence). RestconfError propagates so the
+    caller can distinguish a rejected URL form from a transient blip.
+    """
+    data = client.get(keyed_url, ok_404=True)
+    if not isinstance(data, dict):
+        return None
+    for key, value in data.items():
+        if str(key).split(":")[-1] == "partition-content":
+            entry = value[0] if isinstance(value, list) and value else value
+            if isinstance(entry, dict):
+                size = _entry_size(entry)
+                if size is not None:
+                    return size
+
+    def _scan(node):
+        if isinstance(node, dict):
+            path = node.get("full-path") or node.get("name") or node.get("filename")
+            base = str(path).split(":")[-1].rsplit("/", 1)[-1] if path else ""
+            if base == image_file_name:
+                size = _entry_size(node)
+                if size is not None:
+                    return size
+            for value in node.values():
+                found = _scan(value)
+                if found is not None:
+                    return found
+        elif isinstance(node, list):
+            for item in node:
+                found = _scan(item)
+                if found is not None:
+                    return found
+        return None
+
+    return _scan(data)

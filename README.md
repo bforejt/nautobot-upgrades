@@ -568,7 +568,8 @@ mode.
 | Stack member roster | `GET .../Cisco-IOS-XE-device-hardware-oper:device-hardware-data/device-hardware/device-inventory` |
 | Install state / mode / ledger | `GET .../Cisco-IOS-XE-install-oper:install-oper-data` |
 | Partition stats (discovery + space gate) | `GET .../q-filesystem?fields=fru;slot;bay;chassis;partitions(name;total-size;used-size)` |
-| Full file listing (copy pre-check, per-poll progress, transfer verify) | `GET .../Cisco-IOS-XE-platform-software-oper:cisco-platform-software/q-filesystem` |
+| Full file listing (copy pre-check, first-sighting learn, transfer verify) | `GET .../Cisco-IOS-XE-platform-software-oper:cisco-platform-software/q-filesystem` |
+| Per-poll copy progress after the learn (walk-free, no SELinux bursts) | `GET .../q-filesystem=<fru>,<slot>,<bay>,<chassis>/partitions=<name>/partition-content=<full-path>` (address exactly as a real listing published it) |
 | Copy image | `POST .../operations/Cisco-IOS-XE-rpc:copy` (worker thread) |
 | Add / activate / commit / remove | `POST .../operations/Cisco-IOS-XE-install-rpc:{install,activate,install-commit,remove}` |
 | Save running-config (opt-in) | `POST .../operations/cisco-ia:save-config` |
@@ -643,9 +644,10 @@ builds a **filesystem listing**. Each listing sprays a burst of
 correlated capture (this job's log lined up against the device console), the
 **overwhelming majority came from our own q-filesystem reads** — ~318 of 319
 denials — while a single denial came from an `install remove` operation itself;
-an operator's `dir`/`show` would trip it too. How much `install add` and
-`activate` contribute we have **not yet measured** (that run stopped before
-those phases).
+an operator's `dir`/`show` would trip it too. A later **complete** run
+(copy → add → activate → commit) settled the rest: **1,618 denials, every one
+during the job's own read phases — `install add`, `activate`, and `commit`
+contributed zero** (correlation below).
 
 **What Cisco documents — and what it does not.** `%SELINUX-1-VIOLATION` is a
 documented IOS-XE SELinux message, not an error unique to this job. Cisco's
@@ -676,21 +678,28 @@ So treat it as **benign in our testing, not a Cisco-confirmed cosmetic defect**.
 If the burst ever coincides with a real failure on your gear, follow Cisco's own
 guidance and open a TAC case rather than assuming it is noise.
 
-**Why the job triggers them.** The job asks the device about files the
-simple way: the standard full q-filesystem listing, used for the copy
-pre-check, per-poll transfer progress, and the byte-exact verify. On an
-affected release each of those listings logs one burst on unquieted
-terminals. Earlier versions of this job carried a tiered read design
-(keyed per-file reads, an image-catalog side channel, ledger mount-root
-inference) purely to dodge this log noise; it was removed
-deliberately (2026-07-10) — reliability and simplicity outrank quiet
-reads for log noise that never affected an upgrade in our testing (above) the Quiet option handles
-directly. Two aspects of the read design
-survive on their own merits: the partition-stats reads (discovery and
-the free-space gate) stay `fields`-scoped — a payload/parse-size choice;
-on affected releases the device still walks server-side, so those two
-reads burst like any other listing — and every fallback (a release
-rejecting `fields`) still logs a breadcrumb attributed to its device.
+**Why the job triggers them — and how it minimizes them (2026-07-12).**
+Correlating a full run's job log against the device console showed the copy
+watcher's per-poll full listings were ~91% of the noise (1,470 of 1,618
+lines; the install engine's add/activate/commit emitted zero). So the copy
+watcher now **learns, then goes quiet**: it full-reads only until it sights
+the growing file, records that entry's own published address, and polls that
+single keyed entry from then on — a walk-free read that is field-proven to
+emit **no** AVC lines. The keyed address is pure observation (never a
+guessed mount root — the guessing tiers were deleted 2026-07-10 for
+reliability, and they stay deleted), and it is **progress-only**: a missing keyed
+answer re-learns from the next full listing, and a rejected URL form or two
+consecutive misses **latch a loud full-listing fallback** — the pre-change
+behavior is the floor, never entered silently. The copy pre-check and the
+byte-exact verify always use the authoritative full listing. Expected
+bursts per fresh copy on an affected release: a **handful** — the gates'
+partition-stats reads (`fields`-scoped for payload size, but the device
+still walks server-side), the pre-check listing, the watcher's full
+read(s) until the first sighting, and the final verify listing — instead
+of **one every 30 seconds for the whole transfer** (~30 for a 15-minute
+copy; the device's audit rate-limiter sometimes truncates the tail of
+that storm, but a fresh run is loud). Every fallback still logs a
+breadcrumb attributed to its device.
 
 **Job-managed quieting (opt-in).** The messages did not affect any upgrade in our testing (above) — a result
 of how the job (and any `show` command) watches files on the filesystem —
