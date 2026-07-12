@@ -553,7 +553,7 @@ mode.
 | Clean device first | no | ⚠️ **Default off.** Before upgrading, remove ALL software the device is not running — including **any version another engineer staged** (overrides the staged-conflict stop). See [Cleaning a device first](#cleaning-a-device-first). |
 | Run scope | no | Order of operations, safest first: **Step 1 - Copy image** (**default** — a forgotten dropdown can never reload a device), **Steps 1 & 2 - Copy image and prep** (`install add`, no reload), **Full - Copy, Activate, Reload** (the only choice that reloads; a real upgrade requires selecting it deliberately). See [Pre-staging](#pre-staging-stage-now-activate-in-the-window). |
 | Save running-config before reload | no | **Default off.** RPC reloads never prompt to save, and the job cannot detect whether a save is needed (SNMP-only source — dependency declined). This box makes the job save (`cisco-ia:save-config`) before activating, aborting if the save is refused or fails. See [Saving running-config](#saving-running-config-before-the-reload-full-runs). |
-| Quiet SELinux log noise on terminals | no | **Default off.** The harmless SELinux AVC-denial messages come from how the job watches files during an upgrade; enable this if you watch the **physical console or terminal-monitor (SSH)** and want them quieted there. `show logging` and syslog servers still record everything. Applied to the RUNNING config at the start of the run (every release); unsaved — erased by the reload — unless combined with *Save running-config before reload* on a **Full** run. See [SELinux AVC log events](#selinux-avc-log-events-cause-and-workaround). |
+| Quiet SELinux log noise on terminals | no | **Default off.** The SELinux AVC-denial messages come from how the job watches files during an upgrade (benign in our testing — not a Cisco-confirmed cosmetic defect; see below); enable this if you watch the **physical console or terminal-monitor (SSH)** and want them quieted there. `show logging` and syslog servers still record everything. Applied to the RUNNING config at the start of the run (every release); unsaved — erased by the reload — unless combined with *Save running-config before reload* on a **Full** run. See [SELinux AVC log events](#selinux-avc-log-events-cause-and-workaround). |
 | Secrets group override | no | Force one Secrets Group for the whole run; by default each device uses its own assigned group. |
 | Remove inactive | no | After commit, reclaim space (default **off** — keeps the rollback image for a soak period). |
 | Parallelism | no | Devices upgraded concurrently (default **4**, max 16; 1 = serial). **Hardware-validated at 2 so far**; higher fan-out is unproven. Size to the firmware server's capacity for simultaneous image pulls. |
@@ -628,22 +628,53 @@ Everything actually depended on (`requests`, Nautobot core) is permissive
 - Stack/SVL handling checks that **all members** report install mode, have the
   free space, and rejoin after reload; per-member deep health checks are
   minimal.
-- Some IOS-XE releases show harmless SELinux AVC bursts around filesystem
+- Some IOS-XE releases show SELinux AVC bursts around filesystem
   listings — see [SELinux AVC log events](#selinux-avc-log-events-cause-and-workaround)
   for the cause, when the job triggers them, and the optional quieting.
 
 ## SELinux AVC log events (cause and workaround)
 
-**What they are.** On affected IOS-XE releases, the platform's SELinux policy denies `smand`
-(the shell/storage manager) read access to a handful of on-flash paths
-(`biosupgrade`, `yang-infra`, and similar) that it touches whenever it builds
-a **filesystem listing**. Each listing therefore sprays a burst of
+**What they are.** On affected IOS-XE releases, the platform's SELinux policy
+denies `smand` (the shell/storage manager) read access to a handful of on-flash
+paths (`biosupgrade`, `yang-infra`, and similar) that it touches whenever it
+builds a **filesystem listing**. Each listing sprays a burst of
 `%SELINUX-1-VIOLATION` AVC-denial lines (~100 observed per listing on a real
-9300). This is a **Cisco policy defect and cosmetic**: the denials do not
-fail the operation — the listing still returns, transfers and installs are
-unaffected. Anything that requests a listing triggers it: this job's
-file reads, human `show` commands (`dir`, `show platform software ...`),
-and the install engine's own add/activate/clean activity.
+9300 in our lab). Anything that walks the filesystem can trip it. In one
+correlated capture (this job's log lined up against the device console), the
+**overwhelming majority came from our own q-filesystem reads** — ~318 of 319
+denials — while a single denial came from an `install remove` operation itself;
+an operator's `dir`/`show` would trip it too. How much `install add` and
+`activate` contribute we have **not yet measured** (that run stopped before
+those phases).
+
+**What Cisco documents — and what it does not.** `%SELINUX-1-VIOLATION` is a
+documented IOS-XE SELinux message, not an error unique to this job. Cisco's
+*Support for Security-Enhanced Linux* chapter (e.g. the
+[Catalyst 9800 config guide, IOS-XE 17.15.x](https://www.cisco.com/c/en/us/td/docs/wireless/controller/9800/17-15/config-guide/b_wl_17_15_cg/m_support_for_security_enhanced_linux.html)
+— SELinux is a common IOS-XE feature across switches and controllers) documents
+the message, the Enforcing (default) / Permissive modes, and the
+`show platform software selinux` and denial-count commands. Two facts from that
+page are worth being honest about: Cisco lists `%SELINUX-1-VIOLATION` as an
+**alert-level** event where, in Enforcing mode, **the access is denied and the
+operation fails**, and its **recommended action is to contact Cisco TAC** — not
+"ignore it." So Cisco does **not** document these as universally cosmetic, and
+the Bug Search Tool bears that out: some `%SELINUX-1-VIOLATION` bursts are
+genuinely harmful (process crashes, install failures — e.g. CSCwk19620,
+CSCwt91818), while others were judged benign for a specific case — e.g.
+[CSCwr09316](https://bst.cloudapps.cisco.com/bugsearch/bug/CSCwr09316) (a
+config-group AVC burst on routers), whose Cisco workaround says *"these internal
+messages can safely be ignored as they have no impact."*
+
+**Is *our* burst a harmless Cisco bug? Honestly — we can't cite Cisco for
+that.** A direct Bug Search Tool hunt (logged in) for our exact denial —
+`smand`, `biosupgrade`, `yang-infra`, filesystem-listing on the 9300 — returned
+**no matching Cisco defect**. What we can stand behind is our own field finding:
+across every lab upgrade this burst appeared and **no operation failed** — the
+listing returned and copy / `install add` / activate / commit all completed,
+consistent with a read-only denial on paths the listing does not actually need.
+So treat it as **benign in our testing, not a Cisco-confirmed cosmetic defect**.
+If the burst ever coincides with a real failure on your gear, follow Cisco's own
+guidance and open a TAC case rather than assuming it is noise.
 
 **Why the job triggers them.** The job asks the device about files the
 simple way: the standard full q-filesystem listing, used for the copy
@@ -651,9 +682,9 @@ pre-check, per-poll transfer progress, and the byte-exact verify. On an
 affected release each of those listings logs one burst on unquieted
 terminals. Earlier versions of this job carried a tiered read design
 (keyed per-file reads, an image-catalog side channel, ledger mount-root
-inference) purely to dodge this cosmetic defect; it was removed
+inference) purely to dodge this log noise; it was removed
 deliberately (2026-07-10) — reliability and simplicity outrank quiet
-reads for cosmetic, harmless messages the Quiet option handles
+reads for log noise that never affected an upgrade in our testing (above) the Quiet option handles
 directly. Two aspects of the read design
 survive on their own merits: the partition-stats reads (discovery and
 the free-space gate) stay `fields`-scoped — a payload/parse-size choice;
@@ -661,7 +692,7 @@ on affected releases the device still walks server-side, so those two
 reads burst like any other listing — and every fallback (a release
 rejecting `fields`) still logs a breadcrumb attributed to its device.
 
-**Job-managed quieting (opt-in).** The messages are harmless — a result
+**Job-managed quieting (opt-in).** The messages did not affect any upgrade in our testing (above) — a result
 of how the job (and any `show` command) watches files on the filesystem —
 so most operators can simply ignore them. But if your upgrade process
 involves watching the physical console or terminal-monitor over SSH, you
@@ -689,9 +720,8 @@ logging console discriminator NBAVC
 logging monitor discriminator NBAVC
 ```
 
-**Manual workaround** (same effect, applied by hand — suppresses the
-cosmetic denials from the console/buffer without touching the underlying
-policy):
+**Manual workaround** (same effect, applied by hand — filters these SELinux
+denials from the console/buffer without touching the underlying policy):
 
 ```
 logging discriminator NOSEL msg-body drops SELINUX

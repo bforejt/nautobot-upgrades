@@ -139,7 +139,7 @@ class RestconfClient:
     def patch(self, path, payload, *, timeout=C.GET_TIMEOUT):
         """RESTCONF plain PATCH (merge) against /restconf/data.
 
-        Used only for the opt-in cosmetic logging-discriminator write — the
+        Used only for the opt-in log-only logging-discriminator write — the
         job's sole running-config touch besides save-config. Merge semantics:
         listed nodes are created/updated, everything else is untouched.
         Raises RestconfError on any non-2xx or transport failure; callers
