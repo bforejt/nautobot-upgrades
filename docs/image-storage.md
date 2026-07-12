@@ -30,8 +30,11 @@ the storage model:
 - **Nautobot stores only metadata** (`SoftwareImageFile`: file name, checksum +
   algorithm, size, `download_url`, default flag, device-type map). It does not
   store the binary and is not a device-facing file server.
-- **The bytes live on the companion `nautobot-composer` stack's `firmware`
-  profile** (opt-in). Two services share one volume:
+- **The bytes live on any web server the devices can reach.** Any plain HTTP
+  file server works — the device transfer is just a `GET`. The reference
+  implementation below is the companion `nautobot-composer` stack's opt-in
+  `firmware` profile (where all testing ran); it is one convenient option, not a
+  requirement. Two services share one volume:
   - **Filebrowser** (`:8088`, authenticated) — engineers upload/manage images.
   - **nginx `firmware-download`** (`:9080` HTTP / `:9443` HTTPS, read-only) —
     serves the same files to devices, **unauthenticated but network/ACL
@@ -107,6 +110,13 @@ which is the `env_file` for the worker. Defaults live in
    device types. The upgrade job then consumes `download_url`.
 
 ## TLS
+
+> **Status: HTTPS device pulls are not yet tested or validated.** All testing to
+> date uses plain HTTP. For this traffic — public, Cisco-signed images whose
+> integrity is already verified independently (byte-exact size + `install add`
+> signature validation) — encryption buys little, so on a locked-down management
+> segment HTTPS may simply not be necessary. The notes below are the intended
+> path if you do want it.
 
 The firmware server's HTTPS cert is **self-signed by default**, and IOS-XE's
 HTTPS transfer validates the server cert against the device's trustpoints —

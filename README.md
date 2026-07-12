@@ -197,29 +197,47 @@ not enabled.
 
 The `.bin` images are **not** stored in Nautobot — Nautobot holds only the
 metadata (`SoftwareImageFile`: name, checksum, size, `download_url`, device-type
-map). The binaries are hosted by the companion **`nautobot-composer` stack's
-`firmware` profile**: a **Filebrowser** UI (`:8088`, authenticated) for engineers
-to upload, and a read-only **nginx `firmware-download`** service (`:9443` HTTPS /
-`:9080` HTTP, network/ACL-restricted) that the **devices pull from** via the
-RESTCONF `copy` RPC.
+map). **You serve the binaries from any web server the devices can reach.** The
+transfer is a device-initiated `copy` RPC that just needs a URL it can `GET`, so
+**any plain HTTP file server works** — there is no dependency on a particular
+stack.
+
+**HTTP is the validated path.** All testing to date uses **plain HTTP** (a
+simple static file server handing out the `.bin`). **HTTPS should also work** if
+the firmware server presents a certificate the devices trust — IOS-XE's TLS
+client rejects self-signed certs — but it is **not yet tested or validated**, so
+treat the **Use HTTPS URL** option as experimental. Encryption is also of
+questionable value for this traffic: the images are public, Cisco-signed
+binaries whose integrity is already checked independently (byte-exact size +
+`install add` signature validation), so confidentiality buys little and
+tampering is caught regardless. On a locked-down management segment, HTTPS here
+may simply not be necessary.
+
+**A convenient reference host: [nautobot-composer](https://github.com/bforejt/nautobot-composer).**
+Its opt-in `firmware` profile is where all the testing ran, and it worked out
+nicely: a **Filebrowser** UI (`:8088`, authenticated) for engineers to upload,
+plus a read-only **nginx** service (`:9080` HTTP / `:9443` HTTPS,
+network/ACL-restricted) that devices pull from. The Filebrowser-for-upload +
+static-server-for-download split is a good pattern — but it is only one option;
+any equivalent web server will do.
 
 The **Register IOS-XE Image** job builds the device `download_url` from a
 configurable base + the uploaded filename, validates the image is reachable
-(preferring the worker's internal route to `firmware-download`, falling back to
-the device URL), optionally downloads + hash-verifies it, and records the
-`SoftwareImageFile` mapped to the compatible device types — creating the
-`SoftwareVersion` too if you don't pick an existing one. It does not upload
-files — publish via Filebrowser first.
+(preferring the worker's internal route, falling back to the device URL),
+optionally downloads + hash-verifies it, and records the `SoftwareImageFile`
+mapped to the compatible device types — creating the `SoftwareVersion` too if
+you don't pick an existing one. It does **not** upload files — publish them to
+your web server first.
 
 Configure on the Nautobot worker: `FIRMWARE_BASE_URL` (device-facing base,
-plain HTTP by default — e.g. `http://<host>:9080/images/` — because device TLS
-clients reject the firmware server's self-signed cert), `FIRMWARE_BASE_URL_HTTPS`
-(the HTTPS variant, stored instead when the job's **Use HTTPS URL** option is
-ticked), and `FIRMWARE_INTERNAL_URL` (worker validation, default
-`http://firmware-download/images/`). The base is overridable per run.
+plain HTTP — e.g. `http://<host>/images/`), `FIRMWARE_BASE_URL_HTTPS` (the HTTPS
+variant, stored instead when the **Use HTTPS URL** option is ticked — untested,
+see above), and `FIRMWARE_INTERNAL_URL` (the worker's own validation route,
+e.g. `http://firmware-download/images/`). The base is overridable per run.
 
-See **[docs/image-storage.md](docs/image-storage.md)** for the full design: URL
-formats, the acquire → upload → register workflow, TLS notes, and retention.
+See **[docs/image-storage.md](docs/image-storage.md)** for the reference
+nautobot-composer design in detail: URL formats, the acquire → upload → register
+workflow, TLS notes, and retention.
 
 ## Installing into Nautobot (getting started)
 
