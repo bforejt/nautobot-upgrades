@@ -273,6 +273,15 @@ class IOSXEUpgrade(Job):
             "running-config before the reload' in the project README."
         ),
     )
+    save_config_after = BooleanVar(
+        label="Save running-config after commit",
+        default=False,
+        description=(
+            "Write running-config to startup-config after the upgrade is "
+            "committed. Only effective for Full runs. See 'Saving "
+            "running-config after the commit' in the project README."
+        ),
+    )
     suppress_avc_noise = BooleanVar(
         label="Quiet SELinux log noise on terminals",
         default=False,
@@ -354,6 +363,7 @@ class IOSXEUpgrade(Job):
             "run_scope",
             "clean_before",
             "save_config",
+            "save_config_after",
             "suppress_avc_noise",
             "secrets_group_override",
             "remove_inactive",
@@ -379,6 +389,7 @@ class IOSXEUpgrade(Job):
         run_scope,
         clean_before,
         save_config,
+        save_config_after,
         suppress_avc_noise,
         secrets_group_override,
         remove_inactive,
@@ -468,6 +479,7 @@ class IOSXEUpgrade(Job):
                     run_scope,
                     clean_before,
                     save_config,
+                    save_config_after,
                     suppress_avc_noise,
                 )
                 # Total wall-clock per device — the number change windows are
@@ -594,6 +606,7 @@ class IOSXEUpgrade(Job):
         run_scope="full",
         clean_before=False,
         save_config=False,
+        save_config_after=False,
         suppress_avc_noise=False,
     ):
         log = {"object": device}
@@ -739,6 +752,11 @@ class IOSXEUpgrade(Job):
                     "running-config changes would be lost (tick 'Save "
                     "running-config before reload' or save manually)."
                 )
+                if save_config_after:
+                    cfg_note += (
+                        f" Would save running-config{' again' if save_config else ''} "
+                        "AFTER the commit (post-commit save)."
+                    )
             return f"DRY-RUN ok:{clean_note}{cfg_note} {planned}. All pre-flight gates passed."
 
         # -- 3. Transfer + integrity (classic copy in a worker thread, watched
@@ -835,6 +853,26 @@ class IOSXEUpgrade(Job):
                 extra=log,
             )
             sync_note = " (Nautobot software_version update FAILED — set it manually)"
+
+        # -- 5b. Optional post-commit save (opt-in; the soak-window trade-off
+        # is documented in the README: saving normalizes startup to the new
+        # OS's rendering, but an old-syntax startup is the safer rollback
+        # path during soak — hence default OFF) -------------------------------
+        if save_config_after:
+            if committed:
+                try:
+                    self._save_config(client, log, context="after commit")
+                except UpgradeAbort as exc:
+                    raise UpgradeAbort(
+                        f"The upgrade to {target_str} IS committed and the Nautobot "
+                        f"sync was attempted{sync_note}, but the post-commit save "
+                        f"failed: {exc}"
+                    ) from exc
+            else:
+                self.logger.warning(
+                    "Skipping the post-commit save: commit not yet confirmed.",
+                    extra=log,
+                )
 
         # -- 6. Optional cleanup ---------------------------------------------
         if remove_inactive:
@@ -1594,7 +1632,7 @@ class IOSXEUpgrade(Job):
             extra=log,
         )
 
-    def _save_config(self, client, log):
+    def _save_config(self, client, log, context="before reload"):
         """Write running-config to startup-config ('write memory' over RESTCONF).
 
         Operator asked for the save (checkbox), so a refused or failed save
@@ -1614,15 +1652,14 @@ class IOSXEUpgrade(Job):
             response = client.post_rpc(C.OP_SAVE_CONFIG, {})
         except RestconfError as exc:
             raise UpgradeAbort(
-                f"'Save running-config before reload' was requested but the "
-                f"save-config RPC failed: {exc}. Save manually ('write memory') "
-                "and re-run, or untick the option."
+                f"'Save running-config {context}' was requested but the "
+                f"save-config RPC failed: {exc}. {_save_remedy(context)}"
             ) from exc
         error_text = _rpc_error_text(response)
         if error_text:
             raise UpgradeAbort(
-                f"'Save running-config before reload' was requested but the "
-                f"device rejected the save: {error_text}."
+                f"'Save running-config {context}' was requested but the "
+                f"device rejected the save: {error_text}. {_save_remedy(context)}"
             )
         result = ""
         if isinstance(response, dict):
@@ -1632,8 +1669,8 @@ class IOSXEUpgrade(Job):
                     break
         if "fail" in result.lower() or "error" in result.lower():
             raise UpgradeAbort(
-                f"'Save running-config before reload' was requested but the "
-                f"device reported: {result}."
+                f"'Save running-config {context}' was requested but the "
+                f"device reported: {result}. {_save_remedy(context)}"
             )
         self.logger.info(
             "Running-config saved to startup-config (device result: %s).",
@@ -3266,6 +3303,17 @@ def _find_timer_entries(data):
 
 _BOOT_TRANSPORT_SCHEMES = frozenset({"tftp", "ftp", "http", "https", "scp", "rcp", "sftp"})
 _BOOT_FS_TOKEN = re.compile(r"[a-z][a-z0-9_-]{1,30}$")
+
+
+def _save_remedy(context):
+    """Operator remedy for a failed config save, accurate to WHEN it failed."""
+    if context == "after commit":
+        # an already-on-target re-run never retries this save — say so
+        return (
+            "Save manually ('write memory' / cisco-ia:save-config); an "
+            "already-on-target re-run does NOT retry the post-commit save."
+        )
+    return "Save manually ('write memory') and re-run, or untick the option."
 
 
 def _boot_fs_hint(data):

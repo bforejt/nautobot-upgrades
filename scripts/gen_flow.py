@@ -115,6 +115,8 @@ SPINE = [
       "warn": ("unconfirmed", "Not confirmed in time → warn;\nverify manually (remove-inactive\nis skipped)"),
       "passlabel": "Yes"}),
     ("sync", "proc", "Sync Nautobot software_version\n(warn on fail; already committed)", {}),
+    ("saveafter", "proc",
+     "Opt-in: save running-config after commit\n(soak trade-off — see README; failure FAILS\nthe device, the upgrade stays committed)", {}),
     ("d_remove", "dec", "remove_inactive\nenabled?",
      {"passlabel": "Yes", "bypass": ("No", "skip")}),
     ("remove", "proc", "install remove inactive (idle-gated,\nledger-tracked; warn on fail)", {}),
