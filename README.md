@@ -10,7 +10,7 @@ but not yet production-vetted.** It is a working prototype under active
 development: expect change between releases, read the Job Result logs, and
 **always run Dry-run first**.
 
-**Validated on real Catalyst 9300 hardware** (from Nautobot 3.1):
+**Validated on real hardware** (Catalyst 9300 + a running Catalyst 8000V, from Nautobot 3.1):
 
 - **Full upgrade _and_ downgrade** on **single switches**, repeatedly, across
   **17.12 → 17.15 ↔ 17.18 ↔ 26.1**.
@@ -26,6 +26,9 @@ development: expect change between releases, read the Job Result logs, and
 - **Ledger-tracked** add/activate/commit, engine-idle gating, byte-exact copy
   verification, auto-rollback-timer arming, remove-inactive, and interrupted-run
   (commit-to-be-safe) recovery.
+- **Catalyst 8000V** (virtual router): full upgrade **17.12 → 17.15.5**
+  end-to-end — `bootflash:` discovery, copy/add/activate/reload/commit all
+  live on a running Cat8kv.
 - Installs and runs as a Git Repository job on **Nautobot 2.4 and 3.1**; a full
   26.1.1 → 17.18.3 device install ran from a stock 2.4.36.
 
@@ -37,8 +40,9 @@ development: expect change between releases, read the Job Result logs, and
   full stage-ahead → window-run timing has not been measured.
 - **Stacks larger than 2 members** — the 2-member stack is validated across all
   tested trains; larger stacks are not yet tested.
-- **9300L/LM/X**, **C8000V**, and **9200 / 9400–9600** — identical image, flow,
-  and models on paper, hardware runs pending; **17.9–17.11**.
+- **9300L/LM/X** and **9200 / 9400–9600** — identical image, flow, and models
+  on paper, hardware runs pending; **17.9–17.11**. (C8000V batches/HA remain
+  untested — the validation run was a single router.)
 - **Failure paths on hardware**: auto-rollback expiry, a genuinely corrupt image,
   a member failing to rejoin.
 
@@ -148,7 +152,7 @@ gate and abort.
 | --- | --- | --- |
 | **Nautobot** | **2.4 LTM** and **3.1+** | Job execution verified on **3.1 and multiple independent 2.4 environments** (most volume on 3.1). **3.0 is untested by choice** — unmaintained since 3.1 shipped. Earlier 2.x (≥ 2.2) *may* work but is untested. |
 | **Device OS** | Cisco IOS-XE **≥ 17.9.1** (incl. 26.x) | Hardware-validated across **17.12–26.1**; every YANG model the job touches verified against Cisco's published models 17.9.1–26.1.1. Model presence ≠ runtime behavior — do one supervised run per new train. Rebuild letters (17.15.4**d**) are **distinct versions**. |
-| **Platform** | Catalyst **9300 family** + **C8000V** | 9300 hardware-tested; **9300L/LM/X** run the identical cat9k image and flow (run pending). **C8000V** (autonomous): all models verified, `bootflash:` discovered from the device (run pending). **9200** and **9400/9500/9600**: model sets identical (runs pending). **9800 WLC**: mechanically compatible but **operationally out of scope** — controller only, no AP predownload; a full-scope run is warned in-job. Nexus/NX-OS is a different API — not supported. **3650/3850 cannot be supported** (their terminal 16.12 train lacks the install API; Cisco's replacement, the 9300L, is supported). |
+| **Platform** | Catalyst **9300 family** + **C8000V** | 9300 hardware-tested; **9300L/LM/X** run the identical cat9k image and flow (run pending). **C8000V** (autonomous): **validated live** — a full 17.12 → 17.15.5 upgrade on a running Cat8kv, with `bootflash:` discovered from the device. **9200** and **9400/9500/9600**: model sets identical (runs pending). **9800 WLC**: mechanically compatible but **operationally out of scope** — controller only, no AP predownload; a full-scope run is warned in-job. Nexus/NX-OS is a different API — not supported. **3650/3850 cannot be supported** (their terminal 16.12 train lacks the install API; Cisco's replacement, the 9300L, is supported). |
 
 **By IOS-XE train:**
 
@@ -553,7 +557,7 @@ mode.
 | Clean device first | no | ⚠️ **Default off.** Before upgrading, remove ALL software the device is not running — including **any version another engineer staged** (overrides the staged-conflict stop). See [Cleaning a device first](#cleaning-a-device-first). |
 | Run scope | no | Order of operations, safest first: **Step 1 - Copy image** (**default** — a forgotten dropdown can never reload a device), **Steps 1 & 2 - Copy image and prep** (`install add`, no reload), **Full - Copy, Activate, Reload** (the only choice that reloads; a real upgrade requires selecting it deliberately). See [Pre-staging](#pre-staging-stage-now-activate-in-the-window). |
 | Save running-config before reload | no | **Default off.** RPC reloads never prompt to save, and the job cannot detect whether a save is needed (SNMP-only source — dependency declined). This box makes the job save (`cisco-ia:save-config`) before activating, aborting if the save is refused or fails. See [Saving running-config](#saving-running-config-before-the-reload-full-runs). |
-| Quiet SELinux log noise on terminals | no | **Default off.** The SELinux AVC-denial messages come from how the job watches files during an upgrade (benign in our testing — not a Cisco-confirmed cosmetic defect; see below); enable this if you watch the **physical console or terminal-monitor (SSH)** and want them quieted there. `show logging` and syslog servers still record everything. Applied to the RUNNING config at the start of the run (every release); unsaved — erased by the reload — unless combined with *Save running-config before reload* on a **Full** run. See [SELinux AVC log events](#selinux-avc-log-events-cause-and-workaround). |
+| Quiet SELinux log noise on terminals | no | **Default off.** The SELinux AVC-denial messages come from how the job watches files during an upgrade (observed so far only on Catalyst 9300 switches; benign in our testing — not a Cisco-confirmed cosmetic defect; see below); enable this if you watch the **physical console or terminal-monitor (SSH)** and want them quieted there. `show logging` and syslog servers still record everything. Applied to the RUNNING config at the start of the run (every release); unsaved — erased by the reload — unless combined with *Save running-config before reload* on a **Full** run. See [SELinux AVC log events](#selinux-avc-log-events-cause-and-workaround). |
 | Secrets group override | no | Force one Secrets Group for the whole run; by default each device uses its own assigned group. |
 | Remove inactive | no | After commit, reclaim space (default **off** — keeps the rollback image for a soak period). |
 | Parallelism | no | Devices upgraded concurrently (default **4**, max 16; 1 = serial). **Hardware-validated at 2 so far**; higher fan-out is unproven. Size to the firmware server's capacity for simultaneous image pulls. |
@@ -618,7 +622,7 @@ Everything actually depended on (`requests`, Nautobot core) is permissive
 
 - **Hardware validation covers 17.12, 17.15, 17.18, and 26.1** on single
   switches and a 2-member stack, from Nautobot 3.1 and 2.4 — other platforms
-  (9200, 9400–9600, C8000V) are admitted on model evidence (see
+  (9200, 9400–9600) are admitted on model evidence (see
   [Versions & support](#versions--support)); do one supervised run
   per newly-encountered train or platform. On releases whose devices don't populate
   the operation ledger or `sys-activity` at runtime, the job degrades to
@@ -635,13 +639,16 @@ Everything actually depended on (`requests`, Nautobot core) is permissive
 - Stack/SVL handling checks that **all members** report install mode, have the
   free space, and rejoin after reload; per-member deep health checks are
   minimal.
-- Some IOS-XE releases show SELinux AVC bursts around filesystem
+- Some platforms/releases (observed so far: Catalyst 9300 switches; a C8000V
+  run showed none) emit SELinux AVC bursts around filesystem
   listings — see [SELinux AVC log events](#selinux-avc-log-events-cause-and-workaround)
   for the cause, when the job triggers them, and the optional quieting.
 
 ## SELinux AVC log events (cause and workaround)
 
-**What they are.** On affected IOS-XE releases, the platform's SELinux policy
+**What they are.** On affected platforms/releases — **observed so far only on
+Catalyst 9300 switches** (at 17.15.x and 17.18.3); a full C8000V upgrade run
+(17.12 → 17.15.5) showed **none** — the platform's SELinux policy
 denies `smand` (the shell/storage manager) read access to a handful of on-flash
 paths (`biosupgrade`, `yang-infra`, and similar) that it touches whenever it
 builds a **filesystem listing**. Each listing sprays a burst of
