@@ -520,6 +520,50 @@ this save runs (only the *pre-reload* save persists it). A refused/failed
 post-commit save FAILS the device with an explicit message — the upgrade
 itself **stays committed**, and the message says to save manually.
 
+
+### Golden Config backups (before & after)
+
+**Golden Config backup (before & after)** (default **off**) wraps the run in
+two configuration snapshots: the job enqueues the **Golden Config backup job**
+for exactly the selected devices *before any upgrades start*, waits for it to
+finish, and runs it again *after all devices finish* — so you have a
+known-good config capture on both sides of the reload, and Golden Config's
+own diff/compliance views show any drift the upgrade introduced.
+
+Requirements and mechanics:
+
+- Requires the **Golden Config app** with its backup job installed, enabled,
+  and working for these platforms (the job is found by class `BackupJob` in
+  `nautobot_golden_config*`, falling back to the name "Backup
+  Configurations"). This stays inside the project's charter — it orchestrates
+  another **Nautobot job**; Golden Config does its own transport under its
+  own configuration, and this job still never touches SSH.
+- **Fail-closed before, warn-only after:** if the *before* backup is
+  unavailable, fails, or times out, the run **aborts before touching any
+  device** — an explicitly requested safety net must not silently not exist.
+  A failed *after* backup logs a warning and never un-succeeds completed
+  upgrades. The *after* backup runs even when some devices failed (capturing
+  state then is exactly the point) but is skipped on the cooperative-stop
+  path.
+- Each backup waits up to **15 minutes** (`GC_BACKUP_TIMEOUT`), polling the
+  enqueued Job Result; both Job Result ids are logged for the audit trail.
+  Budget the two waits against the job's soft time limit on big batches.
+- **A free worker slot is required**: the backup runs as a separately queued
+  job while this job occupies its own slot — a **concurrency-1 Celery worker
+  will always time out here** (the timeout message says so). If the run aborts
+  or is cancelled mid-wait, the already-enqueued backup keeps running
+  harmlessly under its own Job Result.
+- **Coverage is verified, not assumed**: Golden Config silently intersects the
+  device filter with its own settings scopes, so a SUCCESS can cover fewer
+  devices than selected. After each backup the job checks GC's own per-device
+  bookkeeping — a coverage gap **aborts** the *before* run (and warns after),
+  naming the uncovered devices.
+- **Runs on every Run scope**, staging included — cheap insurance around any
+  change. For business-hours staging runs where the ~15-minute waits aren't
+  worth it, leave it unticked and rely on the Full run's backups.
+- **Dry-run stays read-only** — it logs what would be backed up and skips
+  both snapshots.
+
 ### ISSU-capable platforms (9400/9500/9600): install mode only
 
 **This job upgrades in _install mode_ only — including on ISSU-capable
@@ -589,6 +633,7 @@ mode.
 | Run scope | no | Order of operations, safest first: **Step 1 - Copy image** (**default** — a forgotten dropdown can never reload a device), **Steps 1 & 2 - Copy image and prep** (`install add`, no reload), **Full - Copy, Activate, Reload** (the only choice that reloads; a real upgrade requires selecting it deliberately). See [Pre-staging](#pre-staging-stage-now-activate-in-the-window). |
 | Save running-config before reload | no | **Default off.** RPC reloads never prompt to save, and the job cannot detect whether a save is needed (SNMP-only source — dependency declined). This box makes the job save (`cisco-ia:save-config`) before activating, aborting if the save is refused or fails. See [Saving running-config](#saving-running-config-before-the-reload-full-runs). |
 | Save running-config after commit | no | **Default off.** After the commit and Nautobot sync, write running-config to startup. Normalizes startup to the new OS's rendering (ends the persistent startup/running diff) — **but** during the soak window an old-syntax startup is the safer rollback path. See [Saving running-config after the commit](#saving-running-config-after-the-commit-opt-in-soak-trade-off). |
+| Golden Config backup (before & after) | no | **Default off.** Snapshot configs via the Golden Config backup job before any upgrades start (failure **aborts** the run) and after all devices finish (failure warns). Requires the Golden Config app. See [Golden Config backups](#golden-config-backups-before--after). |
 | Quiet SELinux log noise on terminals | no | **Default off.** The SELinux AVC-denial messages come from how the job watches files during an upgrade (observed so far only on Catalyst 9300 switches; benign in our testing — not a Cisco-confirmed cosmetic defect; see below); enable this if you watch the **physical console or terminal-monitor (SSH)** and want them quieted there. `show logging` and syslog servers still record everything. Applied to the RUNNING config at the start of the run (every release); unsaved — erased by the reload — unless combined with *Save running-config before reload* on a **Full** run. See [SELinux AVC log events](#selinux-avc-log-events-cause-and-workaround). |
 | Secrets group override | no | Force one Secrets Group for the whole run; by default each device uses its own assigned group. |
 | Remove inactive | no | After commit, reclaim space (default **off** — keeps the rollback image for a soak period). |

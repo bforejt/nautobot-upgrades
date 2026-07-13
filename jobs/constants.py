@@ -138,6 +138,14 @@ COPY_TIMEOUT = 3600
 
 POLL_INTERVAL = 30
 
+#: Golden Config backup orchestration (opt-in): how long to wait for the
+#: enqueued backup job to reach a terminal state, and how often to poll it.
+#: The BEFORE backup blocks the run start (an explicitly requested safety
+#: net must exist before anything reloads); budget accordingly against the
+#: job's soft time limit — two backups add up to 2x this bound.
+GC_BACKUP_TIMEOUT = 900
+GC_BACKUP_POLL_INTERVAL = 15
+
 #: RESTCONF `fields` sub-selection for partition-level q-filesystem reads
 #: (discovery, free-space gate): the partition stats are the wanted answer,
 #: so ask for only them instead of parsing the full multi-hundred-entry file
