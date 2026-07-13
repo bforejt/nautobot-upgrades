@@ -567,7 +567,8 @@ mode.
 | Read version | `GET .../Cisco-IOS-XE-device-hardware-oper:device-hardware-data/device-hardware/device-system-data` |
 | Stack member roster | `GET .../Cisco-IOS-XE-device-hardware-oper:device-hardware-data/device-hardware/device-inventory` |
 | Install state / mode / ledger | `GET .../Cisco-IOS-XE-install-oper:install-oper-data` |
-| Partition stats (discovery + space gate) | `GET .../q-filesystem?fields=fru;slot;bay;chassis;partitions(name;total-size;used-size)` |
+| Boot-config filesystem hint (zero-walk; corroborated against partitions) | `GET .../data/Cisco-IOS-XE-native:native/boot` |
+| Partition stats (discovery corroboration + space gate — **one shared read**) | `GET .../q-filesystem?fields=fru;slot;bay;chassis;partitions(name;total-size;used-size)` |
 | Full file listing (copy pre-check, first-sighting learn, transfer verify) | `GET .../Cisco-IOS-XE-platform-software-oper:cisco-platform-software/q-filesystem` |
 | Per-poll copy progress after the learn (walk-free, no SELinux bursts) | `GET .../q-filesystem=<fru>,<slot>,<bay>,<chassis>/partitions=<name>/partition-content=<full-path>` (address exactly as a real listing published it) |
 | Copy image | `POST .../operations/Cisco-IOS-XE-rpc:copy` (worker thread) |
@@ -580,11 +581,16 @@ mode.
 Release- and site-specific knobs live in [`jobs/constants.py`](jobs/constants.py):
 the version floor, target filesystem (`flash:`) and its **partition-name match**
 (`TARGET_FS_CANDIDATES`), timeouts, and space headroom (~2× the image size).
-The target filesystem is **discovered from each device's own q-filesystem
-data** (`flash:` on Catalyst switches, `bootflash:` on C8000V) — if a platform
-names its writable filesystem something else entirely, add it to
-`TARGET_FS_CANDIDATES`; if the free-space read fails, check
-`DATA_Q_FILESYSTEM` for your release.
+The target filesystem is resolved per device, **boot config proposes and
+runtime state disposes**: a zero-walk read of the device's `boot system`
+config names the filesystem it actually boots from ("flash:packages.conf" →
+`flash:`), and the partition listing — the same single read the free-space
+gate consumes — must corroborate it (an uncorroborated hint is discarded
+with a warning; no usable hint falls back to partition-name discovery,
+`flash:` on Catalyst switches, `bootflash:` on C8000V). If a platform names
+its writable filesystem something else entirely, the discovery-failure abort
+now reports what the boot config points at — add that name to
+`TARGET_FS_CANDIDATES`.
 
 ## Reuse & licensing analysis
 
@@ -692,10 +698,12 @@ answer re-learns from the next full listing, and a rejected URL form or two
 consecutive misses **latch a loud full-listing fallback** — the pre-change
 behavior is the floor, never entered silently. The copy pre-check and the
 byte-exact verify always use the authoritative full listing. Expected
-bursts per fresh copy on an affected release: a **handful** — the gates'
-partition-stats reads (`fields`-scoped for payload size, but the device
-still walks server-side), the pre-check listing, the watcher's full
-read(s) until the first sighting, and the final verify listing — instead
+bursts per fresh copy on an affected release: a **handful** — ONE shared
+partition-stats read serving both discovery and the free-space gate
+(`fields`-scoped for payload size, but the device still walks
+server-side; the boot-config read that picks the filesystem is zero-walk),
+the pre-check listing, the watcher's full read(s) until the first
+sighting, and the final verify listing — instead
 of **one every 30 seconds for the whole transfer** (~30 for a 15-minute
 copy; the device's audit rate-limiter sometimes truncates the tail of
 that storm, but a fresh run is loud). Every fallback still logs a

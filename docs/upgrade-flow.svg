@@ -198,7 +198,7 @@
 <polygon points="400,1454.0 525.0,1496 400,1538.0 275.0,1496" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
 <text x="400" y="1489" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Clean device first</tspan><tspan x="400" dy="14">ticked? (default off)</tspan></text>
 <rect x="250" y="1564" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
-<text x="400" y="1578" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Discover target filesystem + read free</tspan><tspan x="400" dy="14">space (fields-scoped partitions reads;</tspan><tspan x="400" dy="14">evaluates the CLEANED flash)</tspan></text>
+<text x="400" y="1578" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Target fs: boot-config hint (zero-walk)</tspan><tspan x="400" dy="14">corroborated by ONE shared partitions read</tspan><tspan x="400" dy="14">+ free-space gate (CLEANED flash)</tspan></text>
 <polygon points="400,1646.0 525.0,1688 400,1730.0 275.0,1688" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
 <text x="400" y="1681" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Free ≥ image × 2</tspan><tspan x="400" dy="14">(or ≥ 2 GB if size unknown)?</tspan></text>
 <polygon points="400,1742.0 525.0,1784 400,1826.0 275.0,1784" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>

@@ -63,7 +63,7 @@ SPINE = [
     ("d_clean", "dec", "Clean device first\nticked? (default off)",
      {"warn": ("Yes", "Remove ALL inactive/staged software\n(engine-decided; overrides the staged-\nconflict stop; failures ABORT)"),
       "passlabel": "No"}),
-    ("space", "proc", "Discover target filesystem + read free\nspace (fields-scoped partitions reads;\nevaluates the CLEANED flash)", {}),
+    ("space", "proc", "Target fs: boot-config hint (zero-walk)\ncorroborated by ONE shared partitions read\n+ free-space gate (CLEANED flash)", {}),
     ("d_space", "dec", "Free ≥ image × 2\n(or ≥ 2 GB if size unknown)?",
      {"abort": ("No", "Free space unconfirmed or\ninsufficient"), "passlabel": "Yes"}),
     ("d_dry", "dec", "Dry-run?",

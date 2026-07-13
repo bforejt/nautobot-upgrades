@@ -649,8 +649,8 @@ class IOSXEUpgrade(Job):
         # Catalyst switches, bootflash: on C8000V) — every downstream step
         # (space gate, copy destination, install add path) uses this value.
         # Per-device local, never instance state: device threads run in parallel.
-        target_fs = self._discover_target_fs(client, log)
-        self._gate_free_space(client, image, log, target_fs)
+        target_fs, partitions = self._discover_target_fs(client, log)
+        self._gate_free_space(client, image, log, target_fs, partitions)
 
         # Catalyst 9800 WLC guidance (warn, never gate — the operator owns the
         # choice): this job upgrades the CONTROLLER only. It does not perform
@@ -1205,45 +1205,119 @@ class IOSXEUpgrade(Job):
                 return image
         return None if require_default else images[0]
 
-    def _discover_target_fs(self, client, log):
-        """The device's writable install filesystem, read from the DEVICE.
+    def _boot_config_fs(self, client, log):
+        """Primary-filesystem HINT from the device's boot config — or (None, None).
 
-        Catalyst switches call it 'flash'; IOS-XE routers (Catalyst 8000V)
-        call it 'bootflash'. Rather than configuring this per platform, ask
-        q-filesystem which partitions actually exist and pick the first
-        supported candidate — an API answer, not an inference. Fail closed
-        when nothing matches: every later step (space gate, copy destination,
-        install add path) depends on it.
+        GET /native/boot is a tiny, ZERO-WALK config read (field-proven on a
+        real 9300: no SELinux AVC lines). The value names the filesystem the
+        device boots from — the best available definition of "primary", and
+        the only RESTCONF source that marks primacy at all (a 17.12.1 sweep
+        of all 754 published models found no 'show file systems' analogue).
+        But config is OPERATOR INTENT, not device-published runtime state,
+        so this is a HYPOTHESIS tier: the caller MUST corroborate it against
+        the partition listing before anything consumes it. Returns
+        (hint, raw, read_failed): never fails a run — errors log a breadcrumb
+        and yield (None, None, True); an unusable value yields raw-only or
+        nothing, with read_failed False.
         """
+        try:
+            data = client.get(C.DATA_NATIVE_BOOT, ok_404=True)
+        except RestconfError as exc:
+            # hint tier — never fatal, but never silent either (a lost hint
+            # means dual-name platforms fall back to candidate-order picking)
+            self.logger.info(
+                "Boot-config read failed (%s) — proceeding without the "
+                "filesystem hint (partition-name discovery decides).",
+                exc,
+                extra=log,
+            )
+            return None, None, True
+        hint, raw = _boot_fs_hint(data or {})
+        return hint, raw, False
+
+    def _discover_target_fs(self, client, log):
+        """(target_fs, partitions_data): the writable install filesystem.
+
+        Boot config PROPOSES, runtime state DISPOSES:
+          1. A zero-walk /native/boot read yields the boot filesystem hint
+             ("flash:packages.conf" -> flash) — semantically the primary
+             filesystem, and the disambiguator when a platform publishes
+             both candidate names (candidate order alone would guess).
+          2. The partition listing (the SAME single read the free-space gate
+             consumes next — returned to the caller so the gate never walks
+             again) must CORROBORATE the hint; an uncorroborated hint is
+             discarded with a warning and name-based discovery decides.
+          3. No usable hint -> name-based discovery exactly as before.
+        Fail closed when nothing matches — with BOTH facts (published
+        partitions + boot-config value) in the abort so an operator can see
+        what the platform actually calls its filesystem.
+        """
+        hint, boot_raw, boot_unreadable = self._boot_config_fs(client, log)
         data = self._read_partitions(client, log=log) or {}
         names = {
             str(partition.get("name", "")).strip().rstrip(":").lower()
             for partition in _find_partitions(data)
         }
+        if hint and any(_partition_matches(name, hint) for name in names):
+            target_fs = f"{hint}:"
+            self.logger.info(
+                "Target filesystem from the device's boot config ('%s'), "
+                "corroborated by the partition listing: %s",
+                boot_raw,
+                target_fs,
+                extra=log,
+            )
+            return target_fs, data
         for candidate in C.TARGET_FS_CANDIDATES:
             if any(_partition_matches(name, candidate) for name in names):
                 target_fs = f"{candidate}:"
-                if candidate != C.TARGET_FS_CANDIDATES[0]:
+                if hint:
+                    self.logger.warning(
+                        "Boot config points at '%s' but the device publishes "
+                        "no matching partition (%s) — proceeding with %s from "
+                        "the partition listing (runtime state wins).",
+                        boot_raw,
+                        sorted(names) or "none readable",
+                        target_fs,
+                        extra=log,
+                    )
+                elif candidate != C.TARGET_FS_CANDIDATES[0]:
                     self.logger.info(
                         "Target filesystem discovered from the device: %s",
                         target_fs,
                         extra=log,
                     )
-                return target_fs
+                return target_fs, data
         raise UpgradeAbort(
             "Could not identify the target filesystem: the device's "
             f"q-filesystem partitions ({sorted(names) or 'none readable'}) "
-            f"match none of {C.TARGET_FS_CANDIDATES}. If this platform names "
-            "its writable filesystem differently, add it to "
-            "TARGET_FS_CANDIDATES in constants.py."
+            f"match none of {C.TARGET_FS_CANDIDATES}"
+            + (
+                f", and the boot config points at '{boot_raw}'"
+                if boot_raw
+                else (
+                    ", and the boot config could not be read"
+                    if boot_unreadable
+                    else ", and the boot config offered no usable filesystem hint"
+                )
+            )
+            + ". If this platform names its writable filesystem differently, "
+            "add it to TARGET_FS_CANDIDATES in constants.py."
         )
 
-    def _gate_free_space(self, client, image, log, target_fs):
+    def _gate_free_space(self, client, image, log, target_fs, partitions_data=None):
         # 'install add' distributes packages to EVERY stack member, so the gate
         # is the MINIMUM free space across all matching partitions of the
         # DISCOVERED filesystem (one per member on a stack; exactly one on a
-        # standalone switch or a C8000V).
-        data = self._read_partitions(client, log=log)
+        # standalone switch or a C8000V). Discovery hands its partition read
+        # over (both run AFTER the optional clean, moments apart, so the gate
+        # still evaluates the CLEANED flash) — ONE walk serves both instead
+        # of two; a caller without data in hand still reads fresh.
+        data = (
+            partitions_data
+            if partitions_data is not None
+            else self._read_partitions(client, log=log)
+        )
         frees = _flash_frees(data or {}, (target_fs.rstrip(":"),))
         if not frees:
             raise UpgradeAbort(
@@ -3170,6 +3244,55 @@ def _find_timer_entries(data):
         for item in data:
             found.extend(_find_timer_entries(item))
     return found
+
+
+_BOOT_TRANSPORT_SCHEMES = frozenset({"tftp", "ftp", "http", "https", "scp", "rcp", "sftp"})
+_BOOT_FS_TOKEN = re.compile(r"[a-z][a-z0-9_-]{1,30}$")
+
+
+def _boot_fs_hint(data):
+    """(hint, raw) from a /native/boot response — either may be None.
+
+    hint: a TARGET_FS_CANDIDATES name ("flash"/"bootflash") — the only thing
+    discovery may CONSUME (and only after partition corroboration).
+    raw: the first filesystem-looking boot value regardless of candidate
+    membership — DIAGNOSTICS ONLY, so the discovery-failure abort can report
+    "boot config points at 'harddisk:packages.conf'" on a platform whose
+    filesystem name is not in the candidate list (the exact case the
+    diagnostic exists for). Transport URLs (tftp://... etc.) and non-token
+    prefixes never qualify as either. Scan order: dict-insertion / list
+    order; the first candidate match wins outright, else the first
+    filesystem-looking value is kept as raw. Field-proven shape (real
+    9300): the bootfile filename list, "flash:packages.conf".
+    """
+    state = {"raw": None}
+
+    def _walk(node):
+        if isinstance(node, str):
+            if ":" in node:
+                head = node.split(":", 1)[0].strip().lower()
+                if head in _BOOT_TRANSPORT_SCHEMES or not _BOOT_FS_TOKEN.fullmatch(head):
+                    return None
+                if head in C.TARGET_FS_CANDIDATES:
+                    return head, node
+                if state["raw"] is None:
+                    state["raw"] = node
+        elif isinstance(node, dict):
+            for value in node.values():
+                found = _walk(value)
+                if found is not None:
+                    return found
+        elif isinstance(node, list):
+            for item in node:
+                found = _walk(item)
+                if found is not None:
+                    return found
+        return None
+
+    found = _walk(data)
+    if found is not None:
+        return found
+    return None, state["raw"]
 
 
 def _find_partitions(data):
