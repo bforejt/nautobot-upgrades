@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 3784" width="980" height="3784" font-family="Helvetica,Arial,sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 3880" width="980" height="3880" font-family="Helvetica,Arial,sans-serif">
 <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,3 L0,6 z" fill="#555"/></marker></defs>
-<rect x="0" y="0" width="980" height="3784" fill="#ffffff"/>
+<rect x="0" y="0" width="980" height="3880" fill="#ffffff"/>
 <text x="20" y="28" font-size="18" font-weight="bold" fill="#111">Cisco IOS-XE Upgrade (RESTCONF) — per-device flow</text>
 <rect x="570" y="38" width="400" height="96" rx="6" ry="6" fill="#fbfbfb" stroke="#bbb" stroke-width="1.5"/>
 <text x="770" y="66" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#333"><tspan x="770" dy="0">Legend:  diamonds = decisions</tspan><tspan x="770" dy="14">· red = ABORT this device (logs the reason, continues with the next device; ANY abort marks the whole Job Result FAILED at the end)</tspan><tspan x="770" dy="14">· amber = warn &amp; continue</tspan><tspan x="770" dy="14">· green = successful end state.</tspan></text>
@@ -53,12 +53,13 @@
 <path d="M 400 3252 L 400 3278" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
 <path d="M 400 3362 L 400 3388" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
 <rect x="402" y="3366" width="28" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="416" y="3379" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="416" dy="0">Yes</tspan></text>
-<path d="M 400 3444 L 400 3470" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
-<path d="M 400 3554 L 400 3580" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
-<rect x="402" y="3558" width="28" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="416" y="3571" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="416" dy="0">Yes</tspan></text>
-<path d="M 400 3636 L 400 3677" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
-<path d="M 275 3512 L 200 3512 L 200 3704 L 240 3704" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
-<rect x="216" y="3599" width="21" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="226" y="3612" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="226" dy="0">No</tspan></text>
+<path d="M 400 3444 L 400 3484" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 400 3540 L 400 3566" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 400 3650 L 400 3676" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="402" y="3654" width="28" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="416" y="3667" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="416" dy="0">Yes</tspan></text>
+<path d="M 400 3732 L 400 3773" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M 275 3608 L 200 3608 L 200 3800 L 240 3800" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+<rect x="216" y="3695" width="21" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="226" y="3708" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#333"><tspan x="226" dy="0">No</tspan></text>
 <path d="M 525 248 L 600 248" fill="none" stroke="#B85450" stroke-width="1.5" marker-end="url(#arrow)"/>
 <rect x="552" y="229" width="21" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="562.5" y="242" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B85450"><tspan x="562.5" dy="0">No</tspan></text>
 <rect x="600" y="215" width="330" height="66" rx="6" ry="6" fill="#F8CECC" stroke="#B85450" stroke-width="1.5"/>
@@ -237,10 +238,12 @@
 <text x="400" y="3313" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Commit</tspan><tspan x="400" dy="14">succeeded?</tspan></text>
 <rect x="250" y="3388" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
 <text x="400" y="3409" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Sync Nautobot software_version</tspan><tspan x="400" dy="14">(warn on fail; already committed)</tspan></text>
-<polygon points="400,3470.0 525.0,3512 400,3554.0 275.0,3512" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
-<text x="400" y="3505" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">remove_inactive</tspan><tspan x="400" dy="14">enabled?</tspan></text>
-<rect x="250" y="3580" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
-<text x="400" y="3601" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">install remove inactive (idle-gated,</tspan><tspan x="400" dy="14">ledger-tracked; warn on fail)</tspan></text>
-<rect x="240" y="3677" width="320" height="54" rx="24" ry="24" fill="#D5E8D4" stroke="#2E7D32" stroke-width="1.5"/>
-<text x="400" y="3704" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#14532d"><tspan x="400" dy="0">DONE: UPGRADED &amp; COMMITTED ✓</tspan></text>
+<rect x="250" y="3484" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
+<text x="400" y="3498" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Opt-in: save running-config after commit</tspan><tspan x="400" dy="14">(soak trade-off — see README; failure FAILS</tspan><tspan x="400" dy="14">the device, the upgrade stays committed)</tspan></text>
+<polygon points="400,3566.0 525.0,3608 400,3650.0 275.0,3608" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
+<text x="400" y="3601" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">remove_inactive</tspan><tspan x="400" dy="14">enabled?</tspan></text>
+<rect x="250" y="3676" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
+<text x="400" y="3697" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">install remove inactive (idle-gated,</tspan><tspan x="400" dy="14">ledger-tracked; warn on fail)</tspan></text>
+<rect x="240" y="3773" width="320" height="54" rx="24" ry="24" fill="#D5E8D4" stroke="#2E7D32" stroke-width="1.5"/>
+<text x="400" y="3800" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#14532d"><tspan x="400" dy="0">DONE: UPGRADED &amp; COMMITTED ✓</tspan></text>
 </svg>

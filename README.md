@@ -491,6 +491,35 @@ What the job does instead:
 - With the box unticked, Full runs log a one-line reminder of the platform
   fact before activating, so the silent-discard behavior is never a surprise.
 
+
+### Saving running-config after the commit (opt-in, soak trade-off)
+
+**Save running-config after commit** (default **off**) writes running-config to
+startup-config *after* the upgrade is committed and Nautobot is synced — the
+programmatic `write memory`, verified by the device's own RPC result exactly
+like the pre-reload save.
+
+**Why you might want it:** after booting the new version, running-config is the
+new OS's *canonical rendering* of your configuration — translated syntax and
+new defaults included. Saving normalizes startup to that rendering, which
+captures the translation deliberately and eliminates the persistent
+startup/running diff that compliance tooling (Golden Config included) would
+otherwise flag until someone's unrelated `wr mem` months later.
+
+**Why it's off by default:** during the **soak window**, a startup written by
+the *new* OS may carry syntax the *old* image cannot cleanly parse — so leaving
+startup in old-version form preserves the cleanest rollback/downgrade path.
+This is why Cisco's own upgrade guides save *before* the reload, not after. The
+conservative pattern is: upgrade → soak → then save (re-tick this on a later
+run, or `write memory` by hand).
+
+Notes: applies to the run that performs the activation (an already-on-target
+re-run does not save). It does **not** interact with the *Quiet SELinux log
+noise* filter — the activation reload erased that from running-config before
+this save runs (only the *pre-reload* save persists it). A refused/failed
+post-commit save FAILS the device with an explicit message — the upgrade
+itself **stays committed**, and the message says to save manually.
+
 ### ISSU-capable platforms (9400/9500/9600): install mode only
 
 **This job upgrades in _install mode_ only — including on ISSU-capable
@@ -559,6 +588,7 @@ mode.
 | Clean device first | no | ⚠️ **Default off.** Before upgrading, remove ALL software the device is not running — including **any version another engineer staged** (overrides the staged-conflict stop). See [Cleaning a device first](#cleaning-a-device-first). |
 | Run scope | no | Order of operations, safest first: **Step 1 - Copy image** (**default** — a forgotten dropdown can never reload a device), **Steps 1 & 2 - Copy image and prep** (`install add`, no reload), **Full - Copy, Activate, Reload** (the only choice that reloads; a real upgrade requires selecting it deliberately). See [Pre-staging](#pre-staging-stage-now-activate-in-the-window). |
 | Save running-config before reload | no | **Default off.** RPC reloads never prompt to save, and the job cannot detect whether a save is needed (SNMP-only source — dependency declined). This box makes the job save (`cisco-ia:save-config`) before activating, aborting if the save is refused or fails. See [Saving running-config](#saving-running-config-before-the-reload-full-runs). |
+| Save running-config after commit | no | **Default off.** After the commit and Nautobot sync, write running-config to startup. Normalizes startup to the new OS's rendering (ends the persistent startup/running diff) — **but** during the soak window an old-syntax startup is the safer rollback path. See [Saving running-config after the commit](#saving-running-config-after-the-commit-opt-in-soak-trade-off). |
 | Quiet SELinux log noise on terminals | no | **Default off.** The SELinux AVC-denial messages come from how the job watches files during an upgrade (observed so far only on Catalyst 9300 switches; benign in our testing — not a Cisco-confirmed cosmetic defect; see below); enable this if you watch the **physical console or terminal-monitor (SSH)** and want them quieted there. `show logging` and syslog servers still record everything. Applied to the RUNNING config at the start of the run (every release); unsaved — erased by the reload — unless combined with *Save running-config before reload* on a **Full** run. See [SELinux AVC log events](#selinux-avc-log-events-cause-and-workaround). |
 | Secrets group override | no | Force one Secrets Group for the whole run; by default each device uses its own assigned group. |
 | Remove inactive | no | After commit, reclaim space (default **off** — keeps the rollback image for a soak period). |
