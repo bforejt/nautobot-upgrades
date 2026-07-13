@@ -78,7 +78,7 @@ SPINE = [
     ("d_stagecopy", "dec", "Run scope =\nstage-copy?",
      {"okright": ("Yes", "DONE: STAGED (copy) — window run\nwill skip the verified copy"),
       "passlabel": "full / stage-add"}),
-    ("roster", "proc", "Capture stack member roster\n(chassis serials from inventory)", {}),
+    ("roster", "proc", "Capture chassis roster (stack members /\nstandalone chassis serials from inventory)", {}),
     ("add", "proc",
      "install add (skipped if already staged) →\ntrack our op-uuid in the operation ledger\n"
      "to op-complete (state inference fallback)", {}),
@@ -103,7 +103,7 @@ SPINE = [
     ("d_confirm", "dec", "Target version\nstably confirmed?",
      {"abort": ("No", "Not confirmed before timeout — NOT\ncommitted; auto-rollback should revert"),
       "passlabel": "Yes"}),
-    ("d_members", "dec", "All stack members\nrejoined?",
+    ("d_members", "dec", "All chassis\nrejoined?",
      {"abort": ("No", "Member(s) missing after reload — NOT\ncommitted; auto-rollback should revert"),
       "warn": ("roster unknown", "Roster unreadable pre-upgrade →\nskip completeness check"),
       "passlabel": "Yes / standalone"}),

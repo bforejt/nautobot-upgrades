@@ -40,7 +40,8 @@ Upgrade flow (per device):
      get an extended budget for microcode reprogramming; rollback timer
      checked after reload) -> reload
   5. Poll until the target version actually booted AND every pre-upgrade
-     stack member rejoined -> install commit (ledger-tracked)
+     chassis rejoined (stack members / the standalone chassis) -> install
+     commit (ledger-tracked)
   6. Post-checks + sync Nautobot's Device.software_version
   7. Optional: install remove inactive (off by default)
 
@@ -755,14 +756,16 @@ class IOSXEUpgrade(Job):
             )
 
         # -- 4. install add / activate (verified started) / reload -----------
-        # Capture the stack member roster first: after the reload, every member
-        # must rejoin before we commit.
+        # Capture the chassis roster first (stack members on switches; the one
+        # chassis on a standalone switch or router): after the reload, every
+        # entry must rejoin before we commit.
         roster = self._member_roster(client)
         if roster:
             self.logger.info(
-                "Stack roster captured: %d member(s) (%s).",
+                "Chassis roster captured: %d (%s) — %s must return after the reload.",
                 len(roster),
                 sorted(roster),
+                "all stack members" if len(roster) > 1 else "the chassis",
                 extra=log,
             )
         # Each write gets its OWN correlation uuid: the engine's operation
@@ -1029,6 +1032,15 @@ class IOSXEUpgrade(Job):
                     f"RESTCONF authorization failed (HTTP 403) at {host}. The account "
                     "authenticated but lacks rights — it must be privilege 15 (or "
                     "have exec authorization for install/copy)."
+                ) from exc
+            if status in (502, 503):
+                # the web server answered but the RESTCONF backend behind it
+                # didn't — the classic just-enabled / just-reloaded window
+                raise UpgradeAbort(
+                    f"RESTCONF answered HTTP {status} at {host} — the device's web "
+                    "server is up but the RESTCONF backend is still starting. This "
+                    "is typical for 1-3 minutes after 'restconf' is first enabled "
+                    "or right after a reload. Wait a few minutes and re-run."
                 ) from exc
             raise UpgradeAbort(
                 f"RESTCONF not reachable at https://{host}:{C.RESTCONF_PORT}/restconf "
@@ -1673,11 +1685,17 @@ class IOSXEUpgrade(Job):
             self._check_stop()
             current = self._member_roster(client) or set()
             if current >= roster:
-                self.logger.info(
-                    "All %d stack member(s) rejoined after the reload.",
-                    len(roster),
-                    extra=log,
-                )
+                if len(roster) > 1:
+                    self.logger.info(
+                        "All %d stack members rejoined after the reload.",
+                        len(roster),
+                        extra=log,
+                    )
+                else:
+                    self.logger.info(
+                        "The chassis rejoined after the reload (roster complete).",
+                        extra=log,
+                    )
                 return
             polls += 1
             if polls % 4 == 0:  # heartbeat every ~2 minutes
