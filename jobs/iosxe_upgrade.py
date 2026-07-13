@@ -282,6 +282,16 @@ class IOSXEUpgrade(Job):
             "running-config after the commit' in the project README."
         ),
     )
+    gc_backup = BooleanVar(
+        label="Golden Config backup (before & after)",
+        default=False,
+        description=(
+            "Run the Golden Config backup job for the selected devices before "
+            "any upgrades start and again after all devices finish. Requires "
+            "the Golden Config app. See 'Golden Config backups' in the "
+            "project README."
+        ),
+    )
     suppress_avc_noise = BooleanVar(
         label="Quiet SELinux log noise on terminals",
         default=False,
@@ -344,7 +354,9 @@ class IOSXEUpgrade(Job):
         has_sensitive_variables = False
         dryrun_default = True
         # With parallel batches the makespan is ~ceil(devices / parallelism) x
-        # one worst-case device (copy 3600 + add 1200 + reload 120+1800 + slack);
+        # one worst-case device (copy 3600 + add 1200 + reload 120+1800 + slack),
+        # plus up to 2x GC_BACKUP_TIMEOUT (900s each) of serial Golden Config
+        # backup waits when that option is on;
         # size batches so that fits inside the soft limit. SoftTimeLimitExceeded
         # is re-raised (never swallowed); queued devices are cancelled and named,
         # in-flight devices are recovered by an idempotent re-run.
@@ -364,6 +376,7 @@ class IOSXEUpgrade(Job):
             "clean_before",
             "save_config",
             "save_config_after",
+            "gc_backup",
             "suppress_avc_noise",
             "secrets_group_override",
             "remove_inactive",
@@ -390,6 +403,7 @@ class IOSXEUpgrade(Job):
         clean_before,
         save_config,
         save_config_after,
+        gc_backup,
         suppress_avc_noise,
         secrets_group_override,
         remove_inactive,
@@ -512,6 +526,19 @@ class IOSXEUpgrade(Job):
                         celery_task.request_stack.pop()
                     pop_current_task()
 
+        # Opt-in Golden Config safety net: snapshot configs BEFORE anything
+        # reloads. Fail-closed — a requested safety net that can't run stops
+        # the run before any device is touched. Dry-run stays read-only.
+        if gc_backup:
+            if dryrun:
+                self.logger.info(
+                    "DRY-RUN: would run the Golden Config backup for %d device(s) "
+                    "before the upgrades and again after they finish.",
+                    len(device_list),
+                )
+            else:
+                self._run_gc_backup(device_list, "before")
+
         # Each device is fully independent (own RESTCONF sessions, own operation
         # uuids, own gates), so a batch runs up to 'parallelism' devices
         # concurrently. Threads suit the workload: it is almost entirely waiting
@@ -572,6 +599,23 @@ class IOSXEUpgrade(Job):
                 ", ".join(sorted(never_started)) or "none",
             )
             raise
+        # Opt-in Golden Config snapshot of the post-upgrade configs. Runs even
+        # when some devices failed (capturing state then is exactly the point)
+        # but NOT on the cooperative-stop path (the post-mortem raises above).
+        # Warn-only: a failed after-backup must not un-succeed completed
+        # upgrades — it is named here and in the job log instead.
+        if gc_backup and not dryrun:
+            try:
+                self._run_gc_backup(device_list, "after")
+            except SoftTimeLimitExceeded:
+                raise  # operator cancel / time budget is never swallowed
+            except Exception as exc:  # noqa: BLE001 - warn-only by design: nothing
+                # that happens in the after-backup may un-succeed completed upgrades
+                self.logger.warning(
+                    "Golden Config backup (after) failed: %s — completed upgrades are unaffected.",
+                    exc,
+                )
+
         if failed:
             # Per-device isolation is deliberate (one bad device must not stop
             # the batch), but the JOB must not report green when any device
@@ -1046,6 +1090,155 @@ class IOSXEUpgrade(Job):
         raise UpgradeAbort(
             f"No '{secret_type}' secret defined in Secrets Group '{group}' for any "
             "of the RESTCONF/HTTP/Generic access types."
+        )
+
+    def _run_gc_backup(self, device_list, when):
+        """Run Golden Config's backup for these devices and WAIT (bounded).
+
+        Run-level: once before any device work, once after all devices
+        finish — not per-device. Orchestrating another Nautobot job stays
+        inside the project's three primitives (RESTCONF, install mode,
+        Nautobot jobs); Golden Config does its own transport under its own
+        configuration — this job never touches SSH. Failure semantics are
+        the CALLER'S: the BEFORE backup aborts the run (an explicitly
+        requested safety net must not silently not exist), the AFTER backup
+        warns only. Raises RuntimeError on unavailable/failed/timed-out.
+        """
+        from nautobot.extras.choices import JobResultStatusChoices as JRS
+        from nautobot.extras.models import Job as JobModel
+        from nautobot.extras.models import JobResult
+
+        job_model = (
+            JobModel.objects.filter(
+                module_name__startswith="nautobot_golden_config",
+                job_class_name="BackupJob",
+            ).first()
+            or JobModel.objects.filter(name="Backup Configurations").first()
+        )
+        if job_model is None or not getattr(job_model, "installed", True):
+            raise RuntimeError(
+                "Golden Config backup was requested but no backup job was "
+                "found (looked for job_class_name='BackupJob' in "
+                "'nautobot_golden_config*', then name='Backup Configurations') "
+                "— install the Golden Config app or untick the option."
+            )
+        if not job_model.enabled:
+            raise RuntimeError(
+                f"Golden Config backup was requested but the '{job_model.name}' "
+                "job is DISABLED — enable it under Jobs, or untick the option."
+            )
+        # The resolved job must accept a 'device' filter: Nautobot silently
+        # DROPS unknown job kwargs at deserialization, so an unscoped backup
+        # (wrong job bound by the name fallback, or a future GC var rename)
+        # would run against ITS OWN default scope while we treat its SUCCESS
+        # as covering the selected devices. Refuse instead.
+        job_class = getattr(job_model, "job_class", None)
+        declared = {}
+        if job_class is not None:
+            try:
+                declared = job_class._get_vars()
+            except Exception:  # noqa: BLE001 - version drift: treat as unverifiable
+                declared = {}
+        if "device" not in declared:
+            raise RuntimeError(
+                f"Golden Config backup was requested but the resolved job "
+                f"('{job_model.name}') does not accept a 'device' filter "
+                "(or its variables could not be inspected) — refusing to run "
+                "an unscoped backup as the safety net for selected devices."
+            )
+        self.logger.info(
+            "Golden Config backup (%s): enqueuing '%s' for %d device(s)...",
+            when,
+            job_model.name,
+            len(device_list),
+        )
+        from django.utils import timezone
+
+        enqueued_at = timezone.now()
+        try:
+            backup_result = JobResult.enqueue_job(
+                job_model, self.user, device=[str(d.pk) for d in device_list]
+            )
+        except SoftTimeLimitExceeded:
+            raise  # an operator cancel/time budget is never a "version mismatch"
+        except Exception as exc:  # noqa: BLE001 - version drift must be loud, not a crash
+            raise RuntimeError(
+                f"Could not enqueue the Golden Config backup ({exc}) — "
+                "possibly a Nautobot/Golden Config version mismatch."
+            ) from exc
+        terminal = {
+            JRS.STATUS_SUCCESS,
+            JRS.STATUS_FAILURE,
+            getattr(JRS, "STATUS_REVOKED", "REVOKED"),
+        }
+        deadline = time.monotonic() + C.GC_BACKUP_TIMEOUT
+        while time.monotonic() < deadline:
+            time.sleep(C.GC_BACKUP_POLL_INTERVAL)
+            backup_result.refresh_from_db()
+            if backup_result.status in terminal:
+                break
+        if backup_result.status == JRS.STATUS_SUCCESS:
+            # SUCCESS proves the JOB ran — not that OUR devices were covered:
+            # Golden Config silently intersects the device filter with its own
+            # settings scopes and proceeds on the subset. Verify per-device
+            # coverage against GC's own bookkeeping so an out-of-scope device
+            # cannot reload behind a safety net that never included it.
+            missing = None
+            try:
+                from nautobot_golden_config.models import GoldenConfig
+
+                covered = set(
+                    GoldenConfig.objects.filter(
+                        device__in=[d.pk for d in device_list],
+                        backup_last_success_date__gte=enqueued_at,
+                    ).values_list("device_id", flat=True)
+                )
+                missing = sorted(d.name for d in device_list if d.pk not in covered)
+            except SoftTimeLimitExceeded:
+                raise
+            except Exception as exc:  # noqa: BLE001 - GC internals drifted: say so, don't guess
+                self.logger.warning(
+                    "Golden Config backup (%s) succeeded but per-device coverage "
+                    "could not be verified (%s) — check the backup Job Result "
+                    "covers every selected device.",
+                    when,
+                    exc,
+                )
+            if missing:
+                raise RuntimeError(
+                    f"Golden Config backup ({when}) SUCCEEDED but covered only "
+                    f"{len(device_list) - len(missing)}/{len(device_list)} selected "
+                    f"device(s) — no fresh backup recorded for: {', '.join(missing)} "
+                    "(most likely outside every Golden Config settings scope). Add "
+                    "them to a Golden Config scope or untick the option."
+                )
+            self.logger.info(
+                "Golden Config backup (%s) completed (JobResult %s)%s.",
+                when,
+                backup_result.pk,
+                "" if missing is None else f" — all {len(device_list)} device(s) covered",
+                extra={"object": backup_result},
+            )
+            return backup_result
+        if backup_result.status not in terminal:
+            never_started = backup_result.status == JRS.STATUS_PENDING
+            raise RuntimeError(
+                f"Golden Config backup ({when}) did not finish within "
+                f"{C.GC_BACKUP_TIMEOUT}s (JobResult {backup_result.pk} is "
+                f"'{backup_result.status}')"
+                + (
+                    " — it was never picked up: the backup needs a FREE worker "
+                    "slot on its job queue while this job occupies one (a "
+                    "concurrency-1 worker will always end up here). Check worker "
+                    "capacity and the backup job's queue."
+                    if never_started
+                    else " — it is still running and may yet complete; check that "
+                    "Job Result. Note the enqueued backup keeps running on its own."
+                )
+            )
+        raise RuntimeError(
+            f"Golden Config backup ({when}) ended '{backup_result.status}' "
+            f"(JobResult {backup_result.pk}) — see that Job Result's log."
         )
 
     @staticmethod
