@@ -210,7 +210,7 @@
 <polygon points="400,2030.0 525.0,2072 400,2114.0 275.0,2072" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
 <text x="400" y="2065" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Run scope =</tspan><tspan x="400" dy="14">stage-copy?</tspan></text>
 <rect x="250" y="2140" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
-<text x="400" y="2161" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Capture stack member roster</tspan><tspan x="400" dy="14">(chassis serials from inventory)</tspan></text>
+<text x="400" y="2161" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Capture chassis roster (stack members /</tspan><tspan x="400" dy="14">standalone chassis serials from inventory)</tspan></text>
 <rect x="250" y="2236" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
 <text x="400" y="2250" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">install add (skipped if already staged) →</tspan><tspan x="400" dy="14">track our op-uuid in the operation ledger</tspan><tspan x="400" dy="14">to op-complete (state inference fallback)</tspan></text>
 <polygon points="400,2318.0 525.0,2360 400,2402.0 275.0,2360" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
@@ -228,7 +228,7 @@
 <polygon points="400,2894.0 525.0,2936 400,2978.0 275.0,2936" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
 <text x="400" y="2929" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Target version</tspan><tspan x="400" dy="14">stably confirmed?</tspan></text>
 <polygon points="400,2990.0 525.0,3032 400,3074.0 275.0,3032" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
-<text x="400" y="3025" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">All stack members</tspan><tspan x="400" dy="14">rejoined?</tspan></text>
+<text x="400" y="3025" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">All chassis</tspan><tspan x="400" dy="14">rejoined?</tspan></text>
 <rect x="250" y="3100" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
 <text x="400" y="3121" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Report auto-rollback timer status</tspan><tspan x="400" dy="14">(informational; commit follows)</tspan></text>
 <rect x="250" y="3196" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>

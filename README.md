@@ -190,8 +190,10 @@ The account must be **privilege 15** / authorized for `install` and `copy`.
 
 The pre-flight check distinguishes the failure modes so the Job Result is
 actionable: **HTTP 401** → bad/missing credentials; **HTTP 403** → authenticated
-but under-privileged (needs privilege 15); otherwise → connectivity / RESTCONF
-not enabled.
+but under-privileged (needs privilege 15); **HTTP 502/503** → the RESTCONF
+backend is still starting (typical for 1–3 minutes after enabling `restconf`
+or right after a reload — wait and re-run); otherwise → connectivity /
+RESTCONF not enabled.
 
 ## Image storage
 
