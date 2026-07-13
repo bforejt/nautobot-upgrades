@@ -104,6 +104,18 @@ OP_SAVE_CONFIG = "operations/cisco-ia:save-config"
 #: (2026-07-11): the AVC messages are NOT tied to one train — observed on
 #: 17.15.x AND 17.18.3 — so suppression is applied regardless of version.
 DATA_NATIVE_LOGGING = "data/Cisco-IOS-XE-native:native/logging"
+
+#: Boot config — the zero-walk PRIMARY-FILESYSTEM hint. FIELD FACT
+#: (2026-07-12, real 9300 on 17.18.3): this GET emits NO SELinux AVC lines,
+#: and with 'boot system switch all flash:packages.conf' configured it
+#: returns the generic bootfile filename "flash:packages.conf" — the
+#: 'switch all' scoping is normalized away, and the prefix before the first
+#: colon names the filesystem the device BOOTS from (the best available
+#: definition of "primary"). Config is OPERATOR INTENT, not device-published
+#: runtime state, so the job only ever uses this corroborated against the
+#: partition listing (boot config proposes, runtime state disposes) or as
+#: diagnostics in the discovery-failure abort.
+DATA_NATIVE_BOOT = "data/Cisco-IOS-XE-native:native/boot"
 #: Discriminator name (YANG caps it at 8 chars); distinctive so operators can
 #: grep for the job's filter: 'show run | include NBAVC'.
 AVC_DISCRIMINATOR_NAME = "NBAVC"
