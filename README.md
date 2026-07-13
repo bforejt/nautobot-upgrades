@@ -564,6 +564,56 @@ Requirements and mechanics:
 - **Dry-run stays read-only** — it logs what would be backed up and skips
   both snapshots.
 
+
+### Pre/post health checks (report-only)
+
+**Pre/post health checks** (default **off**) snapshot the device's network
+health immediately **before activation** and compare it **after the commit** —
+looking for the things an upgrade quietly breaks: ports that never came back,
+downstream switches or APs no longer seen, a power supply that didn't survive
+the reload, or a boot the device itself classifies as a crash.
+
+| Check | Source (all pure oper reads — no config writes, no AVC noise) | Finding | Severity |
+| --- | --- | --- | --- |
+| Port states | `interfaces-oper` | admin-up port that was oper-up before, still down after convergence | **error** on trunk/infrastructure ports, warning on access |
+| Trunk identification | interface **config** (`switchport mode trunk`) ∪ CDP Switch-capability peers | classifies severity above | — |
+| CDP neighbors | `cdp-oper` | neighbor gone, or moved to a genuinely new port (a lost redundant uplink to the same upstream counts as *gone*, not moved) | warning; **error** when the affected port is a trunk |
+| LLDP neighbors | `lldp-oper` | same comparator, second feed | same |
+| Environment | `environment-oper` | sensor healthy before, degraded after (pre-existing bad sensors are noted, never flagged) | **error** |
+| Reload reason | `device-hardware-oper` (`last-reboot-reason` + `reason-severity`) | the device's OWN verdict that the reboot was **abnormal** — a typed enum, not string-matching | **error** |
+
+Semantics, all deliberate:
+
+- **Report-only**: findings are logged at error/warning level and attached as
+  Job Result artifacts — they never un-succeed a committed upgrade. (Gating
+  the commit on health is a possible future opt-in with real
+  rollback-loop risks; not built.)
+- **Convergence-aware, not snapshot-at-an-instant**: everything up-before
+  must return within ~10 minutes (`HEALTH_CONVERGENCE_TIMEOUT`) — ports
+  renegotiate, STP reconverges, PoE-powered APs take minutes to boot, CDP
+  ages in at 180-second holdtimes. The post-check re-polls until clean or
+  deadline (the budget is approximate: the final in-flight capture may run
+  a couple of minutes past it).
+- **Fail-closed baseline**: if the pre-snapshot cannot be captured, the
+  device aborts *before activation* (nothing has reloaded yet, so the abort
+  is free). A requested baseline must exist.
+- **Empty classes auto-skip, loudly**: a device with no CDP neighbors before
+  the upgrade logs "class skipped" — never silence, never a failure. The
+  baseline scope is always declared ("22 ports up (4 trunks), 9 CDP, …").
+- **Comparison in memory, artifacts for audit**: the diff only ever compares
+  two observations made by the same run; `health-pre/post/report_<device>.json`
+  are attached to the Job Result (retention rides Nautobot's JobResult
+  cleanup) and are never read back for decisions.
+- **New things are never findings**: new ports up, new neighbors — noted,
+  not flagged.
+- Full runs only (stage scopes never reload, so there is nothing to compare).
+
+**Deliberately excluded** (false-positive machines in a post-boot window):
+CPU/memory (legitimately high right after boot), full routing-table diffs,
+full STP state. **v2 queue**: OSPF/BGP/EIGRP/HSRP adjacencies (same
+comparator pattern), PoE per-port power, MAC/ARP count sanity,
+syslog-traceback scan, per-stack-member reboot reasons.
+
 ### ISSU-capable platforms (9400/9500/9600): install mode only
 
 **This job upgrades in _install mode_ only — including on ISSU-capable
@@ -634,6 +684,7 @@ mode.
 | Save running-config before reload | no | **Default off.** RPC reloads never prompt to save, and the job cannot detect whether a save is needed (SNMP-only source — dependency declined). This box makes the job save (`cisco-ia:save-config`) before activating, aborting if the save is refused or fails. See [Saving running-config](#saving-running-config-before-the-reload-full-runs). |
 | Save running-config after commit | no | **Default off.** After the commit and Nautobot sync, write running-config to startup. Normalizes startup to the new OS's rendering (ends the persistent startup/running diff) — **but** during the soak window an old-syntax startup is the safer rollback path. See [Saving running-config after the commit](#saving-running-config-after-the-commit-opt-in-soak-trade-off). |
 | Golden Config backup (before & after) | no | **Default off.** Snapshot configs via the Golden Config backup job before any upgrades start (failure **aborts** the run) and after all devices finish (failure warns). Requires the Golden Config app. See [Golden Config backups](#golden-config-backups-before--after). |
+| Pre/post health checks | no | **Default off.** Snapshot ports, CDP/LLDP neighbors, and environment before activation; compare after commit with a ~10-min convergence window. Report-only: trunk-port and environment findings log at error level, the device's own abnormal-reboot verdict is checked, artifacts attach to the Job Result. See [Pre/post health checks](#prepost-health-checks-report-only). |
 | Quiet SELinux log noise on terminals | no | **Default off.** The SELinux AVC-denial messages come from how the job watches files during an upgrade (observed so far only on Catalyst 9300 switches; benign in our testing — not a Cisco-confirmed cosmetic defect; see below); enable this if you watch the **physical console or terminal-monitor (SSH)** and want them quieted there. `show logging` and syslog servers still record everything. Applied to the RUNNING config at the start of the run (every release); unsaved — erased by the reload — unless combined with *Save running-config before reload* on a **Full** run. See [SELinux AVC log events](#selinux-avc-log-events-cause-and-workaround). |
 | Secrets group override | no | Force one Secrets Group for the whole run; by default each device uses its own assigned group. |
 | Remove inactive | no | After commit, reclaim space (default **off** — keeps the rollback image for a soak period). |
@@ -654,6 +705,8 @@ mode.
 | Per-poll copy progress after the learn (walk-free, no SELinux bursts) | `GET .../q-filesystem=<fru>,<slot>,<bay>,<chassis>/partitions=<name>/partition-content=<full-path>` (address exactly as a real listing published it) |
 | Copy image | `POST .../operations/Cisco-IOS-XE-rpc:copy` (worker thread) |
 | Add / activate / commit / remove | `POST .../operations/Cisco-IOS-XE-install-rpc:{install,activate,install-commit,remove}` |
+| Health snapshots (opt-in; pre + convergence re-polls) | `GET .../Cisco-IOS-XE-interfaces-oper:interfaces/interface?fields=name;admin-status;oper-status`, `GET .../cdp-oper:cdp-neighbor-details`, `GET .../lldp-oper:lldp-entries`, `GET .../environment-oper:environment-sensors`, `GET .../device-hardware-oper:.../device-system-data` (reboot reason) |
+| Trunk identification (opt-in, once at the pre-snapshot) | `GET .../Cisco-IOS-XE-native:native/interface` (config read) |
 | Save running-config (opt-in) | `POST .../operations/cisco-ia:save-config` |
 | AVC suppression filter (opt-in) | `GET`/`PATCH .../data/Cisco-IOS-XE-native:native/logging` (read-before-write; merge only) |
 

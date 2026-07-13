@@ -85,6 +85,8 @@ SPINE = [
     ("d_stageadd", "dec", "Run scope =\nstage-add?",
      {"okright": ("Yes", "DONE: STAGED (add) — marked for\nactivation; window run: activate →\nreload → commit only"),
       "passlabel": "full"}),
+    ("healthpre", "proc",
+     "Opt-in: health baseline snapshot\n(ports/CDP/LLDP/env/reboot-reason;\nread failure ABORTS before activation)", {}),
     ("cfgsync", "proc",
      "Opt-in: save running-config before reload\n(RPC reloads never prompt; detection removed\n"
      "— SNMP-only source); else a reminder logs", {}),
@@ -120,6 +122,8 @@ SPINE = [
     ("d_remove", "dec", "remove_inactive\nenabled?",
      {"passlabel": "Yes", "bypass": ("No", "skip")}),
     ("remove", "proc", "install remove inactive (idle-gated,\nledger-tracked; warn on fail)", {}),
+    ("healthpost", "proc",
+     "Opt-in: post-upgrade health report\n(convergence-aware; report-only —\ntrunk/env/abnormal-reboot at error level)", {}),
     ("ok", "end", "DONE: UPGRADED & COMMITTED ✓", {}),
 ]
 
@@ -240,9 +244,9 @@ def build_svg():
         yx = 200
         s.append(elbow([(CX - GEOM["dec"][0] / 2, CY["d_remove"]),
                         (yx, CY["d_remove"]),
-                        (yx, CY["ok"]),
-                        (CX - GEOM["end"][0] / 2, CY["ok"])]))
-        s.append(edge_label(yx + 26, (CY["d_remove"] + CY["ok"]) / 2, cond))
+                        (yx, CY["healthpost"]),
+                        (CX - GEOM["proc"][0] / 2, CY["healthpost"])]))
+        s.append(edge_label(yx + 26, (CY["d_remove"] + CY["healthpost"]) / 2, cond))
 
     # branch boxes (abort/warn/okright)
     for nid in ORDER:
@@ -372,7 +376,7 @@ def build_drawio():
         pl = NODES[a][2].get("passlabel", "")
         edges.append(edge(f"e_{a}_{b}", a, b, pl))
     # d_remove bypass (No) -> ok
-    edges.append(edge("e_remove_no", "d_remove", "ok", "No"))
+    edges.append(edge("e_remove_no", "d_remove", "healthpost", "No"))
 
     body = "\n".join(cells + edges)
     return f'''<mxfile host="app.diagrams.net" type="device">
