@@ -11,10 +11,18 @@ warning), see [upgrade-flow.md](upgrade-flow.md).
 
 - **Blue** = start. **White boxes on the spine** = the phases. **Diamonds** =
   decisions.
-- **White rounded boxes to the right** = opt-in steps: the **8a/8b** health
-  checks and the **Remove inactive** cleanup. Their diamond's **Yes** branch
+- **White rounded boxes to the right** = opt-in steps: **Clean device first**,
+  the config saves (**before reload** / **after commit**), **Remove
+  inactive**, and the **8a/8b** health checks. Their diamond's **Yes** branch
   runs the step and rejoins the spine; **No** skips straight down — either
   way the flow continues, so these are side-steps, not end states.
+- **Dashed boxes** = opt-in AND once per **run** (the whole batch), not per
+  device: the Golden Config backup taken before any upgrade starts
+  (fail-closed — if the safety net can't run, no device is touched) and again
+  after all devices finish (warn-only — it never un-succeeds an upgrade).
+  Everything else on the diagram happens per device. The only opt-ins not
+  drawn are the cross-cutting logging toggles (Quiet SELinux noise, Debug) —
+  they don't change the flow.
 - The **numbered key** to the left of a row is its phase number in the
   README's "What it does" list (one key per phase — `install add` and activate
   are distinct phases; commit and sync are distinct blocks). **8a/8b** sit on

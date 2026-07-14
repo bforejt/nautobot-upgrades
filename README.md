@@ -117,10 +117,12 @@ on the diagram above map to this list):
    confirm RESTCONF is reachable.
 2. **Pre-flight gates** — running version and already-on-target short-circuit;
    **≥ 17.9.1**; **install mode**; image resolved from Nautobot with device-type
-   compatibility; **enough free space**.
+   compatibility; then — after the opt-in **Clean device first** — **enough
+   free space**. A dry run validates all of these, free space included, before
+   it stops.
 3. **Copy + verify** — the device pulls the image (classic `copy` RPC, watched
-   for live progress), gated on a **byte-exact size match**. Skipped if the file
-   is already on flash.
+   for live progress), gated on a **byte-exact size match**. Skipped if the
+   file is already on flash.
 4. **`install add`** — extract and stage the image to **every member**, with
    Cisco's **mandatory image signature validation** (a corrupt or untrusted
    image is rejected here). Like every engine write, it is **gated on
@@ -143,6 +145,12 @@ on the diagram above map to this list):
    neighbors, environment sensors, and the device's own reload-reason verdict.
    Report-only, with a ~10-minute convergence window. The full pre/post test
    lists are in [Pre/post health checks](#prepost-health-checks-report-only).
+
+The remaining opt-ins — **Clean device first**, the **config saves** (before
+reload / after commit), and **Remove inactive** — appear as side-steps hanging
+off their own decision diamonds, and the once-per-run **Golden Config
+backups** are the dashed blocks bracketing the spine; an unticked run is
+exactly the solid spine.
 
 Every gate logs to the Job Result with the device attached (a **Debug** toggle
 logs every RESTCONF call). Batches run **in parallel**
