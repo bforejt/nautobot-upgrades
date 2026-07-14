@@ -137,9 +137,9 @@ on the diagram above map to this list):
    job does **not** commit and the device auto-rolls-back.
 7. **Sync + optional cleanup** — update `Device.software_version` in Nautobot;
    optionally `install remove inactive` to reclaim space (off by default).
-8. **Health checks (opt-in)** — two blocks bracketing the disruptive part: a
-   **pre-test** baseline (**8a**) captured just before activation, and a
-   **post-test** comparison (**8b**) after the sync — ports, CDP/LLDP
+8. **Health checks (opt-in)** — two opt-in steps bracketing the disruptive
+   part: a **pre-test** baseline (**8a**) captured just before activation, and
+   a **post-test** comparison (**8b**) after the sync — ports, CDP/LLDP
    neighbors, environment sensors, and the device's own reload-reason verdict.
    Report-only, with a ~10-minute convergence window. The full pre/post test
    lists are in [Pre/post health checks](#prepost-health-checks-report-only).
@@ -580,7 +580,7 @@ looking for the things an upgrade quietly breaks: ports that never came back,
 downstream switches or APs no longer seen, a power supply that didn't survive
 the reload, or a boot the device itself classifies as a crash. On the
 [overview diagram](docs/overview-flow.md) these are the **8a** (pre-test) and
-**8b** (post-test) blocks.
+**8b** (post-test) decision branches.
 
 **Pre-test (8a)** — the baseline, captured immediately before activation
 (fail-closed: if this snapshot can't be read, the device aborts *before*
