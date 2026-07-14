@@ -54,6 +54,7 @@ and every run should start with Dry-run.
 
 from __future__ import annotations
 
+import json
 import math
 import re
 import threading
@@ -292,6 +293,16 @@ class IOSXEUpgrade(Job):
             "project README."
         ),
     )
+    health_checks = BooleanVar(
+        label="Pre/post health checks",
+        default=False,
+        description=(
+            "Snapshot ports, CDP/LLDP neighbors, and environment sensors "
+            "before activation and compare after commit (report-only, "
+            "convergence-aware). Only effective for Full runs. See 'Pre/post "
+            "health checks' in the project README."
+        ),
+    )
     suppress_avc_noise = BooleanVar(
         label="Quiet SELinux log noise on terminals",
         default=False,
@@ -356,7 +367,9 @@ class IOSXEUpgrade(Job):
         # With parallel batches the makespan is ~ceil(devices / parallelism) x
         # one worst-case device (copy 3600 + add 1200 + reload 120+1800 + slack),
         # plus up to 2x GC_BACKUP_TIMEOUT (900s each) of serial Golden Config
-        # backup waits when that option is on;
+        # backup waits and up to ~HEALTH_CONVERGENCE_TIMEOUT + one capture
+        # (~13 min worst case) of post-upgrade health polling, when those
+        # options are on;
         # size batches so that fits inside the soft limit. SoftTimeLimitExceeded
         # is re-raised (never swallowed); queued devices are cancelled and named,
         # in-flight devices are recovered by an idempotent re-run.
@@ -377,6 +390,7 @@ class IOSXEUpgrade(Job):
             "save_config",
             "save_config_after",
             "gc_backup",
+            "health_checks",
             "suppress_avc_noise",
             "secrets_group_override",
             "remove_inactive",
@@ -404,6 +418,7 @@ class IOSXEUpgrade(Job):
         save_config,
         save_config_after,
         gc_backup,
+        health_checks,
         suppress_avc_noise,
         secrets_group_override,
         remove_inactive,
@@ -495,6 +510,7 @@ class IOSXEUpgrade(Job):
                     save_config,
                     save_config_after,
                     suppress_avc_noise,
+                    health_checks,
                 )
                 # Total wall-clock per device — the number change windows are
                 # planned around.
@@ -652,6 +668,7 @@ class IOSXEUpgrade(Job):
         save_config=False,
         save_config_after=False,
         suppress_avc_noise=False,
+        health_checks=False,
     ):
         log = {"object": device}
 
@@ -801,6 +818,11 @@ class IOSXEUpgrade(Job):
                         f" Would save running-config{' again' if save_config else ''} "
                         "AFTER the commit (post-commit save)."
                     )
+                if health_checks:
+                    cfg_note += (
+                        " Would snapshot health (ports/CDP/LLDP/environment) "
+                        "before activation and compare after commit."
+                    )
             return f"DRY-RUN ok:{clean_note}{cfg_note} {planned}. All pre-flight gates passed."
 
         # -- 3. Transfer + integrity (classic copy in a worker thread, watched
@@ -847,6 +869,47 @@ class IOSXEUpgrade(Job):
                 "maintenance-window run (scope 'full') will skip the copy and "
                 "the add, and needs only activate → reload → commit."
             )
+        # -- Pre-activation health baseline (opt-in). Captured as late as
+        # possible before the disruptive verb so the baseline reflects the
+        # device as it enters the reload. FAIL-CLOSED: a requested baseline
+        # that cannot be captured aborts BEFORE activation — nothing has
+        # reloaded yet, so aborting here is free.
+        health_pre = None
+        if health_checks:
+            try:
+                health_pre = self._capture_health_snapshot(client, want_trunks=True)
+            except RestconfError as exc:
+                raise UpgradeAbort(
+                    f"Health checks were requested but the pre-upgrade snapshot "
+                    f"failed ({exc}) — aborting before activation (a requested "
+                    "baseline must exist). Untick the option to upgrade without "
+                    "checks."
+                ) from exc
+            up_ports = sum(
+                1 for s in health_pre["interfaces"].values() if s.get("admin") and s.get("oper")
+            )
+            self.logger.info(
+                "Health baseline: %d port(s) up (%d trunk/infrastructure), "
+                "%d CDP neighbor(s), %d LLDP, %d healthy sensor(s); last "
+                "reboot: '%s'.",
+                up_ports,
+                len(health_pre.get("trunks", [])),
+                len(health_pre["cdp"]),
+                len(health_pre["lldp"]),
+                sum(1 for s in health_pre["env"].values() if _env_ok(s)),
+                health_pre["reboot"].get("reason") or "unreported",
+                extra=log,
+            )
+            for cls, count in (("CDP", len(health_pre["cdp"])), ("LLDP", len(health_pre["lldp"]))):
+                if count == 0:
+                    self.logger.info(
+                        "Health: no %s neighbors before the upgrade — that "
+                        "class is skipped in the post-check.",
+                        cls,
+                        extra=log,
+                    )
+            self._attach_health_artifact(f"health-pre_{device.name}.json", health_pre, log)
+
         # -- Config save before the reload: RPC-triggered activation reloads
         # never ask the CLI's 'configuration modified. Save?' question —
         # unsaved running-config changes are silently lost. The saved/unsaved
@@ -938,6 +1001,31 @@ class IOSXEUpgrade(Job):
                 "the target.",
                 extra=log,
             )
+
+        # -- Post-upgrade health report (opt-in, report-only by decision) ----
+        if health_checks and health_pre is not None:
+            if committed:
+                try:
+                    self._post_health_check(client, device, health_pre, log)
+                except JobStopped:
+                    # the ONLY post-commit stop checkpoint in the job: honor the
+                    # stop by cutting the REPORT short — never by re-classifying
+                    # a committed, synced upgrade as failed. The thread halts at
+                    # the same safe boundary (this method returns just below).
+                    self.logger.warning(
+                        "Stop requested during the post-upgrade health check — "
+                        "check cut short. The upgrade IS committed and synced; "
+                        "compare against the pre-upgrade baseline artifact "
+                        "manually.",
+                        extra=log,
+                    )
+            else:
+                self.logger.warning(
+                    "Skipping the post-upgrade health check: commit not yet "
+                    "confirmed (device state still in flux). The pre-upgrade "
+                    "baseline artifact is attached for manual comparison.",
+                    extra=log,
+                )
 
         if not committed:
             return (
@@ -1090,6 +1178,169 @@ class IOSXEUpgrade(Job):
         raise UpgradeAbort(
             f"No '{secret_type}' secret defined in Secrets Group '{group}' for any "
             "of the RESTCONF/HTTP/Generic access types."
+        )
+
+    def _capture_health_snapshot(self, client, want_trunks=False):
+        """One health snapshot from pure oper reads (plus reboot reason).
+
+        Raises RestconfError on any failed read — the PRE caller converts
+        that to a fail-closed abort (a requested baseline must exist), the
+        POST loop tolerates it as a transient and re-polls. want_trunks adds
+        the one-time interface-CONFIG read that identifies trunk ports (pre
+        only; trunk membership doesn't change during the upgrade window).
+        """
+        # interfaces and device-system ALWAYS exist on a live device, so a 404
+        # (or an empty/coerced body) is a FAILED read, never "no interfaces" —
+        # treating it as empty would fabricate a total-outage report against a
+        # populated baseline. CDP/LLDP legitimately 404 when the feature is
+        # off, and environment-sensors can be absent on virtual platforms;
+        # those stay tolerant (empty env is additionally guarded at compare
+        # time, never read as "every sensor vanished").
+        interfaces = _parse_interfaces(client.get(C.DATA_INTERFACES_OPER, ok_404=False) or {})
+        if not interfaces:
+            raise RestconfError(
+                "interfaces-oper returned no interfaces — treating the health "
+                "snapshot as a failed read"
+            )
+        cdp = _parse_cdp(client.get(C.DATA_CDP_NEIGHBORS, ok_404=True) or {})
+        lldp = _parse_lldp(client.get(C.DATA_LLDP_ENTRIES, ok_404=True) or {})
+        env = _parse_env(client.get(C.DATA_ENV_SENSORS, ok_404=True) or {})
+        system = (client.get(C.DATA_DEVICE_SYSTEM, ok_404=False) or {}).get(
+            "Cisco-IOS-XE-device-hardware-oper:device-system-data", {}
+        )
+        snapshot = {
+            "schema": 1,
+            "interfaces": interfaces,
+            "cdp": cdp,
+            "lldp": lldp,
+            "env": env,
+            "reboot": {
+                "reason": str(system.get("last-reboot-reason", "") or ""),
+                "severity": str(system.get("reason-severity", "") or ""),
+            },
+        }
+        if want_trunks:
+            native_if = client.get(C.DATA_NATIVE_INTERFACE, ok_404=True) or {}
+            snapshot["trunks"] = sorted(_parse_trunks(native_if, cdp))
+        return snapshot
+
+    def _attach_health_artifact(self, filename, payload, log):
+        """Persist a snapshot/report on this JobResult (audit only, never read back)."""
+        if not hasattr(self, "create_file"):
+            self.logger.warning(
+                "Could not attach %s: this Nautobot lacks Job.create_file — "
+                "the health data is in the log only.",
+                filename,
+                extra=log,
+            )
+            return
+        try:
+            self.create_file(filename, json.dumps(payload, indent=1, sort_keys=True))
+        except Exception as exc:  # noqa: BLE001 - audit artifact must never fail a device
+            self.logger.warning("Could not attach %s (%s).", filename, exc, extra=log)
+
+    def _post_health_check(self, client, device, health_pre, log):
+        """Compare post-upgrade health against the pre-activation baseline.
+
+        REPORT-ONLY by decision: findings are logged (trunk/infrastructure
+        and environment findings at error level) and never un-succeed the
+        committed upgrade. Convergence-aware: everything up-before must
+        return within HEALTH_CONVERGENCE_TIMEOUT — ports renegotiate, APs
+        boot on PoE, CDP ages in — so the check re-polls instead of judging
+        one instant. An abnormal-reboot verdict comes from the device's own
+        reason-severity leaf (state, not string-matching).
+        """
+        deadline = time.monotonic() + C.HEALTH_CONVERGENCE_TIMEOUT
+        snap = None
+        reg = None
+        while True:
+            try:
+                snap = self._capture_health_snapshot(client)
+                reg = _health_regressions(health_pre, snap)
+                if _health_is_clean(reg):
+                    break
+            except RestconfError as exc:
+                self.logger.warning(
+                    "Health re-poll read failed (%s) — retrying until the convergence deadline.",
+                    exc,
+                    extra=log,
+                )
+            if time.monotonic() >= deadline:
+                break
+            self._check_stop()
+            time.sleep(C.HEALTH_POLL_INTERVAL)
+
+        trunks = set(health_pre.get("trunks", []))
+        reboot = (snap or {}).get("reboot", {})
+        if str(reboot.get("severity", "")).lower() == "abnormal":
+            self.logger.error(
+                "HEALTH: the device reports its post-upgrade reboot was "
+                "ABNORMAL (reason: '%s') — investigate before trusting this "
+                "upgrade window.",
+                reboot.get("reason") or "unknown",
+                extra=log,
+            )
+        elif reboot.get("reason"):
+            self.logger.info(
+                "Health: post-upgrade reboot reason '%s' (severity: %s).",
+                reboot["reason"],
+                reboot.get("severity") or "unreported",
+                extra=log,
+            )
+        if snap is None or reg is None:
+            self.logger.warning(
+                "Health check could not complete: no successful post-upgrade "
+                "snapshot within the convergence window — compare the pre "
+                "artifact manually.",
+                extra=log,
+            )
+            return
+        errors, warnings_ = _classify_health(reg, trunks)
+        for msg in errors:
+            self.logger.error("HEALTH: %s.", msg, extra=log)
+        for msg in warnings_:
+            self.logger.warning("Health: %s.", msg, extra=log)
+        pre_up = {
+            n
+            for n, s in health_pre.get("interfaces", {}).items()
+            if s.get("admin") and s.get("oper")
+        }
+        now_up = {n for n, s in snap.get("interfaces", {}).items() if s.get("oper")}
+        new_neighbors = [k for k in snap.get("cdp", {}) if k not in health_pre.get("cdp", {})] + [
+            k for k in snap.get("lldp", {}) if k not in health_pre.get("lldp", {})
+        ]
+        preexisting_bad = [
+            s for s, state in health_pre.get("env", {}).items() if not _env_ok(state)
+        ]
+        if (now_up - pre_up) or new_neighbors or preexisting_bad:
+            self.logger.info(
+                "Health notes (never findings): %d newly-up port(s), %d new "
+                "neighbor(s), %d sensor(s) already unhealthy before the "
+                "upgrade — detail in the artifacts.",
+                len(now_up - pre_up),
+                len(new_neighbors),
+                len(preexisting_bad),
+                extra=log,
+            )
+        if not errors and not warnings_:
+            self.logger.info(
+                "Health check clean: all %d baseline-up port(s), %d CDP and "
+                "%d LLDP neighbor(s), and %d healthy sensor(s) are back.",
+                sum(
+                    1
+                    for s in health_pre.get("interfaces", {}).values()
+                    if s.get("admin") and s.get("oper")
+                ),
+                len(health_pre.get("cdp", {})),
+                len(health_pre.get("lldp", {})),
+                sum(1 for s in health_pre.get("env", {}).values() if _env_ok(s)),
+                extra=log,
+            )
+        self._attach_health_artifact(f"health-post_{device.name}.json", snap, log)
+        self._attach_health_artifact(
+            f"health-report_{device.name}.json",
+            {"schema": 1, "errors": errors, "warnings": warnings_, "reboot": reboot},
+            log,
         )
 
     def _run_gc_backup(self, device_list, when):
@@ -3496,6 +3747,237 @@ def _find_timer_entries(data):
 
 _BOOT_TRANSPORT_SCHEMES = frozenset({"tftp", "ftp", "http", "https", "scp", "rcp", "sftp"})
 _BOOT_FS_TOKEN = re.compile(r"[a-z][a-z0-9_-]{1,30}$")
+
+
+def _oper_entries(payload, list_name):
+    """Yield the entries of a named list anywhere in a RESTCONF response.
+
+    Responses arrive wrapped ({"<module>:<container>": {"<list>": [...]}}) or,
+    for a fields-scoped read, as the bare list ({"<module>:<list>": [...]}) —
+    match the list's LOCAL name so both shapes (and module-prefix drift)
+    parse identically.
+    """
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if str(key).split(":")[-1] == list_name and isinstance(value, list):
+                yield from (v for v in value if isinstance(v, dict))
+            else:
+                yield from _oper_entries(value, list_name)
+    elif isinstance(payload, list):
+        for item in payload:
+            yield from _oper_entries(item, list_name)
+
+
+def _parse_interfaces(payload):
+    """{name: {"admin": bool, "oper": bool}} from an interfaces-oper read."""
+    out = {}
+    for entry in _oper_entries(payload, "interface"):
+        name = entry.get("name")
+        if not name:
+            continue
+        out[str(name)] = {
+            "admin": str(entry.get("admin-status", "")) == "if-state-up",
+            "oper": str(entry.get("oper-status", "")) == "if-oper-state-ready",
+        }
+    return out
+
+
+def _parse_cdp(payload):
+    """{"<neighbor>|<local-if>": {...}} from a cdp-oper read."""
+    out = {}
+    for entry in _oper_entries(payload, "cdp-neighbor-detail"):
+        neighbor = str(entry.get("device-name", "") or "")
+        local = str(entry.get("local-intf-name", "") or "")
+        if not neighbor or not local:
+            continue
+        out[f"{neighbor}|{local}"] = {
+            "neighbor": neighbor,
+            "local": local,
+            "port": str(entry.get("port-id", "") or ""),
+            "caps": str(entry.get("capability", "") or ""),
+        }
+    return out
+
+
+def _parse_lldp(payload):
+    """{"<neighbor>|<local-if>": {...}} from an lldp-oper read."""
+    out = {}
+    for entry in _oper_entries(payload, "lldp-entry"):
+        neighbor = str(entry.get("device-id", "") or "")
+        local = str(entry.get("local-interface", "") or "")
+        if not neighbor or not local:
+            continue
+        out[f"{neighbor}|{local}"] = {
+            "neighbor": neighbor,
+            "local": local,
+            "port": str(entry.get("connecting-interface", "") or ""),
+            "caps": "",
+        }
+    return out
+
+
+def _parse_env(payload):
+    """{"<location>/<sensor>": state} from an environment-oper read."""
+    out = {}
+    for entry in _oper_entries(payload, "environment-sensor"):
+        name = str(entry.get("name", "") or "")
+        if not name:
+            continue
+        location = str(entry.get("location", "") or "")
+        out[f"{location}/{name}" if location else name] = str(entry.get("state", "") or "")
+    return out
+
+
+def _env_ok(state):
+    """Is a sensor state string healthy? (device vocabulary varies by family)."""
+    return str(state).strip().lower() in {"normal", "green", "ok", "good"}
+
+
+def _parse_trunks(native_interface_payload, cdp_map):
+    """Trunk/infrastructure port names: configured trunks + CDP switch peers.
+
+    Config is the RIGHT source for "which ports are infrastructure" — intent,
+    not observation. The native interface JSON nests the switchport trunk
+    mode differently across types/augmentations, so detection is a
+    conservative recursive search per interface entry for a 'trunk' node
+    under a 'mode' node (local names — augment prefixes vary). A miss just
+    means the port is reported at access severity, never silence. CDP
+    neighbors advertising the Switch capability ('S') mark their local port
+    as infrastructure too.
+    """
+
+    def _has_trunk_mode(node):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                local = str(key).split(":")[-1]
+                if local == "mode" and isinstance(value, dict):
+                    if any(str(k).split(":")[-1] == "trunk" for k in value):
+                        return True
+                if _has_trunk_mode(value):
+                    return True
+        elif isinstance(node, list):
+            return any(_has_trunk_mode(item) for item in node)
+        return False
+
+    trunks = set()
+    if isinstance(native_interface_payload, dict):
+        for key, value in native_interface_payload.items():
+            if str(key).split(":")[-1] == "interface" and isinstance(value, dict):
+                native_interface_payload = value
+                break
+    if isinstance(native_interface_payload, dict):
+        for if_type, entries in native_interface_payload.items():
+            type_local = str(if_type).split(":")[-1]
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if isinstance(entry, dict) and _has_trunk_mode(entry):
+                    trunks.add(f"{type_local}{entry.get('name', '')}")
+    for info in (cdp_map or {}).values():
+        # token match, not substring: caps come as letter codes ("R S I") or
+        # long-form words ("Switch IGMP") — a bare substring 'S' would
+        # false-classify e.g. "Source-Route-Bridge" peers as switches
+        tokens = {t.strip().lower() for t in str(info.get("caps", "")).replace(",", " ").split()}
+        if "s" in tokens or "switch" in tokens:
+            trunks.add(info["local"])
+    return trunks
+
+
+def _health_regressions(pre, now):
+    """What was healthy before and is not now — never judges new things.
+
+    ports_down: admin-up AND oper-up before, not oper-up now.
+    cdp/lldp missing vs moved: a missing (neighbor, local-if) key whose
+    neighbor reappears on a different local port is MOVED, else MISSING.
+    env_degraded: sensor healthy before, different/unhealthy state now.
+    """
+    reg = {
+        "ports_down": [],
+        "cdp_missing": [],
+        "cdp_moved": [],
+        "lldp_missing": [],
+        "lldp_moved": [],
+        "env_degraded": [],
+        "env_unreadable": False,
+    }
+    now_if = now.get("interfaces", {})
+    for name, state in pre.get("interfaces", {}).items():
+        if state.get("admin") and state.get("oper"):
+            if not now_if.get(name, {}).get("oper"):
+                reg["ports_down"].append(name)
+    for proto in ("cdp", "lldp"):
+        pre_map, now_map = pre.get(proto, {}), now.get(proto, {})
+        pre_by_neighbor = {}
+        for info in pre_map.values():
+            pre_by_neighbor.setdefault(info["neighbor"], set()).add(info["local"])
+        now_by_neighbor = {}
+        for info in now_map.values():
+            now_by_neighbor.setdefault(info["neighbor"], []).append(info["local"])
+        for key, info in pre_map.items():
+            if key in now_map:
+                continue
+            # MOVED requires the neighbor on a port it did NOT already occupy
+            # in the baseline — otherwise a lost redundant uplink to the same
+            # upstream (dual-homing) would masquerade as a benign move while
+            # an adjacency is genuinely gone.
+            new_ports = [
+                p
+                for p in now_by_neighbor.get(info["neighbor"], [])
+                if p not in pre_by_neighbor.get(info["neighbor"], set())
+            ]
+            if new_ports:
+                reg[f"{proto}_moved"].append(
+                    (info["neighbor"], info["local"], sorted(new_ports)[0])
+                )
+            else:
+                reg[f"{proto}_missing"].append(
+                    (info["neighbor"], info["local"], info.get("caps", ""))
+                )
+    now_env = now.get("env", {})
+    if pre.get("env") and not now_env:
+        # sensors existed before but the post read answered nothing: an
+        # unreadable feed, NOT "every sensor vanished" — reported, not judged
+        reg["env_unreadable"] = True
+    else:
+        for sensor, state in pre.get("env", {}).items():
+            if _env_ok(state):
+                now_state = now_env.get(sensor, "absent")
+                if not _env_ok(now_state):
+                    reg["env_degraded"].append((sensor, state, now_state))
+    return reg
+
+
+def _health_is_clean(reg):
+    return not any(reg.values())
+
+
+def _classify_health(reg, trunks):
+    """(errors, warnings) message lists — trunk/infrastructure findings are errors."""
+    errors, warnings = [], []
+    for name in sorted(reg.get("ports_down", [])):
+        msg = f"port {name} was up before the upgrade and is still down"
+        (errors if name in trunks else warnings).append(
+            msg + (" (TRUNK/infrastructure port)" if name in trunks else "")
+        )
+    for proto in ("cdp", "lldp"):
+        for neighbor, local, caps in reg.get(f"{proto}_missing", []):
+            msg = f"{proto.upper()} neighbor '{neighbor}' (was on {local}"
+            msg += f", caps: {caps})" if caps else ")"
+            msg += " is gone"
+            (errors if local in trunks else warnings).append(msg)
+        for neighbor, old, new in reg.get(f"{proto}_moved", []):
+            msg = f"{proto.upper()} neighbor '{neighbor}' moved: {old} -> {new}"
+            (errors if old in trunks else warnings).append(
+                msg + (" (was on a TRUNK/infrastructure port)" if old in trunks else "")
+            )
+    for sensor, before, after in reg.get("env_degraded", []):
+        errors.append(f"environment sensor '{sensor}' degraded: '{before}' -> '{after}'")
+    if reg.get("env_unreadable"):
+        warnings.append(
+            "environment sensors were readable before the upgrade but answered "
+            "nothing after — not compared; check them manually"
+        )
+    return errors, warnings
 
 
 def _save_remedy(context):

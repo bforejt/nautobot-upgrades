@@ -146,6 +146,32 @@ POLL_INTERVAL = 30
 GC_BACKUP_TIMEOUT = 900
 GC_BACKUP_POLL_INTERVAL = 15
 
+# --- Pre/post health checks (opt-in, report-only) ----------------------------
+
+#: Health-check oper reads (leaf names verified against the published 17.12.1
+#: models). All are pure operational subtrees: no config writes and no
+#: filesystem walks (so none of the SELinux AVC noise the copy reads face).
+#: The interfaces read is fields-scoped to the three status leaves — payload
+#: trimming; per field-testing `fields` is a server-side post-filter, which
+#: is fine here (no walk to avoid).
+DATA_INTERFACES_OPER = (
+    "data/Cisco-IOS-XE-interfaces-oper:interfaces/interface?fields=name;admin-status;oper-status"
+)
+DATA_CDP_NEIGHBORS = "data/Cisco-IOS-XE-cdp-oper:cdp-neighbor-details"
+DATA_LLDP_ENTRIES = "data/Cisco-IOS-XE-lldp-oper:lldp-entries"
+DATA_ENV_SENSORS = "data/Cisco-IOS-XE-environment-oper:environment-sensors"
+#: Interface CONFIG (intent) — read once at the pre-snapshot to identify
+#: trunk ports, which get error-level severity in the post report (a trunk
+#: is infrastructure: a downstream switch or AP uplink).
+DATA_NATIVE_INTERFACE = "data/Cisco-IOS-XE-native:native/interface"
+
+#: The post-check is convergence-aware, not a snapshot-at-an-instant: ports
+#: renegotiate, STP reconverges, PoE-powered APs take minutes to boot, and
+#: CDP holdtimes are 180s. Everything up-before must return within this
+#: budget or it is flagged; the check re-polls until then.
+HEALTH_CONVERGENCE_TIMEOUT = 600
+HEALTH_POLL_INTERVAL = 30
+
 #: RESTCONF `fields` sub-selection for partition-level q-filesystem reads
 #: (discovery, free-space gate): the partition stats are the wanted answer,
 #: so ask for only them instead of parsing the full multi-hundred-entry file
