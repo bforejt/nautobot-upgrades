@@ -3,9 +3,12 @@
 a HIGH-LEVEL 'what it does' overview of the upgrade.
 
 Companion to gen_flow.py, which renders the detailed per-device DECISION logic
-(every gate and abort). This one is the plain-language phase summary (seven
-core phases + the opt-in 8a/8b health-check bracket) for the top of the
-README; keep the two in sync at their respective altitudes.
+(every gate and abort). This one is the plain-language phase summary for the
+top of the README: seven core phases, the per-device opt-in side-steps
+(clean-first, config saves, remove-inactive, 8a/8b health checks) as decision
+diamonds with right-hand boxes, and the once-per-run Golden Config backup
+bracket as dashed run-level blocks. Keep the two diagrams in sync at their
+respective altitudes.
 """
 
 import html
@@ -18,6 +21,7 @@ TOP = 78  # first row center y
 GEOM = {
     "start": (360, 52),
     "proc": (380, 62),
+    "runopt": (400, 72),
     "dec": (250, 84),
     "end": (320, 52),
 }
@@ -29,10 +33,17 @@ TERM_W, TERM_H = 320, 64
 #             "kind": "okr"|"abort", "text": <terminal box text>}
 SPINE = [
     ("start", "start", "Select devices + target version\n(Nautobot → Jobs)", None),
+    ("gcbefore", "runopt",
+     "Opt-in, once per RUN: Golden Config backup of\nevery target device BEFORE any upgrade starts\n(fail-closed: can't back up → nothing is touched;\na dry run only reports it)", None),
     ("connect", "proc",
      "Connect & authenticate\n(RESTCONF over HTTPS, creds from Nautobot Secrets)", None),
     ("gates", "proc",
-     "Pre-flight gates\n≥ 17.9.1 · install mode · image resolved · free space", None),
+     "Pre-flight gates\n≥ 17.9.1 · install mode · image resolved", None),
+    ("d_clean", "dec", "Clean device first\nopted in?",
+     {"cond": "Yes", "pass": "No", "kind": "opt",
+      "text": "Reclaim flash up front (install remove\ninactive; never in a dry-run) before the\nfree-space gate evaluates what's left"}),
+    ("freespace", "proc",
+     "Free-space gate\n(on the cleaned flash when cleaning ran)", None),
     ("d_dry", "dec", "Dry-run?",
      {"cond": "Yes", "pass": "No", "kind": "okr",
       "text": "DONE: Dry-run — reports what\nWOULD happen; no changes made"}),
@@ -49,6 +60,9 @@ SPINE = [
     ("d_healthpre", "dec", "Health checks\nopted in?",
      {"cond": "Yes", "pass": "No", "kind": "opt",
       "text": "Pre-test (8a): capture the health baseline\n(ports · CDP/LLDP · environment · reboot\nreason; a failed read aborts BEFORE activate)"}),
+    ("d_savepre", "dec", "Save config before\nreload opted in?",
+     {"cond": "Yes", "pass": "No", "kind": "opt",
+      "text": "Save the running config (the activation\nreload never prompts — unsaved changes\nwould be lost); the device's RPC result verifies"}),
     ("activate", "proc",
      "Activate (non-ISSU) → reload\n(gate → track via the device's ledger)", None),
     ("d_boot", "dec", "Booted the target\n& came back healthy?",
@@ -58,6 +72,9 @@ SPINE = [
      "install commit\n(gate → track via the device's ledger)", None),
     ("sync", "proc",
      "Sync Nautobot software version\n(the device record now shows the new OS)", None),
+    ("d_savepost", "dec", "Save config after\ncommit opted in?",
+     {"cond": "Yes", "pass": "No", "kind": "opt",
+      "text": "Save again on the NEW OS — normalizes\nstartup to the new version's rendering\n(soak trade-off in the README; default off)"}),
     ("d_cleanup", "dec", "Remove inactive\nopted in?",
      {"cond": "Yes", "pass": "No", "kind": "opt",
       "text": "install remove inactive — reclaim flash\nspace (old packages & prior images);\ngated & tracked like every engine write"}),
@@ -65,6 +82,8 @@ SPINE = [
      {"cond": "Yes", "pass": "No", "kind": "opt",
       "text": "Post-test (8b): compare vs the baseline\n(everything up/present before must return;\nconvergence-aware ~10 min; report-only)"}),
     ("done", "end", "DONE: Upgraded & committed ✓", None),
+    ("gcafter", "runopt",
+     "Opt-in, once per RUN: Golden Config backup\nagain AFTER all devices finish (runs even if\nsome failed; warn-only — never un-succeeds)", None),
 ]
 
 # Phase-number keys off to the LEFT of a block, matching the README "What it
@@ -105,9 +124,10 @@ HEIGHT = CY[ORDER[-1]] + 70
 LEGEND = ("Legend\n"
           "numbers = the phases (see the README)\n"
           "diamonds = decisions; white rounded boxes to\n"
-          "the right = opt-in steps (8a/8b health checks,\n"
-          "remove inactive) — the flow continues down\n"
-          "and rejoins the spine either way\n"
+          "the right = opt-in steps — the flow continues\n"
+          "down and rejoins the spine either way\n"
+          "dashed = opt-in and once per RUN (the whole\n"
+          "batch), not per device\n"
           "green = successful end state\n"
           "red = this device stops here\n"
           "Detailed gate-by-gate flow: docs/upgrade-flow.svg")
@@ -120,6 +140,7 @@ FILLS = {
     "okr": ("#D5E8D4", "#2E7D32"),
     "abort": ("#F8CECC", "#B85450"),
     "opt": ("#FFFFFF", "#5B6B7B"),
+    "runopt": ("#FFFFFF", "#5B6B7B"),
 }
 
 
@@ -142,9 +163,10 @@ def svg_text(cx, cy, text, size=12, bold=False, color="#1a1a1a", anchor="middle"
     return "".join(out)
 
 
-def rect(cx, cy, w, h, fill, stroke, rx=6):
+def rect(cx, cy, w, h, fill, stroke, rx=6, dash=False):
+    extra = ' stroke-dasharray="7 5"' if dash else ""
     return (f'<rect x="{cx - w / 2:.0f}" y="{cy - h / 2:.0f}" width="{w}" height="{h}" '
-            f'rx="{rx}" ry="{rx}" fill="{fill}" stroke="{stroke}" stroke-width="1.5"/>')
+            f'rx="{rx}" ry="{rx}" fill="{fill}" stroke="{stroke}" stroke-width="1.5"{extra}/>')
 
 
 def diamond(cx, cy, w, h, fill, stroke):
@@ -152,9 +174,10 @@ def diamond(cx, cy, w, h, fill, stroke):
     return f'<polygon points="{pts}" fill="{fill}" stroke="{stroke}" stroke-width="1.5"/>'
 
 
-def arrow(x1, y1, x2, y2, color="#555"):
+def arrow(x1, y1, x2, y2, color="#555", dash=False):
+    extra = ' stroke-dasharray="7 5"' if dash else ""
     return (f'<path d="M {x1:.0f} {y1:.0f} L {x2:.0f} {y2:.0f}" fill="none" '
-            f'stroke="{color}" stroke-width="1.5" marker-end="url(#arrow)"/>')
+            f'stroke="{color}" stroke-width="1.5"{extra} marker-end="url(#arrow)"/>')
 
 
 def elbow(points, color="#555"):
@@ -201,8 +224,8 @@ def build_svg():
     s.append(f'<rect x="0" y="0" width="{WIDTH}" height="{HEIGHT}" fill="#ffffff"/>')
     s.append('<text x="20" y="30" font-size="18" font-weight="bold" fill="#111">'
              'Cisco IOS-XE Upgrade (RESTCONF) — what it does</text>')
-    s.append(rect(WIDTH - 200, 110, 400, 130, "#fbfbfb", "#bbb", rx=6))
-    s.append(svg_text(WIDTH - 200, 110, LEGEND, size=10, color="#333"))
+    s.append(rect(WIDTH - 195, 112, 380, 146, "#fbfbfb", "#bbb", rx=6))
+    s.append(svg_text(WIDTH - 195, 112, LEGEND, size=10, color="#333"))
 
     # down edges between consecutive spine nodes
     for a, b in zip(ORDER, ORDER[1:]):
@@ -210,7 +233,7 @@ def build_svg():
         tb = NODES[b][0]
         y1 = CY[a] + GEOM[ta][1] / 2
         y2 = CY[b] - GEOM[tb][1] / 2
-        s.append(arrow(CX, y1, CX, y2))
+        s.append(arrow(CX, y1, CX, y2, dash="runopt" in (ta, tb)))
         branch = NODES[a][2]
         if branch:
             s.append(edge_label(CX + 16, (y1 + y2) / 2, branch["pass"]))
@@ -253,6 +276,9 @@ def build_svg():
             s.append(rect(CX, cy, w, h, *FILLS[typ], rx=24))
             s.append(svg_text(CX, cy, text, size=12, bold=True,
                               color="#1b3a6b" if typ == "start" else "#14532d"))
+        elif typ == "runopt":
+            s.append(rect(CX, cy, w, h, *FILLS["runopt"], rx=10, dash=True))
+            s.append(svg_text(CX, cy, text, size=11, color="#1a1a1a"))
         else:
             s.append(rect(CX, cy, w, h, *FILLS["proc"], rx=6))
             s.append(svg_text(CX, cy, text, size=11, color="#1a1a1a"))
@@ -276,6 +302,7 @@ DRAWIO_STYLE = {
     "okr": "rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#2E7D32;fontStyle=1;",
     "abort": "rounded=1;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;",
     "opt": "rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5B6B7B;",
+    "runopt": "rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5B6B7B;dashed=1;",
     "tag": "rounded=1;arcSize=50;whiteSpace=wrap;html=1;fillColor=#EDE3F6;strokeColor=#8E63B5;fontStyle=1;fontSize=16;fontColor=#4A2A7A;",
 }
 
@@ -322,7 +349,8 @@ def build_drawio():
                               extra="exitX=0.5;exitY=1;exitDx=0;exitDy=0;"))
     for a, b in zip(ORDER, ORDER[1:]):
         label = NODES[a][2]["pass"] if NODES[a][2] else ""
-        edges.append(edge(f"e_{a}_{b}", a, b, label))
+        dashed = "dashed=1;" if "runopt" in (NODES[a][0], NODES[b][0]) else ""
+        edges.append(edge(f"e_{a}_{b}", a, b, label, extra=dashed))
     body = "\n".join(cells + edges)
     return f'''<mxfile host="app.diagrams.net" type="device">
   <diagram name="IOS-XE upgrade overview" id="iosxe-upgrade-overview">
