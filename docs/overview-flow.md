@@ -9,11 +9,16 @@ warning), see [upgrade-flow.md](upgrade-flow.md).
 
 ## How to read it
 
-- **Blue** = start. **White boxes** = the phases. **Diamonds** = decisions.
-- The **numbered key** to the left of each white box is its phase number in the
+- **Blue** = start. **White boxes on the spine** = the phases. **Diamonds** =
+  decisions.
+- **White rounded boxes to the right** = opt-in steps: the **8a/8b** health
+  checks and the **Remove inactive** cleanup. Their diamond's **Yes** branch
+  runs the step and rejoins the spine; **No** skips straight down — either
+  way the flow continues, so these are side-steps, not end states.
+- The **numbered key** to the left of a row is its phase number in the
   README's "What it does" list (one key per phase — `install add` and activate
-  are distinct phases; commit and sync are distinct blocks). **8a/8b** are the
-  opt-in pre/post health checks: 8a captures the baseline just before
+  are distinct phases; commit and sync are distinct blocks). **8a/8b** sit on
+  the two health-check decisions: 8a captures the baseline just before
   activation (a failed read aborts while aborting is still free), 8b compares
   against it after the sync, convergence-aware and report-only.
 - **Green** = a successful end state. There are four, matching the **Run scope**

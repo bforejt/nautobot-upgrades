@@ -46,8 +46,9 @@ SPINE = [
     ("d_stageadd", "dec", "Run scope =\nSteps 1 & 2\n(copy + prep)?",
      {"cond": "Yes", "pass": "No", "kind": "okr",
       "text": "DONE: Staged (Steps 1 & 2) — added\n& marked for activation; not reloaded"}),
-    ("healthpre", "proc",
-     "Opt-in pre-test: health baseline\n(ports · CDP/LLDP · environment · reboot\nreason; read failure aborts BEFORE activate)", None),
+    ("d_healthpre", "dec", "Health checks\nopted in?",
+     {"cond": "Yes", "pass": "No", "kind": "opt",
+      "text": "Pre-test (8a): capture the health baseline\n(ports · CDP/LLDP · environment · reboot\nreason; a failed read aborts BEFORE activate)"}),
     ("activate", "proc",
      "Activate (non-ISSU) → reload\n(gate → track via the device's ledger)", None),
     ("d_boot", "dec", "Booted the target\n& came back healthy?",
@@ -56,16 +57,20 @@ SPINE = [
     ("commit", "proc",
      "install commit\n(gate → track via the device's ledger)", None),
     ("sync", "proc",
-     "Sync Nautobot software version\n(+ optional remove-inactive cleanup)", None),
-    ("healthpost", "proc",
-     "Opt-in post-test: compare vs the baseline\n(convergence-aware ~10 min; report-only —\ntrunk/env/abnormal-reboot at error level)", None),
+     "Sync Nautobot software version\n(the device record now shows the new OS)", None),
+    ("d_cleanup", "dec", "Remove inactive\nopted in?",
+     {"cond": "Yes", "pass": "No", "kind": "opt",
+      "text": "install remove inactive — reclaim flash\nspace (old packages & prior images);\ngated & tracked like every engine write"}),
+    ("d_healthpost", "dec", "Health checks\nopted in?",
+     {"cond": "Yes", "pass": "No", "kind": "opt",
+      "text": "Post-test (8b): compare vs the baseline\n(everything up/present before must return;\nconvergence-aware ~10 min; report-only)"}),
     ("done", "end", "DONE: Upgraded & committed ✓", None),
 ]
 
 # Phase-number keys off to the LEFT of a block, matching the README "What it
-# does" list: seven core phases plus the opt-in health-check bracket — 8a is
-# the pre-test baseline (captured just before activation), 8b the post-test
-# comparison (after the sync). Decisions are not numbered phases.
+# does" list: seven core phases plus the opt-in health-check bracket — 8a/8b
+# sit on the two "Health checks opted in?" decisions whose Yes branch runs the
+# pre-test / post-test. Other decisions are not numbered phases.
 PHASE_TAGS = {
     "connect": "1",
     "gates": "2",
@@ -74,20 +79,35 @@ PHASE_TAGS = {
     "activate": "5",
     "commit": "6",
     "sync": "7",
-    "healthpre": "8a",
-    "healthpost": "8b",
+    "d_healthpre": "8a",
+    "d_healthpost": "8b",
 }
 
-CY = {nid: TOP + i * PITCH for i, (nid, *_r) in enumerate(SPINE)}
+# Rows that FOLLOW an opt-in branch get extra pitch: the branch box's rejoin
+# elbow needs air between the "No" label and the next node.
+EXTRA_AFTER_OPT = 28
+CY = {}
+_y = TOP
+_prev_opt = False
+for _nid, _typ, _txt, _br in SPINE:
+    if _prev_opt:
+        _y += EXTRA_AFTER_OPT
+    CY[_nid] = _y
+    _y += PITCH
+    _prev_opt = bool(_br) and _br.get("kind") == "opt"
 NODES = {nid: (typ, text, branch) for nid, typ, text, branch in SPINE}
 ORDER = [nid for nid, *_ in SPINE]
+NEXT = {a: b for a, b in zip(ORDER, ORDER[1:])}
 
 WIDTH = RIGHT_X + TERM_W + 40
 HEIGHT = CY[ORDER[-1]] + 70
 
 LEGEND = ("Legend\n"
-          "numbers = the phases (see the README);\n8a/8b = the opt-in health checks\n"
-          "diamonds = decisions\n"
+          "numbers = the phases (see the README)\n"
+          "diamonds = decisions; white rounded boxes to\n"
+          "the right = opt-in steps (8a/8b health checks,\n"
+          "remove inactive) — the flow continues down\n"
+          "and rejoins the spine either way\n"
           "green = successful end state\n"
           "red = this device stops here\n"
           "Detailed gate-by-gate flow: docs/upgrade-flow.svg")
@@ -99,6 +119,7 @@ FILLS = {
     "end": ("#D5E8D4", "#2E7D32"),
     "okr": ("#D5E8D4", "#2E7D32"),
     "abort": ("#F8CECC", "#B85450"),
+    "opt": ("#FFFFFF", "#5B6B7B"),
 }
 
 
@@ -134,6 +155,12 @@ def diamond(cx, cy, w, h, fill, stroke):
 def arrow(x1, y1, x2, y2, color="#555"):
     return (f'<path d="M {x1:.0f} {y1:.0f} L {x2:.0f} {y2:.0f}" fill="none" '
             f'stroke="{color}" stroke-width="1.5" marker-end="url(#arrow)"/>')
+
+
+def elbow(points, color="#555"):
+    d = "M " + " L ".join(f"{x:.0f} {y:.0f}" for x, y in points)
+    return (f'<path d="{d}" fill="none" stroke="{color}" stroke-width="1.5" '
+            f'marker-end="url(#arrow)"/>')
 
 
 def edge_label(x, y, text, color="#333"):
@@ -174,8 +201,8 @@ def build_svg():
     s.append(f'<rect x="0" y="0" width="{WIDTH}" height="{HEIGHT}" fill="#ffffff"/>')
     s.append('<text x="20" y="30" font-size="18" font-weight="bold" fill="#111">'
              'Cisco IOS-XE Upgrade (RESTCONF) — what it does</text>')
-    s.append(rect(WIDTH - 200, 104, 400, 104, "#fbfbfb", "#bbb", rx=6))
-    s.append(svg_text(WIDTH - 200, 104, LEGEND, size=10, color="#333"))
+    s.append(rect(WIDTH - 200, 110, 400, 130, "#fbfbfb", "#bbb", rx=6))
+    s.append(svg_text(WIDTH - 200, 110, LEGEND, size=10, color="#333"))
 
     # down edges between consecutive spine nodes
     for a, b in zip(ORDER, ORDER[1:]):
@@ -195,13 +222,24 @@ def build_svg():
             continue
         cy = CY[nid]
         dw = GEOM["dec"][0]
-        color = "#2E7D32" if branch["kind"] == "okr" else "#B85450"
+        kind = branch["kind"]
+        color = {"okr": "#2E7D32", "abort": "#B85450", "opt": "#555"}[kind]
         s.append(arrow(CX + dw / 2, cy, RIGHT_X, cy, color=color))
-        s.append(edge_label((CX + dw / 2 + RIGHT_X) / 2, cy - 10, branch["cond"], color=color))
+        s.append(edge_label((CX + dw / 2 + RIGHT_X) / 2, cy - 10, branch["cond"],
+                            color="#333" if kind == "opt" else color))
         bx = RIGHT_X + TERM_W / 2
-        s.append(rect(bx, cy, TERM_W, TERM_H, *FILLS[branch["kind"]], rx=22))
-        s.append(svg_text(bx, cy, branch["text"], size=11, bold=True,
-                          color="#1b5e20" if branch["kind"] == "okr" else "#8a1f1f"))
+        s.append(rect(bx, cy, TERM_W, TERM_H, *FILLS[kind], rx=22))
+        if kind == "opt":
+            s.append(svg_text(bx, cy, branch["text"], size=11, color="#1a1a1a"))
+            # opt boxes are side-steps, not end states: rejoin the spine just
+            # above the next node, below the "No" label
+            nxt = NEXT[nid]
+            next_top = CY[nxt] - GEOM[NODES[nxt][0]][1] / 2
+            y_r = next_top - 9
+            s.append(elbow([(bx, cy + TERM_H / 2), (bx, y_r), (CX, y_r)]))
+        else:
+            s.append(svg_text(bx, cy, branch["text"], size=11, bold=True,
+                              color="#1b5e20" if kind == "okr" else "#8a1f1f"))
 
     # spine nodes on top
     for nid in ORDER:
@@ -219,10 +257,10 @@ def build_svg():
             s.append(rect(CX, cy, w, h, *FILLS["proc"], rx=6))
             s.append(svg_text(CX, cy, text, size=11, color="#1a1a1a"))
 
-    # phase-number badges, off to the left of their blocks (keys to the README)
+    # phase-number badges: one aligned rail keyed to the proc-block left edge
+    rail_left = CX - GEOM["proc"][0] / 2
     for nid, label in PHASE_TAGS.items():
-        w = GEOM[NODES[nid][0]][0]
-        s.append(phase_badge(label, CX - w / 2, CY[nid]))
+        s.append(phase_badge(label, rail_left, CY[nid]))
 
     s.append("</svg>")
     return "\n".join(s)
@@ -237,6 +275,7 @@ DRAWIO_STYLE = {
     "dec": "rhombus;whiteSpace=wrap;html=1;fillColor=#E8EEF6;strokeColor=#3C6CA8;fontStyle=1;",
     "okr": "rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#2E7D32;fontStyle=1;",
     "abort": "rounded=1;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;",
+    "opt": "rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#5B6B7B;",
     "tag": "rounded=1;arcSize=50;whiteSpace=wrap;html=1;fillColor=#EDE3F6;strokeColor=#8E63B5;fontStyle=1;fontSize=16;fontColor=#4A2A7A;",
 }
 
@@ -247,8 +286,8 @@ def cell(cid, value, style, x, y, w, h):
             f'width="{w}" height="{h}" as="geometry"/></mxCell>')
 
 
-def edge(eid, src, tgt, label=""):
-    style = "edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;"
+def edge(eid, src, tgt, label="", extra=""):
+    style = "edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" + extra
     return (f'        <mxCell id="{esc(eid)}" value="{esc(label)}" style="{style}" '
             f'edge="1" parent="1" source="{esc(src)}" target="{esc(tgt)}">'
             f'<mxGeometry relative="1" as="geometry"/></mxCell>')
@@ -264,9 +303,9 @@ def build_drawio():
         typ, text, _ = NODES[nid]
         w, h = GEOM[typ]
         cells.append(cell(nid, dtext(text), DRAWIO_STYLE[typ], CX - w / 2, CY[nid] - h / 2, w, h))
+    rail_left = CX - GEOM["proc"][0] / 2
     for nid, label in PHASE_TAGS.items():
-        w = GEOM[NODES[nid][0]][0]
-        tcx, tcy, tw = tag_geom(label, CX - w / 2, CY[nid])
+        tcx, tcy, tw = tag_geom(label, rail_left, CY[nid])
         cells.append(cell(f"{nid}_tag", label, DRAWIO_STYLE["tag"],
                           tcx - tw / 2, tcy - TAG_H / 2, tw, TAG_H))
     for nid in ORDER:
@@ -277,6 +316,10 @@ def build_drawio():
         cells.append(cell(bid, dtext(branch["text"]), DRAWIO_STYLE[branch["kind"]],
                           RIGHT_X, CY[nid] - TERM_H / 2, TERM_W, TERM_H))
         edges.append(edge(f"e_{bid}", nid, bid, branch["cond"]))
+        if branch["kind"] == "opt":
+            # side-step, not an end state: rejoin the spine at the next node
+            edges.append(edge(f"e_{bid}_rejoin", bid, NEXT[nid], "",
+                              extra="exitX=0.5;exitY=1;exitDx=0;exitDy=0;"))
     for a, b in zip(ORDER, ORDER[1:]):
         label = NODES[a][2]["pass"] if NODES[a][2] else ""
         edges.append(edge(f"e_{a}_{b}", a, b, label))
