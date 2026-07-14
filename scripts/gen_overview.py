@@ -3,8 +3,9 @@
 a HIGH-LEVEL 'what it does' overview of the upgrade.
 
 Companion to gen_flow.py, which renders the detailed per-device DECISION logic
-(every gate and abort). This one is the plain-language seven-phase summary for
-the top of the README; keep the two in sync at their respective altitudes.
+(every gate and abort). This one is the plain-language phase summary (seven
+core phases + the opt-in 8a/8b health-check bracket) for the top of the
+README; keep the two in sync at their respective altitudes.
 """
 
 import html
@@ -45,6 +46,8 @@ SPINE = [
     ("d_stageadd", "dec", "Run scope =\nSteps 1 & 2\n(copy + prep)?",
      {"cond": "Yes", "pass": "No", "kind": "okr",
       "text": "DONE: Staged (Steps 1 & 2) — added\n& marked for activation; not reloaded"}),
+    ("healthpre", "proc",
+     "Opt-in pre-test: health baseline\n(ports · CDP/LLDP · environment · reboot\nreason; read failure aborts BEFORE activate)", None),
     ("activate", "proc",
      "Activate (non-ISSU) → reload\n(gate → track via the device's ledger)", None),
     ("d_boot", "dec", "Booted the target\n& came back healthy?",
@@ -54,12 +57,15 @@ SPINE = [
      "install commit\n(gate → track via the device's ledger)", None),
     ("sync", "proc",
      "Sync Nautobot software version\n(+ optional remove-inactive cleanup)", None),
+    ("healthpost", "proc",
+     "Opt-in post-test: compare vs the baseline\n(convergence-aware ~10 min; report-only —\ntrunk/env/abnormal-reboot at error level)", None),
     ("done", "end", "DONE: Upgraded & committed ✓", None),
 ]
 
-# Phase-number keys off to the LEFT of a block, one per phase, matching the
-# README "What it does" seven-phase list (add and activate are distinct phases;
-# commit and sync are distinct blocks). Decisions are not numbered phases.
+# Phase-number keys off to the LEFT of a block, matching the README "What it
+# does" list: seven core phases plus the opt-in health-check bracket — 8a is
+# the pre-test baseline (captured just before activation), 8b the post-test
+# comparison (after the sync). Decisions are not numbered phases.
 PHASE_TAGS = {
     "connect": "1",
     "gates": "2",
@@ -68,6 +74,8 @@ PHASE_TAGS = {
     "activate": "5",
     "commit": "6",
     "sync": "7",
+    "healthpre": "8a",
+    "healthpost": "8b",
 }
 
 CY = {nid: TOP + i * PITCH for i, (nid, *_r) in enumerate(SPINE)}
@@ -78,7 +86,7 @@ WIDTH = RIGHT_X + TERM_W + 40
 HEIGHT = CY[ORDER[-1]] + 70
 
 LEGEND = ("Legend\n"
-          "numbers = the seven phases (see the README)\n"
+          "numbers = the phases (see the README);\n8a/8b = the opt-in health checks\n"
           "diamonds = decisions\n"
           "green = successful end state\n"
           "red = this device stops here\n"

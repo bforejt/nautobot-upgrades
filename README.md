@@ -110,7 +110,8 @@ of PASS/FAIL gates, stopping at the first failure for a device. In one picture:
 
 [![IOS-XE upgrade — high-level overview](docs/overview-flow.svg)](docs/overview-flow.md)
 
-The seven phases (the numbered keys on the diagram above map to this list):
+The seven core phases, plus the opt-in health-check bracket (the numbered keys
+on the diagram above map to this list):
 
 1. **Connect** — resolve the primary IP + credentials (from core Secrets),
    confirm RESTCONF is reachable.
@@ -136,6 +137,12 @@ The seven phases (the numbered keys on the diagram above map to this list):
    job does **not** commit and the device auto-rolls-back.
 7. **Sync + optional cleanup** — update `Device.software_version` in Nautobot;
    optionally `install remove inactive` to reclaim space (off by default).
+8. **Health checks (opt-in)** — two blocks bracketing the disruptive part: a
+   **pre-test** baseline (**8a**) captured just before activation, and a
+   **post-test** comparison (**8b**) after the sync — ports, CDP/LLDP
+   neighbors, environment sensors, and the device's own reload-reason verdict.
+   Report-only, with a ~10-minute convergence window. The full pre/post test
+   lists are in [Pre/post health checks](#prepost-health-checks-report-only).
 
 Every gate logs to the Job Result with the device attached (a **Debug** toggle
 logs every RESTCONF call). Batches run **in parallel**
@@ -571,7 +578,40 @@ Requirements and mechanics:
 health immediately **before activation** and compare it **after the commit** —
 looking for the things an upgrade quietly breaks: ports that never came back,
 downstream switches or APs no longer seen, a power supply that didn't survive
-the reload, or a boot the device itself classifies as a crash.
+the reload, or a boot the device itself classifies as a crash. On the
+[overview diagram](docs/overview-flow.md) these are the **8a** (pre-test) and
+**8b** (post-test) blocks.
+
+**Pre-test (8a)** — the baseline, captured immediately before activation
+(fail-closed: if this snapshot can't be read, the device aborts *before*
+anything reloads):
+
+- Every port's admin/oper state, plus which ports count as
+  **trunk/infrastructure** (configured `switchport mode trunk` ∪ ports with a
+  CDP **Switch**-capability peer)
+- The CDP neighbor table — which neighbor, on which local port
+- The LLDP neighbor table — same shape, independent second feed
+- Environment sensors (power supplies, fans, temperature) and their states
+- Attached as the `health-pre_<device>.json` artifact
+
+**Post-test (8b)** — after the commit and Nautobot sync, re-polled for up to
+~10 minutes so slow converging things (STP, PoE-powered APs, CDP holdtimes)
+get a fair chance to return:
+
+- Every port that was admin-up **and** oper-up before is up again — **error**
+  on trunk/infrastructure ports, warning on access ports
+- Every CDP and LLDP neighbor is back **on the same port**, distinguishing
+  *gone* from *moved* (a lost redundant uplink to the same upstream counts as
+  gone, not moved)
+- No environment sensor that was healthy before is degraded now
+- The device's **own reload-reason verdict** is not *abnormal* — i.e. the
+  reboot was the upgrade, not a crash
+- New ports, new neighbors, and pre-existing bad sensors are **noted, never
+  flagged**
+- Attached as the `health-post_<device>.json` and
+  `health-report_<device>.json` artifacts
+
+Severity reference:
 
 | Check | Source (all pure oper reads — no config writes, no AVC noise) | Finding | Severity |
 | --- | --- | --- | --- |
