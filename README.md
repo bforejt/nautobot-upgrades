@@ -10,7 +10,7 @@ but not yet production-vetted.** It is a working prototype under active
 development: expect change between releases, read the Job Result logs, and
 **always run Dry-run first**.
 
-**Validated on real hardware** (Catalyst 9300 + a running Catalyst 8000V, from Nautobot 3.1):
+**Validated on real hardware** (Catalyst 9300 and 9300L + a running Catalyst 8000V, from Nautobot 3.1):
 
 - **Full upgrade _and_ downgrade** on **single switches**, repeatedly, across
   **17.12 → 17.15 ↔ 17.18 ↔ 26.1**.
@@ -26,6 +26,9 @@ development: expect change between releases, read the Job Result logs, and
 - **Ledger-tracked** add/activate/commit, engine-idle gating, byte-exact copy
   verification, auto-rollback-timer arming, remove-inactive, and interrupted-run
   (commit-to-be-safe) recovery.
+- **Catalyst 9300L** — full upgrade validated on real hardware; the 9300L runs
+  the identical cat9k image and install-mode flow as the 9300 (it is Cisco's
+  install-API-capable replacement for the 3650/3850).
 - **Catalyst 8000V** (virtual router): full upgrade **17.12 → 17.15.5**
   end-to-end — `bootflash:` discovery, copy/add/activate/reload/commit all
   live on a running Cat8kv.
@@ -40,9 +43,9 @@ development: expect change between releases, read the Job Result logs, and
   full stage-ahead → window-run timing has not been measured.
 - **Stacks larger than 2 members** — the 2-member stack is validated across all
   tested trains; larger stacks are not yet tested.
-- **9300L/LM/X** and **9200 / 9400–9600** — identical image, flow, and models
-  on paper, hardware runs pending; **17.9–17.11**. (C8000V batches/HA remain
-  untested — the validation run was a single router.)
+- **Other 9300 variants (LM/X)** and **9200 / 9400–9600** — identical image,
+  flow, and models on paper, hardware runs pending; **17.9–17.11**. (C8000V
+  batches/HA remain untested — the validation run was a single router.)
 - **Failure paths on hardware**: auto-rollback expiry, a genuinely corrupt image,
   a member failing to rejoin.
 
@@ -167,7 +170,7 @@ gate and abort.
 | --- | --- | --- |
 | **Nautobot** | **2.4 LTM** and **3.1+** | Job execution verified on **3.1 and multiple independent 2.4 environments** (most volume on 3.1). **3.0 is untested by choice** — unmaintained since 3.1 shipped. Earlier 2.x (≥ 2.2) *may* work but is untested. |
 | **Device OS** | Cisco IOS-XE **≥ 17.9.1** (incl. 26.x) | Hardware-validated across **17.12–26.1**; every YANG model the job touches verified against Cisco's published models 17.9.1–26.1.1. Model presence ≠ runtime behavior — do one supervised run per new train. Rebuild letters (17.15.4**d**) are **distinct versions**. |
-| **Platform** | Catalyst **9300 family** + **C8000V** | 9300 hardware-tested; **9300L/LM/X** run the identical cat9k image and flow (run pending). **C8000V** (autonomous): **validated live** — a full 17.12 → 17.15.5 upgrade on a running Cat8kv, with `bootflash:` discovered from the device. **9200** and **9400/9500/9600**: model sets identical (runs pending). **9800 WLC**: mechanically compatible but **operationally out of scope** — controller only, no AP predownload; a full-scope run is warned in-job. Nexus/NX-OS is a different API — not supported. **3650/3850 cannot be supported** (their terminal 16.12 train lacks the install API; Cisco's replacement, the 9300L, is supported). |
+| **Platform** | Catalyst **9300 family** + **C8000V** | **9300 and 9300L** hardware-tested; the remaining 9300 variants (LM/X) run the identical cat9k image and flow (run pending). **C8000V** (autonomous): **validated live** — a full 17.12 → 17.15.5 upgrade on a running Cat8kv, with `bootflash:` discovered from the device. **9200** and **9400/9500/9600**: model sets identical (runs pending). **9800 WLC**: mechanically compatible but **operationally out of scope** — controller only, no AP predownload; a full-scope run is warned in-job. Nexus/NX-OS is a different API — not supported. **3650/3850 cannot be supported** (their terminal 16.12 train lacks the install API; Cisco's replacement, the 9300L, is supported). |
 
 **By IOS-XE train:**
 
@@ -957,6 +960,41 @@ separate, agreed features:
   gating** and CVE/EoL/contract context.
 - User-based **authorization/gating** of who may run upgrades.
 - Deeper stack/redundancy and post-upgrade interface/protocol health checks.
+
+## Contributing
+
+This is an active prototype, and real-world feedback is the most valuable thing
+you can send.
+
+**Tell us what you find — success _or_ failure.** If you run the job against a
+device type, IOS-XE train, or topology we haven't validated yet (see
+[Current status](#current-status-lab-proven)), please **open an issue either
+way**: "upgraded a 9500 cleanly, 17.12 → 17.15" is as useful to us as a bug
+report. Include the platform and model, the IOS-XE versions (from → to), the
+Run scope, and the relevant Job Result log lines (scrub anything sensitive
+first). Positive reports let us grow the validated matrix; failures show us
+where the gaps are.
+
+**Improvements are welcome as pull requests** — bug fixes, new gates, docs, and
+support for hardware we can reach. A few ground rules keep the project honest:
+
+- **Changes must be testable in our lab to be merged.** The whole project rests
+  on *positive feedback from real devices*, and we hold contributions to that
+  same bar: if we can't exercise a change on hardware we have access to (or a
+  faithful virtual equivalent), we won't merge it — however sound it looks on
+  paper. Example: we don't have **Catalyst 9600** switches yet, so a
+  9600-specific change stays open (with thanks) until we can validate it
+  ourselves, rather than shipping untested behavior to everyone. Being unable to
+  merge right away isn't a rejection — untestable contributions are **parked,
+  not closed**, and merged as soon as we can confirm them.
+- **Stay within the charter:** RESTCONF, install mode, and Nautobot jobs. The
+  design choices, the [ISSU](#issu-capable-platforms-940095009600-install-mode-only)
+  note, and the [Deferred](#deferred-by-agreement--not-built-yet) list cover
+  what is deliberately out of scope.
+- **Test before you open the PR:** run **Dry-run** and, where relevant, the
+  scenario checks; describe how you tested it; and keep changes small and
+  reviewable. For anything non-trivial, open an issue first — it saves everyone
+  time.
 
 ## License
 
