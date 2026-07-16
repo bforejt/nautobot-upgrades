@@ -5,69 +5,22 @@ devices — **Catalyst 9300** primarily — driven entirely over **RESTCONF**.
 
 ## Current status
 
-**Thoroughly exercised on real Catalyst 9300-family hardware over RESTCONF —
-and now in early production use: its first production run upgraded the lab's
-Catalyst 9500 core.** Still a working prototype under active development: expect
-change between releases, read the Job Result logs, and **always run Dry-run
-first**.
+**A work in progress — and going well.** Thoroughly exercised on real Catalyst
+hardware over RESTCONF: **30+ upgrade and downgrade runs across the 9300, 9300L,
+and Catalyst 8000V** — single switches, a 2-member stack, and serial and
+parallel batches — on Nautobot **2.4 and 3.1**, with the same results on either.
+It's now in **early production**: the first production run upgraded our lab's
+Catalyst **9500** StackWise Virtual core. **Auto-rollback has also been observed
+in the field** — an upgrade that couldn't be confirmed after the reload was
+never committed, and the device rolled back to its prior image on its own.
 
-**Validated on real hardware** (Catalyst 9300, 9300L and a 9500 StackWise Virtual pair, plus a running Catalyst 8000V; from Nautobot 2.4 and 3.1):
-
-- **Full upgrade _and_ downgrade** on **single switches**, repeatedly, across
-  **17.12 → 17.15 ↔ 17.18 ↔ 26.1**.
-- **Lettered rebuilds** as distinct versions (17.15.4 ↔ 17.15.4d), up and down.
-- **Serial batches**, including a batch downgrade and correct already-on-target
-  short-circuits.
-- **Parallel batches at Parallelism 2** — run repeatedly (10+ times across
-  various versions); the per-device isolation (own RESTCONF sessions, own
-  ledger uuids) holds up in practice.
-- **2-member stack**, up and down across **all tested trains** (17.12 ↔ 17.15 ↔
-  17.18 ↔ 26.1): per-member free-space gating, package distribution, and the
-  all-members-rejoined gate.
-- **Catalyst 9500-16X pair in StackWise Virtual** — full upgrade
-  validated on **real, in-production hardware**: the two-chassis SVL pair
-  reloaded as a whole and rejoined on the target version through the standard
-  install-mode (non-ISSU) path. This pair is the **production core of our
-  lab**, making this the job's **first successful production run**.
-- **Ledger-tracked** add/activate/commit, engine-idle gating, byte-exact copy
-  verification, auto-rollback-timer arming, remove-inactive, and interrupted-run
-  (commit-to-be-safe) recovery.
-- **Catalyst 9300L** — full upgrade validated on real hardware; the 9300L runs
-  the identical cat9k image and install-mode flow as the 9300 (it is Cisco's
-  install-API-capable replacement for the 3650/3850).
-- **Catalyst 8000V** (virtual router): full upgrade **17.12 → 17.15.5**
-  end-to-end — `bootflash:` discovery, copy/add/activate/reload/commit all
-  live on a running Cat8kv.
-- Installs and runs as a Git Repository job on **Nautobot 2.4 and 3.1**, with
-  the **same results on either** — recent testing has moved to a stock
-  **2.4.36** (where a full 26.1.1 → 17.18.3 install ran), with earlier volume
-  on 3.1.
-
-**Not yet proven — treat as experimental:**
-
-- **Parallelism above 2** — validated at 2 concurrent; larger fan-out (up to
-  16) and firmware-server contention at scale are not yet stress-tested.
-- **The timed pre-staging cycle** — staging itself runs on hardware, but the
-  full stage-ahead → window-run timing has not been measured.
-- **Stacks larger than 2 members** — the 2-member stack is validated across all
-  tested trains; larger stacks are not yet tested.
-- **Other 9300 variants (LM/X)** and **9200 / 9400 / 9600** — identical image,
-  flow, and models on paper, hardware runs pending; **17.9–17.11**. (C8000V
-  batches/HA remain untested — the validation run was a single router.)
-- **Sustained / at-scale production use** — the first production run (the 9500
-  core) succeeded, but broad production hardening across a fleet is still being
-  built up.
-- **Failure paths on hardware**: auto-rollback expiry, a genuinely corrupt image,
-  a member failing to rejoin.
-
-**On further device coverage:** we validate on the hardware we have and
-**don't try to enumerate every compatible model** — that list would be long,
-drift over time, and is easy to get wrong. Compatibility comes down to a small
-set of requirements (see [Versions & support](#versions--support)); any device
-that meets them should, in principle, work. If you run it on something we
-haven't, a report is welcome ([Contributing](#contributing)).
-
-Per-train and per-platform detail is in [Versions & support](#versions--support).
+Still a prototype under active development, so treat it as **capable but not yet
+production-hardened**: expect change between releases, read the Job Result logs,
+and **always run Dry-run first**. Not yet proven: broad at-scale production use,
+parallelism above 2, stacks larger than 2 members, the full timed staging cycle,
+and a couple of failure paths (a corrupt image, a member failing to rejoin).
+Platform, per-train, and compatibility detail is in
+[Versions & support](#versions--support).
 
 ---
 
