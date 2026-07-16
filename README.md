@@ -11,7 +11,7 @@ Catalyst 9500 core.** Still a working prototype under active development: expect
 change between releases, read the Job Result logs, and **always run Dry-run
 first**.
 
-**Validated on real hardware** (Catalyst 9300, 9300L and a 9500 StackWise Virtual pair, plus a running Catalyst 8000V; from Nautobot 3.1):
+**Validated on real hardware** (Catalyst 9300, 9300L and a 9500 StackWise Virtual pair, plus a running Catalyst 8000V; from Nautobot 2.4 and 3.1):
 
 - **Full upgrade _and_ downgrade** on **single switches**, repeatedly, across
   **17.12 → 17.15 ↔ 17.18 ↔ 26.1**.
@@ -38,8 +38,10 @@ first**.
 - **Catalyst 8000V** (virtual router): full upgrade **17.12 → 17.15.5**
   end-to-end — `bootflash:` discovery, copy/add/activate/reload/commit all
   live on a running Cat8kv.
-- Installs and runs as a Git Repository job on **Nautobot 2.4 and 3.1**; a full
-  26.1.1 → 17.18.3 device install ran from a stock 2.4.36.
+- Installs and runs as a Git Repository job on **Nautobot 2.4 and 3.1**, with
+  the **same results on either** — recent testing has moved to a stock
+  **2.4.36** (where a full 26.1.1 → 17.18.3 install ran), with earlier volume
+  on 3.1.
 
 **Not yet proven — treat as experimental:**
 
@@ -185,7 +187,7 @@ gate and abort.
 
 | Component | Supported | Notes |
 | --- | --- | --- |
-| **Nautobot** | **2.4 LTM** and **3.1+** | Job execution verified on **3.1 and multiple independent 2.4 environments** (most volume on 3.1). **3.0 is untested by choice** — unmaintained since 3.1 shipped. Earlier 2.x (≥ 2.2) *may* work but is untested. |
+| **Nautobot** | **2.4 LTM** and **3.1+** | Job execution verified on **both 2.4 LTM and 3.1, with the same behavior on either**; the current test bed is a stock **2.4.36**, with earlier volume on 3.1. **3.0 is untested by choice** — unmaintained since 3.1 shipped. Earlier 2.x (≥ 2.2) *may* work but is untested. |
 | **Device OS** | Cisco IOS-XE **≥ 17.9.1** (incl. 26.x) | Hardware-validated across **17.12–26.1**; every YANG model the job touches verified against Cisco's published models 17.9.1–26.1.1. Model presence ≠ runtime behavior — do one supervised run per new train. Rebuild letters (17.15.4**d**) are **distinct versions**. |
 | **Platform** | Catalyst **9300 family** + **C8000V** | **9300 and 9300L** hardware-tested; the remaining 9300 variants (LM/X) run the identical cat9k image and flow (run pending). **C8000V** (autonomous): **validated live** — a full 17.12 → 17.15.5 upgrade on a running Cat8kv, with `bootflash:` discovered from the device. **9500** (StackWise Virtual): **hardware-validated in production** — a 9500-16X SVL pair upgraded as the lab core. **9200** and **9400/9600**: model sets identical (runs pending). **9800 WLC**: mechanically compatible but **operationally out of scope** — controller only, no AP predownload; a full-scope run is warned in-job. Nexus/NX-OS is a different API — not supported. **3650/3850 cannot be supported** (their terminal 16.12 train lacks the install API; Cisco's replacement, the 9300L, is supported). |
 
