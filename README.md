@@ -58,6 +58,15 @@ first**.
 - **Failure paths on hardware**: auto-rollback expiry, a genuinely corrupt image,
   a member failing to rejoin.
 
+**On further device coverage:** we've now run **every Cat9k platform we have in
+house** — 9300, 9300L, and a 9500 StackWise Virtual pair. The platforms still
+marked *pending* above (other 9300 variants, 9200, 9400, 9600) are pending only
+because we don't have them to test — we have **no plan to validate additional
+device types ourselves** (we don't have the hardware), so that coverage would
+need to come from the **community** ([Contributing](#contributing)). Beyond the switches, the IOS-XE
+routers most likely to be compatible are the **ASR 1001-HX** and **ISR 4000**
+(see [Versions & support](#versions--support)).
+
 Per-train and per-platform detail is in [Versions & support](#versions--support).
 
 ---
@@ -189,6 +198,19 @@ gate and abort.
 | **17.12 / 17.15 / 17.18 / 26.1** | ✅ **Tested on real equipment** | Repeated upgrades **and** downgrades on 9300s — single switches **and** a 2-member stack across all four trains; lettered rebuilds; cross-era moves in both directions; serial and Parallelism-2 batches. Ledger tracking, engine-idle gating, byte-exact verify, the all-members-rejoined gate, remove-inactive, and interrupted-run recovery all exercised live. |
 | **17.9 / 17.10 / 17.11** | ⚠️ **Not tested — might work** | Model-complete on paper (17.9 is the floor). Best used as an *escape source* (upgrade FROM it) — 17.9 left Cisco maintenance Aug 2025. Run one supervised upgrade first. |
 | **< 17.9** | 🚫 **Not supported** | Refused: key API components are missing below the floor (the RESTCONF install models and reliable file-size reporting the job relies on). |
+
+**Candidate non-switch platforms (untested — community validation welcome).** The
+job's hard requirements are just **IOS-XE ≥ 17.9.1, install mode, and RESTCONF**,
+so IOS-XE *routers* that meet them are plausible targets. The **ASR 1001-HX** and
+**ISR 4000 (ISR4k)** are the most likely: both are single-RP IOS-XE platforms
+that drive the same `install add`/`activate`/`commit` flow, boot from
+**`bootflash:`**, and **reload as a whole** on activate — the exact pattern
+already validated live on the **C8000V** router. We have no way to test these
+ourselves, so they are listed as candidates for
+[community validation](#contributing), **not** as supported platforms. To try
+one: the device must already be **booted in install mode** (the job refuses
+bundle mode), on **≥ 17.9.1**, with RESTCONF enabled — and the activation is a
+**full reload outage**, since this job never uses ISSU.
 
 The job imports only **`requests`** plus Nautobot core, so there is no separate
 Python dependency matrix — whatever ships with a supported Nautobot suffices.
