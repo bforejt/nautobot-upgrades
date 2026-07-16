@@ -52,24 +52,18 @@ first**.
 - **Other 9300 variants (LM/X)** and **9200 / 9400 / 9600** — identical image,
   flow, and models on paper, hardware runs pending; **17.9–17.11**. (C8000V
   batches/HA remain untested — the validation run was a single router.)
-- **ASR 1001-HX and ISR 4000 routers** — plausibly compatible (the same
-  install-mode + RESTCONF path already proven on the C8000V); **we have these
-  in the lab, so a validation run is pending** (see
-  [Versions & support](#versions--support)).
 - **Sustained / at-scale production use** — the first production run (the 9500
   core) succeeded, but broad production hardening across a fleet is still being
   built up.
 - **Failure paths on hardware**: auto-rollback expiry, a genuinely corrupt image,
   a member failing to rejoin.
 
-**On further device coverage:** among the hardware we have in house, we've now
-validated **everything except two routers**. Done: 9300, 9300L, and a 9500
-StackWise Virtual pair. The **ASR 1001-HX** and **ISR 4000** are **testable in
-our own lab** — we have them, so a validation run is **pending** rather than
-community-dependent (see [Versions & support](#versions--support)). The other
-platforms still marked *pending* above — ones we **don't** have (other 9300
-variants, 9200, 9400, 9600) — would need **community** validation
-([Contributing](#contributing)).
+**On further device coverage:** we validate on the hardware we have and
+**don't try to enumerate every compatible model** — that list would be long,
+drift over time, and is easy to get wrong. Compatibility comes down to a small
+set of requirements (see [Versions & support](#versions--support)); any device
+that meets them should, in principle, work. If you run it on something we
+haven't, a report is welcome ([Contributing](#contributing)).
 
 Per-train and per-platform detail is in [Versions & support](#versions--support).
 
@@ -203,17 +197,21 @@ gate and abort.
 | **17.9 / 17.10 / 17.11** | ⚠️ **Not tested — might work** | Model-complete on paper (17.9 is the floor). Best used as an *escape source* (upgrade FROM it) — 17.9 left Cisco maintenance Aug 2025. Run one supervised upgrade first. |
 | **< 17.9** | 🚫 **Not supported** | Refused: key API components are missing below the floor (the RESTCONF install models and reliable file-size reporting the job relies on). |
 
-**Router candidates (testable — run pending).** The job's hard requirements are
-just **IOS-XE ≥ 17.9.1, install mode, and RESTCONF**, so IOS-XE *routers* that
-meet them are plausible targets. The **ASR 1001-HX** and **ISR 4000 (ISR4k)** are
-the most likely: both are single-RP IOS-XE platforms that drive the same
-`install add`/`activate`/`commit` flow, boot from **`bootflash:`**, and **reload
-as a whole** on activate — the exact pattern already validated live on the
-**C8000V** router. **We have these in the lab, so a validation run is planned;**
-until it lands they are candidates, **not** supported platforms. For a run: the
-device must already be **booted in install mode** (the job refuses bundle mode),
-on **≥ 17.9.1**, with RESTCONF enabled — and the activation is a **full reload
-outage**, since this job never uses ISSU.
+**What makes a device compatible.** The job targets a *capability set*, not a
+model list — so rather than chase which platforms qualify, hold it to the rule.
+A device is a candidate when it is:
+
+- **Autonomous Cisco IOS-XE at ≥ 17.9.1** — the box manages its own upgrade, not
+  a device driven by an SD-WAN controller or a Meraki dashboard;
+- **booted in install mode** — the job refuses bundle mode; and
+- **reachable over RESTCONF**.
+
+Activation is always a **whole-box reload** (this job never uses ISSU). Any
+device meeting all of the above should, **in principle**, be upgradable by this
+job regardless of family — the C8000V router already rides the same path as the
+switches. We validate on the hardware we have and **don't try to predict the
+rest**; if you run it somewhere new, tell us how it went
+([Contributing](#contributing)).
 
 The job imports only **`requests`** plus Nautobot core, so there is no separate
 Python dependency matrix — whatever ships with a supported Nautobot suffices.
