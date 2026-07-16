@@ -282,7 +282,8 @@ detailed steps.
 - **Devices**: Cisco IOS-XE **≥ 17.9.1**, booted in **install mode**
   (`flash:packages.conf`), with **RESTCONF enabled** (`restconf` +
   `ip http secure-server`) and a **privilege-15** account (or exec-authorized
-  for `install`/`copy`). Enabling RESTCONF where it is absent is out of scope.
+  for `install`/`copy`). Enabling RESTCONF is a one-time **manual prerequisite**
+  (those few commands) — the job deliberately does not bootstrap it.
 - No extra Python packages: the Job's only runtime dependency is `requests`,
   already present with Nautobot core.
 
@@ -936,16 +937,15 @@ SELinux visibility day-to-day.
 These were intentionally left out to keep the first cut small; revisit as
 separate, agreed features:
 
-- A companion job to **enable RESTCONF** on devices that lack it (needs a
-  non-RESTCONF channel to bootstrap).
-- **Native ISSU mode for 9400/9500/9600 HA pairs**: `issu: true` on the
-  activate (the RPC leaf already exists) plus ISSU-aware confirmation —
-  today's logic requires observing the device go DOWN, which an ISSU
-  deliberately avoids. **Out of scope by charter** (RESTCONF + install mode +
-  Nautobot jobs) with **no current plan** — see
+- **Native ISSU mode** — **not planned.** ISSU is a narrow corner case: it needs
+  redundant hardware (a StackWise Virtual pair or dual-sup chassis — a single
+  switch can never ISSU), install mode, and an **EM-to-EM hop within one major
+  train** (no cross-train, no downgrades), and even eligible paths can be buggy
+  (17.12 → 17.15, Cisco CSCwn57884). Realistic fleet upgrades take a reload — a
+  **full outage** — anyway, so the value is low and the added confirmation logic
+  is high (ISSU never emits the device-DOWN signal this job confirms on). This
+  job stays **install-mode, reload-based** on every platform — see
   [ISSU-capable platforms](#issu-capable-platforms-940095009600-install-mode-only).
-  A future sister job or in-job mode would need a lab SVL / dual-sup pair to
-  define the ISSU confirmation choreography.
 - **Catalyst 9800 wireless-aware mode**: AP image predownload between add and
   activate (`Cisco-IOS-XE-wireless-access-point-cmd-rpc:set-rad-predownload-all`
   is available at our floor), AP-fleet completion polling, and SSO awareness —
