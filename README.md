@@ -3,14 +3,15 @@
 A native **Nautobot Job** that reliably and cautiously upgrades **Cisco IOS-XE**
 devices — **Catalyst 9300** primarily — driven entirely over **RESTCONF**.
 
-## Current status: lab-proven
+## Current status
 
-**Thoroughly exercised on real Catalyst 9300 hardware, entirely over RESTCONF —
-but not yet production-vetted.** It is a working prototype under active
-development: expect change between releases, read the Job Result logs, and
-**always run Dry-run first**.
+**Thoroughly exercised on real Catalyst 9300-family hardware over RESTCONF —
+and now in early production use: its first production run upgraded the lab's
+Catalyst 9500 core.** Still a working prototype under active development: expect
+change between releases, read the Job Result logs, and **always run Dry-run
+first**.
 
-**Validated on real hardware** (Catalyst 9300 and 9300L + a running Catalyst 8000V, from Nautobot 3.1):
+**Validated on real hardware** (Catalyst 9300, 9300L and a 9500 StackWise Virtual pair, plus a running Catalyst 8000V; from Nautobot 3.1):
 
 - **Full upgrade _and_ downgrade** on **single switches**, repeatedly, across
   **17.12 → 17.15 ↔ 17.18 ↔ 26.1**.
@@ -23,6 +24,11 @@ development: expect change between releases, read the Job Result logs, and
 - **2-member stack**, up and down across **all tested trains** (17.12 ↔ 17.15 ↔
   17.18 ↔ 26.1): per-member free-space gating, package distribution, and the
   all-members-rejoined gate.
+- **Catalyst 9500-16X pair in StackWise Virtual** — full upgrade
+  validated on **real, in-production hardware**: the two-chassis SVL pair
+  reloaded as a whole and rejoined on the target version through the standard
+  install-mode (non-ISSU) path. This pair is the **production core of our
+  lab**, making this the job's **first successful production run**.
 - **Ledger-tracked** add/activate/commit, engine-idle gating, byte-exact copy
   verification, auto-rollback-timer arming, remove-inactive, and interrupted-run
   (commit-to-be-safe) recovery.
@@ -43,9 +49,12 @@ development: expect change between releases, read the Job Result logs, and
   full stage-ahead → window-run timing has not been measured.
 - **Stacks larger than 2 members** — the 2-member stack is validated across all
   tested trains; larger stacks are not yet tested.
-- **Other 9300 variants (LM/X)** and **9200 / 9400–9600** — identical image,
+- **Other 9300 variants (LM/X)** and **9200 / 9400 / 9600** — identical image,
   flow, and models on paper, hardware runs pending; **17.9–17.11**. (C8000V
   batches/HA remain untested — the validation run was a single router.)
+- **Sustained / at-scale production use** — the first production run (the 9500
+  core) succeeded, but broad production hardening across a fleet is still being
+  built up.
 - **Failure paths on hardware**: auto-rollback expiry, a genuinely corrupt image,
   a member failing to rejoin.
 
@@ -76,11 +85,12 @@ image copy, `install add`/`activate`/`commit`, reload, rollback, and the state
 reads that gate each step. That result was strong enough to justify building
 this prototype rather than stopping at a feasibility note.
 
-**Where it stands:** the flow is working well and is thoroughly exercised in a
-**lab** on real Catalyst 9300 hardware (see [Current status](#current-status-lab-proven)).
-The intended next step is deliberate **production vetting** — the design is
-conservative and its stability so far is encouraging, but "works in the lab" is
-not "proven in production," so every run should still start with **Dry-run**.
+**Where it stands:** the flow is working well, thoroughly exercised in a **lab**
+on real Catalyst 9300-family hardware, and **production vetting has now begun** —
+the lab's Catalyst 9500 core was upgraded in production successfully (see
+[Current status](#current-status)). The design is conservative and its stability
+so far is encouraging, but this is **early** production use, not broad
+production hardening, so every run should still start with **Dry-run**.
 
 **Key design choices** (from an up-front analysis, to avoid reinvention):
 
@@ -170,7 +180,7 @@ gate and abort.
 | --- | --- | --- |
 | **Nautobot** | **2.4 LTM** and **3.1+** | Job execution verified on **3.1 and multiple independent 2.4 environments** (most volume on 3.1). **3.0 is untested by choice** — unmaintained since 3.1 shipped. Earlier 2.x (≥ 2.2) *may* work but is untested. |
 | **Device OS** | Cisco IOS-XE **≥ 17.9.1** (incl. 26.x) | Hardware-validated across **17.12–26.1**; every YANG model the job touches verified against Cisco's published models 17.9.1–26.1.1. Model presence ≠ runtime behavior — do one supervised run per new train. Rebuild letters (17.15.4**d**) are **distinct versions**. |
-| **Platform** | Catalyst **9300 family** + **C8000V** | **9300 and 9300L** hardware-tested; the remaining 9300 variants (LM/X) run the identical cat9k image and flow (run pending). **C8000V** (autonomous): **validated live** — a full 17.12 → 17.15.5 upgrade on a running Cat8kv, with `bootflash:` discovered from the device. **9200** and **9400/9500/9600**: model sets identical (runs pending). **9800 WLC**: mechanically compatible but **operationally out of scope** — controller only, no AP predownload; a full-scope run is warned in-job. Nexus/NX-OS is a different API — not supported. **3650/3850 cannot be supported** (their terminal 16.12 train lacks the install API; Cisco's replacement, the 9300L, is supported). |
+| **Platform** | Catalyst **9300 family** + **C8000V** | **9300 and 9300L** hardware-tested; the remaining 9300 variants (LM/X) run the identical cat9k image and flow (run pending). **C8000V** (autonomous): **validated live** — a full 17.12 → 17.15.5 upgrade on a running Cat8kv, with `bootflash:` discovered from the device. **9500** (StackWise Virtual): **hardware-validated in production** — a 9500-16X SVL pair upgraded as the lab core. **9200** and **9400/9600**: model sets identical (runs pending). **9800 WLC**: mechanically compatible but **operationally out of scope** — controller only, no AP predownload; a full-scope run is warned in-job. Nexus/NX-OS is a different API — not supported. **3650/3850 cannot be supported** (their terminal 16.12 train lacks the install API; Cisco's replacement, the 9300L, is supported). |
 
 **By IOS-XE train:**
 
@@ -359,7 +369,7 @@ change-window arithmetic.
 the lab). The per-device independence below is by construction, so higher
 fan-out is expected to behave — but treat anything above 2 as unproven: raise
 it deliberately and watch the first runs (see
-[Current status](#current-status-lab-proven)).
+[Current status](#current-status)).
 
 **Why it's safe**: every device is fully independent by construction — its own
 RESTCONF sessions, its own per-operation correlation uuids in the device's
@@ -677,8 +687,9 @@ reload-based activation: the device reloads **as a whole** and comes back on the
 target version — a correct, complete upgrade, but with a **full reboot outage**,
 exactly like a 9300.
 
-**Why we are confident this works on those platforms** (validated by design; one
-supervised run per new platform is still the recommended due diligence):
+**Why we are confident this works on those platforms** (validated by design, and
+now by a real 9500 StackWise Virtual run; one supervised run per new platform is
+still the recommended due diligence):
 
 - The install-mode YANG models the job drives (`install-rpc`, `install-oper`,
   `q-filesystem`, `copy`, `device-hardware-oper`) are **verified identical
@@ -691,10 +702,12 @@ supervised run per new platform is still the recommended due diligence):
   device-down signal**, and the job never requests it.
 - Stack/SVL handling already gates on **all members** reporting install mode,
   having free space, and **rejoining after reload** — the 2-member stack is
-  hardware-validated, and an **SVL pair (two chassis)** rides the same gates. (A
-  single-chassis **dual-supervisor** system reports as one chassis, so the
-  rejoin gate confirms the chassis rebooted but does not separately verify the
-  standby supervisor rejoined.)
+  hardware-validated, and an **SVL pair (two chassis) is now hardware-validated
+  as well**: a **9500-16X StackWise Virtual pair** upgraded correctly through
+  these gates in production. (A single-chassis **dual-supervisor** system
+  reports as one chassis, so the rejoin gate confirms the chassis rebooted but
+  does not separately verify the standby supervisor rejoined — that variant
+  remains untested.)
 - The activate payload sets **`issu: false` explicitly** — an ambiguous
   (issu-unspecified) request fatally failed activation on a real 17.15.4 with an
   "ISSU compatibility check" — so it is unambiguously the standard reload path
@@ -702,10 +715,12 @@ supervised run per new platform is still the recommended due diligence):
   leaving the platform's **default rollback timer** to apply (verified after
   reload).
 
-The one honest gap is **hardware confirmation on 9400/9500/9600** (model sets
-proven identical, a supervised run pending — see
+The **9500 is now hardware-confirmed** — a StackWise Virtual pair upgraded in
+production — leaving **9400 and 9600** as the remaining platforms with model
+sets proven identical but a supervised run still pending (see
 [Versions & support](#versions--support)). The *behavior* is validated by the
-above; the *platform run* is the same due-diligence step as any new platform.
+above; each remaining *platform run* is the same due-diligence step as any new
+platform.
 
 **ISSU itself is out of scope — by charter.** This project is deliberately built
 on exactly three primitives: **RESTCONF, install mode, and Nautobot jobs**. ISSU
@@ -802,8 +817,9 @@ Everything actually depended on (`requests`, Nautobot core) is permissive
 ## Known limitations / not yet done
 
 - **Hardware validation covers 17.12, 17.15, 17.18, and 26.1** on single
-  switches and a 2-member stack, from Nautobot 3.1 and 2.4 — other platforms
-  (9200, 9400–9600) are admitted on model evidence (see
+  switches, a 2-member stack, and a 9500 StackWise Virtual pair, from Nautobot
+  3.1 and 2.4 — the other platforms (9200, 9400, 9600) are admitted on model
+  evidence (see
   [Versions & support](#versions--support)); do one supervised run
   per newly-encountered train or platform. On releases whose devices don't populate
   the operation ledger or `sys-activity` at runtime, the job degrades to
@@ -968,8 +984,8 @@ you can send.
 
 **Tell us what you find — success _or_ failure.** If you run the job against a
 device type, IOS-XE train, or topology we haven't validated yet (see
-[Current status](#current-status-lab-proven)), please **open an issue either
-way**: "upgraded a 9500 cleanly, 17.12 → 17.15" is as useful to us as a bug
+[Current status](#current-status)), please **open an issue either
+way**: "upgraded a 9400 cleanly, 17.12 → 17.15" is as useful to us as a bug
 report. Include the platform and model, the IOS-XE versions (from → to), the
 Run scope, and the relevant Job Result log lines (scrub anything sensitive
 first). Positive reports let us grow the validated matrix; failures show us
@@ -1021,6 +1037,6 @@ kind, under the terms of the [Apache License 2.0](LICENSE) — including its
 Be aware of what this tool does: it **copies software to, and reloads, live
 network equipment**. If you choose to run it in your own environment, you do so
 entirely **at your own risk** — validate in a lab first (see
-[Current status](#current-status-lab-proven)), keep Dry-run on until proven, and
+[Current status](#current-status)), keep Dry-run on until proven, and
 maintain your own change-control and rollback procedures. Use of this software
 constitutes acceptance of the license terms above.
