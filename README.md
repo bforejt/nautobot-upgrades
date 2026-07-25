@@ -8,17 +8,19 @@ devices — **Catalyst 9300** primarily — driven entirely over **RESTCONF**.
 **A work in progress — and going well.** Thoroughly exercised on real Catalyst
 hardware over RESTCONF: **30+ upgrade and downgrade runs across the 9300, 9300L,
 and Catalyst 8000V** — single switches, a 2-member stack, and serial and
-parallel batches — on Nautobot **2.4 and 3.1**, with the same results on either.
-It's now in **early production**: the first production run upgraded our lab's
-Catalyst **9500** StackWise Virtual core. **Auto-rollback has also been observed
-in the field** — an upgrade that couldn't be confirmed after the reload was
-never committed, and the device rolled back to its prior image on its own.
+parallel batches — on Nautobot **2.4 and 3.1**, with the same results on either. It's now run in **early production at more than one organization**: it
+upgraded our lab's Catalyst **9500** StackWise Virtual core, and a separate
+company took it across a production site of **three switch stacks (6–7 members
+each)** through the full **stage-1 → stage-2 → full-upgrade** cycle.
+**Auto-rollback has also been observed in the field** — an upgrade that couldn't
+be confirmed after the reload was never committed, and the device rolled back to
+its prior image on its own.
 
 Still a prototype under active development, so treat it as **capable but not yet
 production-hardened**: expect change between releases, read the Job Result logs,
-and **always run Dry-run first**. Not yet proven: broad at-scale production use,
-parallelism above 2, stacks larger than 2 members, the full timed staging cycle,
-and a couple of failure paths (a corrupt image, a member failing to rejoin).
+and **always run Dry-run first**. Not yet proven: parallelism above 2, sustained
+fleet-wide production use, and a couple of failure paths (a corrupt image, a
+member failing to rejoin).
 Platform, per-train, and compatibility detail is in
 [Versions & support](#versions--support).
 
@@ -681,9 +683,10 @@ still the recommended due diligence):
   device-down signal**, and the job never requests it.
 - Stack/SVL handling already gates on **all members** reporting install mode,
   having free space, and **rejoining after reload** — the 2-member stack is
-  hardware-validated, and an **SVL pair (two chassis) is now hardware-validated
-  as well**: a **9500-16X StackWise Virtual pair** upgraded correctly through
-  these gates in production. (A single-chassis **dual-supervisor** system
+  lab-validated, a **6-/7-member stack** was upgraded at a third-party
+  production site, and an **SVL pair (two chassis) is now hardware-validated as
+  well**: a **9500-16X StackWise Virtual pair** upgraded correctly through these
+  gates in production. (A single-chassis **dual-supervisor** system
   reports as one chassis, so the rejoin gate confirms the chassis rebooted but
   does not separately verify the standby supervisor rejoined — that variant
   remains untested.)
@@ -797,7 +800,8 @@ Everything actually depended on (`requests`, Nautobot core) is permissive
 
 - **Hardware validation covers 17.12, 17.15, 17.18, and 26.1** on single
   switches, a 2-member stack, and a 9500 StackWise Virtual pair, from Nautobot
-  3.1 and 2.4 — the other platforms (9200, 9400, 9600) are admitted on model
+  3.1 and 2.4 (with a 6-/7-member stack upgraded once at a third-party
+  production site) — the other platforms (9200, 9400, 9600) are admitted on model
   evidence (see
   [Versions & support](#versions--support)); do one supervised run
   per newly-encountered train or platform. On releases whose devices don't populate
