@@ -448,6 +448,15 @@ version another engineer may have staged**.
 
 ⚠️ **What you are accepting when you tick it:**
 
+- **Do NOT tick this if you already pre-staged the code — it deletes your own
+  staging too.** The staged image and packages are, by definition, software
+  the device is not running yet, so the clean removes them and the Full run
+  is forced to **re-download and re-stage everything** during your window.
+  This has surprised people: stage ahead with Step 1 (or Steps 1 & 2), then
+  run Full with this box ticked, and the pre-staging you did is gone. The two
+  work as alternatives — if you need both, tick the clean on the *staging*
+  run (the clean-then-stage pattern), and leave it **unticked** on the Full
+  run that follows.
 - **Anything in-flight is deleted.** A staged version usually means someone
   else's change is already underway. Normally the job STOPS when it finds a
   conflicting staged version (the staged-conflict safety stop); this
