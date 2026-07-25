@@ -584,6 +584,11 @@ the reload, or a boot the device itself classifies as a crash. On the
 [overview diagram](docs/overview-flow.md) these are the **8a** (pre-test) and
 **8b** (post-test) decision branches.
 
+> **Maturity:** newer than the core flow — exercised in lab runs on the 9300
+> and report-only by design, but with **less field time** than the
+> copy/install path. Treat findings as a signal to verify, not a verdict, and
+> send field reports either way ([Contributing](#contributing)).
+
 **Pre-test (8a)** — the baseline, captured immediately before activation
 (fail-closed: if this snapshot can't be read, the device aborts *before*
 anything reloads):
@@ -936,10 +941,51 @@ logging buffered discriminator NOSEL
 Remove the discriminator after the upgrade window if you prefer to keep
 SELinux visibility day-to-day.
 
-## Deferred (by agreement — not built yet)
+## Roadmap
 
-These were intentionally left out to keep the first cut small; revisit as
-separate, agreed features:
+What's coming, what's being weighed, and what's ruled out — in confidence
+tiers, deliberately **without dates or version promises**. Everything here is
+held to the same bar as the rest of the project: it ships only once we can
+validate it on hardware we can reach.
+
+**Planned** (committed direction, no dates):
+
+- **Catalyst 9800 wireless job** — a separate sibling job, not a mode of this
+  one: AP image predownload between add and activate
+  (`Cisco-IOS-XE-wireless-access-point-cmd-rpc:set-rad-predownload-all` is
+  available at our floor), AP-fleet completion polling, and SSO awareness.
+  Gated on having a 9800 + APs to validate against; until then this job warns
+  and leaves 9800s to deliberate full-outage use.
+- **Bulk device selection** — select targets by location, tag, or group in one
+  step instead of picking each device (today the filters assist, but the final
+  selection is still per-device).
+- **Pre/post health-check hardening** — the checks are newer than the core
+  flow and carry a maturity note; more field validation first, then the v2
+  checks queued in
+  [Pre/post health checks](#prepost-health-checks-report-only).
+
+**Under consideration** (real value, unresolved design questions):
+
+- **A RESTCONF-enabler companion job** — turn RESTCONF on for targets that
+  lack it. Manual enablement (a few commands) is the requirement today; the
+  open question is the bootstrap transport, since a device without RESTCONF
+  needs some other channel first.
+- **Device Lifecycle Management integration** — validated/approved-software
+  gating and CVE/EoL/contract context.
+- **Run gating / authorization** — who may run upgrades, second-person
+  approval, change-window enforcement (Nautobot ships native pieces for much
+  of this).
+- **Deeper stack/redundancy checks** — beyond today's all-members-rejoined
+  gate.
+
+**Exploring** (research first — no commitment either way):
+
+- **Other platform families (e.g. Nexus/NX-OS)** — a different OS and API
+  entirely, so any support would be a separate sibling job, and only if
+  research shows the same state-driven, positive-feedback flow is achievable
+  there. This job's "Nexus/NX-OS — not supported" stands regardless.
+
+**Not planned:**
 
 - **Native ISSU mode** — **not planned.** ISSU is a narrow corner case: it needs
   redundant hardware (a StackWise Virtual pair or dual-sup chassis — a single
@@ -950,14 +996,6 @@ separate, agreed features:
   is high (ISSU never emits the device-DOWN signal this job confirms on). This
   job stays **install-mode, reload-based** on every platform — see
   [ISSU-capable platforms](#issu-capable-platforms-940095009600-install-mode-only).
-- **Catalyst 9800 wireless-aware mode**: AP image predownload between add and
-  activate (`Cisco-IOS-XE-wireless-access-point-cmd-rpc:set-rad-predownload-all`
-  is available at our floor), AP-fleet completion polling, and SSO awareness —
-  until then the job warns and leaves 9800s to deliberate full-outage use.
-- **Device Lifecycle Management** integration for **validated/approved-software
-  gating** and CVE/EoL/contract context.
-- User-based **authorization/gating** of who may run upgrades.
-- Deeper stack/redundancy and post-upgrade interface/protocol health checks.
 
 ## Contributing
 
@@ -987,8 +1025,8 @@ support for hardware we can reach. A few ground rules keep the project honest:
   not closed**, and merged as soon as we can confirm them.
 - **Stay within the charter:** RESTCONF, install mode, and Nautobot jobs. The
   design choices, the [ISSU](#issu-capable-platforms-940095009600-install-mode-only)
-  note, and the [Deferred](#deferred-by-agreement--not-built-yet) list cover
-  what is deliberately out of scope.
+  note, and the [Roadmap](#roadmap) tiers cover what is deliberately out of
+  scope or not yet committed.
 - **Test before you open the PR:** run **Dry-run** and, where relevant, the
   scenario checks; describe how you tested it; and keep changes small and
   reviewable. For anything non-trivial, open an issue first — it saves everyone
