@@ -8,17 +8,19 @@ devices — **Catalyst 9300** primarily — driven entirely over **RESTCONF**.
 **A work in progress — and going well.** Thoroughly exercised on real Catalyst
 hardware over RESTCONF: **30+ upgrade and downgrade runs across the 9300, 9300L,
 and Catalyst 8000V** — single switches, a 2-member stack, and serial and
-parallel batches — on Nautobot **2.4 and 3.1**, with the same results on either.
-It's now in **early production**: the first production run upgraded our lab's
-Catalyst **9500** StackWise Virtual core. **Auto-rollback has also been observed
-in the field** — an upgrade that couldn't be confirmed after the reload was
-never committed, and the device rolled back to its prior image on its own.
+parallel batches — on Nautobot **2.4 and 3.1**, with the same results on either. It's now run in **early production at more than one organization**: it
+upgraded our lab's Catalyst **9500** StackWise Virtual core, and a separate
+company took it across a production site of **three switch stacks (6–7 members
+each)** through the full **stage-1 → stage-2 → full-upgrade** cycle.
+**Auto-rollback has also been observed in the field** — an upgrade that couldn't
+be confirmed after the reload was never committed, and the device rolled back to
+its prior image on its own.
 
 Still a prototype under active development, so treat it as **capable but not yet
 production-hardened**: expect change between releases, read the Job Result logs,
-and **always run Dry-run first**. Not yet proven: broad at-scale production use,
-parallelism above 2, stacks larger than 2 members, the full timed staging cycle,
-and a couple of failure paths (a corrupt image, a member failing to rejoin).
+and **always run Dry-run first**. Not yet proven: parallelism above 2, sustained
+fleet-wide production use, and a couple of failure paths (a corrupt image, a
+member failing to rejoin).
 Platform, per-train, and compatibility detail is in
 [Versions & support](#versions--support).
 
@@ -582,6 +584,11 @@ the reload, or a boot the device itself classifies as a crash. On the
 [overview diagram](docs/overview-flow.md) these are the **8a** (pre-test) and
 **8b** (post-test) decision branches.
 
+> **Maturity:** newer than the core flow — exercised in lab runs on the 9300
+> and report-only by design, but with **less field time** than the
+> copy/install path. Treat findings as a signal to verify, not a verdict, and
+> send field reports either way ([Contributing](#contributing)).
+
 **Pre-test (8a)** — the baseline, captured immediately before activation
 (fail-closed: if this snapshot can't be read, the device aborts *before*
 anything reloads):
@@ -681,9 +688,10 @@ still the recommended due diligence):
   device-down signal**, and the job never requests it.
 - Stack/SVL handling already gates on **all members** reporting install mode,
   having free space, and **rejoining after reload** — the 2-member stack is
-  hardware-validated, and an **SVL pair (two chassis) is now hardware-validated
-  as well**: a **9500-16X StackWise Virtual pair** upgraded correctly through
-  these gates in production. (A single-chassis **dual-supervisor** system
+  lab-validated, a **6-/7-member stack** was upgraded at a third-party
+  production site, and an **SVL pair (two chassis) is now hardware-validated as
+  well**: a **9500-16X StackWise Virtual pair** upgraded correctly through these
+  gates in production. (A single-chassis **dual-supervisor** system
   reports as one chassis, so the rejoin gate confirms the chassis rebooted but
   does not separately verify the standby supervisor rejoined — that variant
   remains untested.)
@@ -797,7 +805,8 @@ Everything actually depended on (`requests`, Nautobot core) is permissive
 
 - **Hardware validation covers 17.12, 17.15, 17.18, and 26.1** on single
   switches, a 2-member stack, and a 9500 StackWise Virtual pair, from Nautobot
-  3.1 and 2.4 — the other platforms (9200, 9400, 9600) are admitted on model
+  3.1 and 2.4 (with a 6-/7-member stack upgraded once at a third-party
+  production site) — the other platforms (9200, 9400, 9600) are admitted on model
   evidence (see
   [Versions & support](#versions--support)); do one supervised run
   per newly-encountered train or platform. On releases whose devices don't populate
@@ -932,10 +941,51 @@ logging buffered discriminator NOSEL
 Remove the discriminator after the upgrade window if you prefer to keep
 SELinux visibility day-to-day.
 
-## Deferred (by agreement — not built yet)
+## Roadmap
 
-These were intentionally left out to keep the first cut small; revisit as
-separate, agreed features:
+What's coming, what's being weighed, and what's ruled out — in confidence
+tiers, deliberately **without dates or version promises**. Everything here is
+held to the same bar as the rest of the project: it ships only once we can
+validate it on hardware we can reach.
+
+**Planned** (committed direction, no dates):
+
+- **Catalyst 9800 wireless job** — a separate sibling job, not a mode of this
+  one: AP image predownload between add and activate
+  (`Cisco-IOS-XE-wireless-access-point-cmd-rpc:set-rad-predownload-all` is
+  available at our floor), AP-fleet completion polling, and SSO awareness.
+  Gated on having a 9800 + APs to validate against; until then this job warns
+  and leaves 9800s to deliberate full-outage use.
+- **Bulk device selection** — select targets by location, tag, or group in one
+  step instead of picking each device (today the filters assist, but the final
+  selection is still per-device).
+- **Pre/post health-check hardening** — the checks are newer than the core
+  flow and carry a maturity note; more field validation first, then the v2
+  checks queued in
+  [Pre/post health checks](#prepost-health-checks-report-only).
+
+**Under consideration** (real value, unresolved design questions):
+
+- **A RESTCONF-enabler companion job** — turn RESTCONF on for targets that
+  lack it. Manual enablement (a few commands) is the requirement today; the
+  open question is the bootstrap transport, since a device without RESTCONF
+  needs some other channel first.
+- **Device Lifecycle Management integration** — validated/approved-software
+  gating and CVE/EoL/contract context.
+- **Run gating / authorization** — who may run upgrades, second-person
+  approval, change-window enforcement (Nautobot ships native pieces for much
+  of this).
+- **Deeper stack/redundancy checks** — beyond today's all-members-rejoined
+  gate.
+
+**Exploring** (research first — no commitment either way):
+
+- **Other platform families (e.g. Nexus/NX-OS)** — a different OS and API
+  entirely, so any support would be a separate sibling job, and only if
+  research shows the same state-driven, positive-feedback flow is achievable
+  there. This job's "Nexus/NX-OS — not supported" stands regardless.
+
+**Not planned:**
 
 - **Native ISSU mode** — **not planned.** ISSU is a narrow corner case: it needs
   redundant hardware (a StackWise Virtual pair or dual-sup chassis — a single
@@ -946,14 +996,6 @@ separate, agreed features:
   is high (ISSU never emits the device-DOWN signal this job confirms on). This
   job stays **install-mode, reload-based** on every platform — see
   [ISSU-capable platforms](#issu-capable-platforms-940095009600-install-mode-only).
-- **Catalyst 9800 wireless-aware mode**: AP image predownload between add and
-  activate (`Cisco-IOS-XE-wireless-access-point-cmd-rpc:set-rad-predownload-all`
-  is available at our floor), AP-fleet completion polling, and SSO awareness —
-  until then the job warns and leaves 9800s to deliberate full-outage use.
-- **Device Lifecycle Management** integration for **validated/approved-software
-  gating** and CVE/EoL/contract context.
-- User-based **authorization/gating** of who may run upgrades.
-- Deeper stack/redundancy and post-upgrade interface/protocol health checks.
 
 ## Contributing
 
@@ -983,8 +1025,8 @@ support for hardware we can reach. A few ground rules keep the project honest:
   not closed**, and merged as soon as we can confirm them.
 - **Stay within the charter:** RESTCONF, install mode, and Nautobot jobs. The
   design choices, the [ISSU](#issu-capable-platforms-940095009600-install-mode-only)
-  note, and the [Deferred](#deferred-by-agreement--not-built-yet) list cover
-  what is deliberately out of scope.
+  note, and the [Roadmap](#roadmap) tiers cover what is deliberately out of
+  scope or not yet committed.
 - **Test before you open the PR:** run **Dry-run** and, where relevant, the
   scenario checks; describe how you tested it; and keep changes small and
   reviewable. For anything non-trivial, open an issue first — it saves everyone
