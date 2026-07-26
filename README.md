@@ -16,20 +16,20 @@ each)** through the full **stage-1 → stage-2 → full-upgrade** cycle.
 be confirmed after the reload was never committed, and the device rolled back to
 its prior image on its own.
 
-Still a prototype under active development, so treat it as **capable but not yet
-production-hardened**: expect change between releases, read the Job Result logs,
-and **always run Dry-run first**. Not yet proven: parallelism above 2, sustained
+Development stays active on **`main`** — production should track the
+**`1.0.x` stable train**, which changes **only for bug fixes** (see
+[Releases & pinning](#releases--pinning)). Read the Job Result logs and
+**always run Dry-run first**. Not yet proven: parallelism above 2, sustained
 fleet-wide production use, and a couple of failure paths (a corrupt image, a
-member failing to rejoin).
-Platform, per-train, and compatibility detail is in
+member failing to rejoin). Platform, per-train, and compatibility detail is in
 [Versions & support](#versions--support).
 
 ---
 
 ## Background & intended use
 
-This project was built for a specific, common situation — and it is still a
-**prototype**:
+This project was built for a specific, common situation — and it is still
+**young software**:
 
 - **The fleet is uniform Cisco Catalyst 9300s.** A switching estate
   standardized on one platform and one image family, where an upgrade playbook
@@ -253,6 +253,25 @@ See **[docs/image-storage.md](docs/image-storage.md)** for the reference
 nautobot-composer design in detail: URL formats, the acquire → upload → register
 workflow, TLS notes, and retention.
 
+## Releases & pinning
+
+Nautobot pins a Git repository to a **branch**, and this project uses that as
+its release mechanism:
+
+- **Production: point the Git Repository at the stable train branch —
+  `1.0.x`.** A train changes **only to fix bugs** — no new features, no
+  changed defaults, no renamed inputs — so it is safe to re-sync at any time.
+- **`main` is development.** It moves freely; use it for labs and evaluation,
+  never production.
+- **New features arrive as a new train** (`1.1.x`, `2.0.x`, …). Moving trains
+  is always your deliberate act — edit the repository's branch field when
+  you're ready. Nothing changes underneath you.
+
+Every release is tagged (`v1.0.0`, `v1.0.1`, …) and listed in
+[CHANGELOG.md](CHANGELOG.md); the upgrade job logs its version at the start
+of every run, so each Job Result records exactly which release produced it.
+The full release model is in [RELEASING.md](RELEASING.md).
+
 ## Installing into Nautobot (getting started)
 
 This project is consumed the standard Nautobot way — as a **Git Repository that
@@ -292,7 +311,9 @@ detailed steps.
 **Steps** (the basics — follow the linked NTC docs for the full how-to)
 
 - **Add the repository.** In Nautobot, go to **Extensibility → Git Repositories
-  → Add**, set the remote URL to this public repo, pick a branch, tick
+  → Add**, set the remote URL to this public repo, pick a branch (**`1.0.x`**
+  for production, `main` only for labs — see
+  [Releases & pinning](#releases--pinning)), tick
   **Provides: Jobs**, and **Sync**. Getting the URL into the right place and the
   sync options are walked through in NTC's
   [Git as a Data Source](https://docs.nautobot.com/projects/core/en/stable/user-guide/feature-guides/git-data-source/)
@@ -1008,8 +1029,8 @@ validate it on hardware we can reach.
 
 ## Contributing
 
-This is an active prototype, and real-world feedback is the most valuable thing
-you can send.
+This is an actively developed project, and real-world feedback is the most
+valuable thing you can send.
 
 **Tell us what you find — success _or_ failure.** If you run the job against a
 device type, IOS-XE train, or topology we haven't validated yet (see
@@ -1036,6 +1057,8 @@ support for hardware we can reach. A few ground rules keep the project honest:
   design choices, the [ISSU](#issu-capable-platforms-940095009600-install-mode-only)
   note, and the [Roadmap](#roadmap) tiers cover what is deliberately out of
   scope or not yet committed.
+- **Target `main`.** All changes land on `main` first; bug fixes are then
+  cherry-picked to the stable train ([RELEASING.md](RELEASING.md)).
 - **Test before you open the PR:** run **Dry-run** and, where relevant, the
   scenario checks; describe how you tested it; and keep changes small and
   reviewable. For anything non-trivial, open an issue first — it saves everyone
