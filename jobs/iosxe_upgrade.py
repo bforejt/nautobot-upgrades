@@ -457,7 +457,8 @@ class IOSXEUpgrade(Job):
                 celery_task = None
                 celery_request = None
         self.logger.info(
-            "Starting IOS-XE upgrade to **%s** for %d selected device(s)%s — nautobot-upgrades v%s.",
+            "Starting IOS-XE upgrade to **%s** for %d selected device(s)%s "
+            "— nautobot-upgrades v%s.",
             target_version,
             len(devices),
             " (DRY-RUN)" if dryrun else "",
