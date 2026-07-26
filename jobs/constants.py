@@ -13,6 +13,11 @@ RESTCONF endpoints used (verified against Cisco's published YANG models):
   * Cisco-IOS-XE-platform-software-oper (filesystem free space / file sizes)
 """
 
+# Release version of this jobs repository (see RELEASING.md). Must match the
+# release tag; the upgrade job logs it at the start of every run so a Job
+# Result always records which release produced it.
+JOB_VERSION = "1.0.0"
+
 # --- Connectivity -----------------------------------------------------------
 
 #: Default RESTCONF port on IOS-XE (HTTPS).
