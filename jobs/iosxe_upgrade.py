@@ -312,6 +312,18 @@ class IOSXEUpgrade(Job):
             "See 'SELinux AVC log events' in the project README."
         ),
     )
+    engine_download = BooleanVar(
+        label="Engine-managed download (WAN)",
+        default=False,
+        description=(
+            "The install engine downloads the image itself during 'install "
+            "add' instead of the separate copy step — for slow links where "
+            "the copy exceeds the device's ~10-minute internal RPC limit. "
+            "Step 1-only runs are refused unless the image is already on "
+            "flash, and this mode is not yet field-validated. See "
+            "'Engine-managed download' in the project README."
+        ),
+    )
     secrets_group_override = ObjectVar(
         model=SecretsGroup,
         required=False,
@@ -369,7 +381,10 @@ class IOSXEUpgrade(Job):
         # plus up to 2x GC_BACKUP_TIMEOUT (900s each) of serial Golden Config
         # backup waits and up to ~HEALTH_CONVERGENCE_TIMEOUT + one capture
         # (~13 min worst case) of post-upgrade health polling, when those
-        # options are on;
+        # options are on; engine-managed downloads add up to
+        # ENGINE_DOWNLOAD_TIMEOUT_MIN (90 min default) to the add wait and must
+        # fit these limits too — raise the constant and these limits TOGETHER
+        # for very slow WANs.
         # size batches so that fits inside the soft limit. SoftTimeLimitExceeded
         # is re-raised (never swallowed); queued devices are cancelled and named,
         # in-flight devices are recovered by an idempotent re-run.
@@ -387,6 +402,7 @@ class IOSXEUpgrade(Job):
             "target_version",
             "run_scope",
             "clean_before",
+            "engine_download",
             "save_config",
             "save_config_after",
             "gc_backup",
@@ -420,6 +436,7 @@ class IOSXEUpgrade(Job):
         gc_backup,
         health_checks,
         suppress_avc_noise,
+        engine_download,
         secrets_group_override,
         remove_inactive,
         parallelism,
@@ -513,6 +530,7 @@ class IOSXEUpgrade(Job):
                     save_config_after,
                     suppress_avc_noise,
                     health_checks,
+                    engine_download,
                 )
                 # Total wall-clock per device — the number change windows are
                 # planned around.
@@ -671,6 +689,7 @@ class IOSXEUpgrade(Job):
         save_config_after=False,
         suppress_avc_noise=False,
         health_checks=False,
+        engine_download=False,
     ):
         log = {"object": device}
 
@@ -825,11 +844,67 @@ class IOSXEUpgrade(Job):
                         " Would snapshot health (ports/CDP/LLDP/environment) "
                         "before activation and compare after commit."
                     )
+            if engine_download:
+                cfg_note += (
+                    " Engine-managed download: the install engine would fetch "
+                    "the image itself during install add (no separate copy "
+                    "step)."
+                )
+                if run_scope == "stage-copy":
+                    cfg_note += (
+                        " NOTE: a live 'Step 1 - Copy image' run is REFUSED in "
+                        "this mode unless the image is already on flash "
+                        "byte-exact — use 'Steps 1 & 2' to pre-stage over the "
+                        "WAN."
+                    )
             return f"DRY-RUN ok:{clean_note}{cfg_note} {planned}. All pre-flight gates passed."
 
-        # -- 3. Transfer + integrity (classic copy in a worker thread, watched
-        # to a size-verified completion inside _copy_image) --------------------
-        self._copy_image(client, image, log, target_fs)
+        # -- 3. Transfer + integrity ------------------------------------------
+        # Default: classic copy in a worker thread, watched to a size-verified
+        # completion inside _copy_image. Opt-in engine mode: defer the transfer
+        # to 'install add' itself (the install engine downloads the URL in the
+        # background, ledger-tracked) — the blocking copy RPC is killed by the
+        # device's DMI/ConfD ~600s ceiling on slow WANs (field report 2026-07),
+        # while the install RPC returns immediately and never hits it.
+        engine_fetch = False
+        if engine_download:
+            listing = self._read_q_filesystem(client)
+            if listing is None:
+                self.logger.warning(
+                    "Could not read the filesystem listing for the engine-mode "
+                    "pre-check (transient RESTCONF errors) — assuming the image "
+                    "must be fetched.",
+                    extra=log,
+                )
+            found, pre_size = _find_target_file(listing or {}, image.image_file_name, target_fs)
+            engine_fetch = _engine_fetch_needed(found, pre_size, image.image_file_size)
+            if not engine_fetch:
+                self.logger.info(
+                    "Image already present at %s with the expected size "
+                    "(%s bytes) — engine-managed download has nothing to fetch.",
+                    target_fs,
+                    pre_size,
+                    extra=log,
+                )
+            elif run_scope == "stage-copy":
+                raise UpgradeAbort(
+                    "Engine-managed download performs the copy INSIDE 'install "
+                    "add' (Step 2), so run scope 'Step 1 - Copy image' has "
+                    "nothing to run in this mode. Choose 'Steps 1 & 2' or "
+                    "'Full', or untick 'Engine-managed download' to use the "
+                    "standard copy."
+                )
+            else:
+                self.logger.info(
+                    "Copy step deferred to the install engine: install add will "
+                    "download '%s' itself (download-timeout %d min), tracked in "
+                    "the device's operation ledger.",
+                    _redact_url(image.download_url),
+                    C.ENGINE_DOWNLOAD_TIMEOUT_MIN,
+                    extra=log,
+                )
+        else:
+            self._copy_image(client, image, log, target_fs)
 
         if run_scope == "stage-copy":
             # Pre-staging stops HERE, structurally before any code path that
@@ -858,7 +933,12 @@ class IOSXEUpgrade(Job):
         # ledger is keyed by it, so per-operation uuids keep the tracking exact
         # (one shared uuid would make add records vouch for the commit).
         ledger_confirmed_add = self._install_add(
-            client, image, str(uuid_lib.uuid4()), log, target_fs
+            client,
+            image,
+            str(uuid_lib.uuid4()),
+            log,
+            target_fs,
+            source_url=image.download_url if engine_fetch else None,
         )
         if run_scope == "stage-add":
             # Pre-staging stops HERE — the image is extracted, distributed to
@@ -2476,8 +2556,8 @@ class IOSXEUpgrade(Job):
                 extra=log,
             )
 
-    def _install_add(self, client, image, op_uuid, log, target_fs):
-        path = f"{target_fs}{image.image_file_name}"
+    def _install_add(self, client, image, op_uuid, log, target_fs, source_url=None):
+        path = source_url or f"{target_fs}{image.image_file_name}"
         version_str = image.software_version.version
         # NOTE (verified on a real 17.15.4): install-version-state-in-progress
         # ("marked for activation") is the NORMAL resting state of an added,
@@ -2501,11 +2581,19 @@ class IOSXEUpgrade(Job):
             # armed for releases without sys-activity.
             return False
         self._wait_for_engine_idle(client, log, "install add")
-        self.logger.info("install add %s ...", path, extra=log)
+        if source_url:
+            self.logger.info(
+                "install add will DOWNLOAD the image itself (download-timeout "
+                "%d min); transfer and add both complete in the operation "
+                "ledger before this job proceeds.",
+                C.ENGINE_DOWNLOAD_TIMEOUT_MIN,
+                extra=log,
+            )
+        self.logger.info("install add %s ...", _redact_url(path) if source_url else path, extra=log)
         # INVARIANT (26.1.1+): 'path' sits inside the now-mandatory choice
         # install-type-by-choice (path | name) — an install without one of them
         # is rejected. Never send a uuid-only install.
-        payload = {"Cisco-IOS-XE-install-rpc:input": {"uuid": op_uuid, "path": path}}
+        payload = _engine_add_payload(op_uuid, path, remote=source_url is not None)
         response = client.post_rpc(C.OP_INSTALL, payload, timeout=C.RPC_TIMEOUT)
         if response:
             self.logger.info("install add RPC response: %s", response, extra=log)
@@ -2525,8 +2613,9 @@ class IOSXEUpgrade(Job):
         # for our uuid completes (the version-state row appears at extract-done,
         # ~60-70s BEFORE the add's post-check phase finishes — gating on it
         # fired activates into a still-running add, which the engine drops).
+        add_budget = C.ADD_TIMEOUT + (C.ENGINE_DOWNLOAD_TIMEOUT_MIN * 60 if source_url else 0)
         try:
-            outcome = self._await_op(client, op_uuid, C.ADD_TIMEOUT, log, "install add")
+            outcome = self._await_op(client, op_uuid, add_budget, log, "install add")
         except LedgerOpFailure as exc:
             # The engine recorded WHY it failed; add WHAT it says is staged —
             # the "different version already staged" case in operator terms.
@@ -2535,6 +2624,8 @@ class IOSXEUpgrade(Job):
                 raise LedgerOpFailure(f"{exc} {hint}") from exc
             raise
         if outcome == "success":
+            if source_url:
+                self._verify_engine_download(client, image, log, target_fs)
             return True
         if outcome == "absent":
             self.logger.warning(
@@ -2551,11 +2642,71 @@ class IOSXEUpgrade(Job):
                 "verified independently).",
                 extra=log,
             )
-        self._wait_for_added(client, version_str, log)
+        self._wait_for_added(client, version_str, log, deadline_secs=add_budget)
+        if source_url:
+            self._verify_engine_download(client, image, log, target_fs)
         return False
 
-    def _wait_for_added(self, client, version_str, log):
-        deadline = time.monotonic() + C.ADD_TIMEOUT
+    def _verify_engine_download(self, client, image, log, target_fs):
+        """Byte-exact check of the engine-downloaded .bin (fail-closed).
+
+        The add already ran Cisco's mandatory signature validation, so this
+        guards Nautobot's METADATA and future re-run skip logic: the file the
+        engine fetched must match the recorded size. Absent-after-success is
+        unexpected — abort before activation (aborting here is free) until
+        bench results teach us this release stores downloads elsewhere.
+        """
+        listing = self._read_q_filesystem(client)
+        if listing is None:
+            self.logger.warning(
+                "Could not read the filesystem listing to verify the engine "
+                "download (transient RESTCONF errors) — relying on install "
+                "add's mandatory signature validation.",
+                extra=log,
+            )
+            return
+        found, size = _find_target_file(listing, image.image_file_name, target_fs)
+        expected = image.image_file_size
+        if not found:
+            raise UpgradeAbort(
+                f"Engine download finished but '{image.image_file_name}' is not "
+                f"visible on {target_fs} — refusing to continue to activation. "
+                "Check 'dir' and 'show install log' on the device and report "
+                "this (the engine may store downloads elsewhere on this "
+                "release)."
+            )
+        if expected and size is None:
+            self.logger.warning(
+                "Engine download present on %s but its size could not be read "
+                "— relying on install add's mandatory signature validation.",
+                target_fs,
+                extra=log,
+            )
+            return
+        if expected and abs(size - expected) > C.SIZE_MATCH_TOLERANCE_BYTES:
+            raise UpgradeAbort(
+                f"Engine-downloaded file is {size} bytes but Nautobot records "
+                f"{expected} — wrong file on the server or stale image "
+                "metadata. Aborting before activation."
+            )
+        if expected:
+            self.logger.info(
+                "Engine download verified: %s bytes on %s (matches the recorded size).",
+                size,
+                target_fs,
+                extra=log,
+            )
+        else:
+            self.logger.info(
+                "Engine download present on %s (%s bytes); no recorded size to verify against.",
+                target_fs,
+                size,
+                extra=log,
+            )
+
+    def _wait_for_added(self, client, version_str, log, deadline_secs=None):
+        budget = int(deadline_secs or C.ADD_TIMEOUT)
+        deadline = time.monotonic() + budget
         started = time.monotonic()
         polls = 0
         error_streak = 0
@@ -2595,7 +2746,7 @@ class IOSXEUpgrade(Job):
                     "install add still running (state: %s, elapsed %ds of up to %ds)...",
                     sorted(tokens) or "not visible yet",
                     int(time.monotonic() - started),
-                    C.ADD_TIMEOUT,
+                    budget,
                     extra=log,
                 )
             time.sleep(C.POLL_INTERVAL)
@@ -2608,7 +2759,7 @@ class IOSXEUpgrade(Job):
             "flash:.installer logs if activation does not start. Proceeding to "
             "activate (activation start is verified).",
             version_str,
-            C.ADD_TIMEOUT,
+            budget,
             sorted(final_tokens) or "none",
             extra=log,
         )
@@ -4110,6 +4261,23 @@ def _entry_size(entry):
             except (TypeError, ValueError):
                 return None
     return None
+
+
+def _engine_add_payload(op_uuid, path, remote):
+    """install RPC input; remote adds the download-timeout watchdog leaf."""
+    body = {"uuid": op_uuid, "path": path}
+    if remote:
+        body["download-timeout"] = C.ENGINE_DOWNLOAD_TIMEOUT_MIN
+    return {"Cisco-IOS-XE-install-rpc:input": body}
+
+
+def _engine_fetch_needed(found, size, expected):
+    """True when the engine must download: absent, or not the expected bytes.
+
+    Mirrors the classic copy pre-check exactly: only a present file whose size
+    EQUALS the recorded expected size counts as already staged.
+    """
+    return not (found and expected and size == expected)
 
 
 def _find_target_file_entry(data, image_file_name, target_fs):

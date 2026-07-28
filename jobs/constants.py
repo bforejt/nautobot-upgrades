@@ -140,6 +140,17 @@ QFS_READ_RETRIES = 3
 #: Overall budget (seconds) for the copy: the blocking RPC's HTTP timeout in the
 #: worker thread, and the watcher's deadline for the whole transfer.
 COPY_TIMEOUT = 3600
+#: Engine-managed download (opt-in): 'install add' pulls the image itself from
+#: the download URL. That RPC returns immediately, so the DMI/ConfD ~600-second
+#: ceiling on BLOCKING RPCs (which kills the classic copy on slow WANs — field
+#: report 2026-07) never applies; the transfer is tracked in the install
+#: engine's operation ledger. Feeds the install RPC's download-timeout leaf
+#: (MINUTES, model range 1-1440) and extends the job's add ledger-wait budget.
+#: MUST fit inside the job's Celery limits (soft_time_limit 7200s): 90 min
+#: download + ADD_TIMEOUT = 6600s < 7200s. For very slow WANs raise this AND
+#: the job's soft/hard time limits together (Nautobot lets an admin override
+#: a Job's time limits in the UI) — one knob without the other cannot work.
+ENGINE_DOWNLOAD_TIMEOUT_MIN = 90
 
 POLL_INTERVAL = 30
 
