@@ -312,16 +312,24 @@ class IOSXEUpgrade(Job):
             "See 'SELinux AVC log events' in the project README."
         ),
     )
-    engine_download = BooleanVar(
-        label="Engine-managed download (WAN)",
-        default=False,
+    transfer_method = ChoiceVar(
+        choices=(
+            ("copy", "Classic copy (default)"),
+            ("xcopy", "Async copy - xcopy (WAN)"),
+            ("install", "Engine download - install add (WAN)"),
+        ),
+        default="copy",
+        required=False,
+        label="Image transfer method",
         description=(
-            "The install engine downloads the image itself during 'install "
-            "add' instead of the separate copy step — for slow links where "
-            "the copy exceeds the device's ~10-minute internal RPC limit. "
-            "Step 1-only runs are refused unless the image is already on "
-            "flash, and this mode is not yet field-validated. See "
-            "'Engine-managed download' in the project README."
+            "How the image reaches the device. Classic copy is the default. "
+            "The two WAN methods avoid the device's ~10-minute internal limit "
+            "on the blocking copy RPC: Async xcopy keeps Step 1-only staging "
+            "but REQUIRES the image's recorded file size and reports no "
+            "device error detail; Engine download is ledger-tracked but "
+            "refuses Step 1-only runs unless the image is already on flash. "
+            "Neither WAN method is field-validated yet. See 'Image transfer "
+            "methods' in the project README."
         ),
     )
     secrets_group_override = ObjectVar(
@@ -381,10 +389,11 @@ class IOSXEUpgrade(Job):
         # plus up to 2x GC_BACKUP_TIMEOUT (900s each) of serial Golden Config
         # backup waits and up to ~HEALTH_CONVERGENCE_TIMEOUT + one capture
         # (~13 min worst case) of post-upgrade health polling, when those
-        # options are on; engine-managed downloads add up to
-        # ENGINE_DOWNLOAD_TIMEOUT_MIN (90 min default) to the add wait and must
-        # fit these limits too — raise the constant and these limits TOGETHER
-        # for very slow WANs.
+        # options are on; the opt-in WAN transfer methods can hold the copy
+        # watch (xcopy) or the add wait (engine download) for up to
+        # WAN_TRANSFER_TIMEOUT_MIN (90 min default) and must fit these limits
+        # too — raise the constant and these limits TOGETHER for very slow
+        # WANs.
         # size batches so that fits inside the soft limit. SoftTimeLimitExceeded
         # is re-raised (never swallowed); queued devices are cancelled and named,
         # in-flight devices are recovered by an idempotent re-run.
@@ -402,7 +411,7 @@ class IOSXEUpgrade(Job):
             "target_version",
             "run_scope",
             "clean_before",
-            "engine_download",
+            "transfer_method",
             "save_config",
             "save_config_after",
             "gc_backup",
@@ -436,7 +445,7 @@ class IOSXEUpgrade(Job):
         gc_backup,
         health_checks,
         suppress_avc_noise,
-        engine_download,
+        transfer_method,
         secrets_group_override,
         remove_inactive,
         parallelism,
@@ -530,7 +539,7 @@ class IOSXEUpgrade(Job):
                     save_config_after,
                     suppress_avc_noise,
                     health_checks,
-                    engine_download,
+                    transfer_method,
                 )
                 # Total wall-clock per device — the number change windows are
                 # planned around.
@@ -689,7 +698,7 @@ class IOSXEUpgrade(Job):
         save_config_after=False,
         suppress_avc_noise=False,
         health_checks=False,
-        engine_download=False,
+        transfer_method="copy",
     ):
         log = {"object": device}
 
@@ -735,6 +744,14 @@ class IOSXEUpgrade(Job):
         self._gate_install_mode(client, log)
 
         image = self._resolve_image(device, target_version, log)
+        if transfer_method == "xcopy" and not image.image_file_size:
+            raise UpgradeAbort(
+                "Async xcopy needs the image's recorded file size — reaching "
+                "that size on flash is its ONLY completion signal (xcopy "
+                "reports progress and errors solely on a notification stream "
+                "RESTCONF cannot receive). Record the file size on the "
+                "SoftwareImageFile, or pick another transfer method."
+            )
         # Operator-requested pre-upgrade clean (deliberate override of the
         # staged-conflict stop) — never in dry-run (it writes). Runs BEFORE the
         # free-space gate so the gate evaluates the CLEANED flash.
@@ -844,55 +861,65 @@ class IOSXEUpgrade(Job):
                         " Would snapshot health (ports/CDP/LLDP/environment) "
                         "before activation and compare after commit."
                     )
-            if engine_download:
+            if transfer_method == "install":
                 cfg_note += (
-                    " Engine-managed download: the install engine would fetch "
-                    "the image itself during install add (no separate copy "
-                    "step)."
+                    " Engine download: the install engine would fetch the "
+                    "image itself during install add (no separate copy step)."
                 )
                 if run_scope == "stage-copy":
                     cfg_note += (
-                        " NOTE: a live 'Step 1 - Copy image' run is REFUSED in "
-                        "this mode unless the image is already on flash "
-                        "byte-exact — use 'Steps 1 & 2' to pre-stage over the "
-                        "WAN."
+                        " NOTE: a live 'Step 1 - Copy image' run is REFUSED "
+                        "with Engine download unless the image is already on "
+                        "flash byte-exact — use 'Steps 1 & 2' to pre-stage "
+                        "over the WAN, or Async xcopy for copy-only staging."
                     )
+            elif transfer_method == "xcopy":
+                cfg_note += (
+                    " Async xcopy: the device would fetch the image in the "
+                    "background; the job watches flash to the recorded "
+                    "byte-exact size (all run scopes, including Step 1)."
+                )
             return f"DRY-RUN ok:{clean_note}{cfg_note} {planned}. All pre-flight gates passed."
 
         # -- 3. Transfer + integrity ------------------------------------------
-        # Default: classic copy in a worker thread, watched to a size-verified
-        # completion inside _copy_image. Opt-in engine mode: defer the transfer
-        # to 'install add' itself (the install engine downloads the URL in the
-        # background, ledger-tracked) — the blocking copy RPC is killed by the
-        # device's DMI/ConfD ~600s ceiling on slow WANs (field report 2026-07),
-        # while the install RPC returns immediately and never hits it.
+        # Three methods (the blocking copy RPC is killed by the device's
+        # DMI/ConfD ~600s ceiling on slow WANs — field report 2026-07):
+        #   copy (default): classic blocking copy in a worker thread, watched
+        #     to a size-verified completion inside _copy_image;
+        #   xcopy: async fire-and-watch — _xcopy_image watches the file to the
+        #     recorded byte-exact size (works for every run scope);
+        #   install: defer the transfer to 'install add' itself (the engine
+        #     downloads the URL in the background, ledger-tracked; Step 1-only
+        #     runs are refused since the copy happens inside the add).
         engine_fetch = False
-        if engine_download:
+        if transfer_method in ("xcopy", "install"):
             listing = self._read_q_filesystem(client)
             if listing is None:
                 self.logger.warning(
-                    "Could not read the filesystem listing for the engine-mode "
+                    "Could not read the filesystem listing for the WAN-method "
                     "pre-check (transient RESTCONF errors) — assuming the image "
                     "must be fetched.",
                     extra=log,
                 )
             found, pre_size = _find_target_file(listing or {}, image.image_file_name, target_fs)
-            engine_fetch = _engine_fetch_needed(found, pre_size, image.image_file_size)
-            if not engine_fetch:
+            fetch_needed = _engine_fetch_needed(found, pre_size, image.image_file_size)
+            engine_fetch = fetch_needed and transfer_method == "install"
+            if not fetch_needed:
                 self.logger.info(
                     "Image already present at %s with the expected size "
-                    "(%s bytes) — engine-managed download has nothing to fetch.",
+                    "(%s bytes) — nothing to fetch for this transfer method.",
                     target_fs,
                     pre_size,
                     extra=log,
                 )
+            elif transfer_method == "xcopy":
+                self._xcopy_image(client, image, log, target_fs)
             elif run_scope == "stage-copy":
                 raise UpgradeAbort(
-                    "Engine-managed download performs the copy INSIDE 'install "
-                    "add' (Step 2), so run scope 'Step 1 - Copy image' has "
-                    "nothing to run in this mode. Choose 'Steps 1 & 2' or "
-                    "'Full', or untick 'Engine-managed download' to use the "
-                    "standard copy."
+                    "Engine download performs the copy INSIDE 'install add' "
+                    "(Step 2), so run scope 'Step 1 - Copy image' has nothing "
+                    "to run with it. Choose 'Steps 1 & 2' or 'Full', or use "
+                    "'Async copy - xcopy' for copy-only WAN staging."
                 )
             else:
                 self.logger.info(
@@ -900,7 +927,7 @@ class IOSXEUpgrade(Job):
                     "download '%s' itself (download-timeout %d min), tracked in "
                     "the device's operation ledger.",
                     _redact_url(image.download_url),
-                    C.ENGINE_DOWNLOAD_TIMEOUT_MIN,
+                    C.WAN_TRANSFER_TIMEOUT_MIN,
                     extra=log,
                 )
         else:
@@ -2282,7 +2309,9 @@ class IOSXEUpgrade(Job):
 
         The classic Cisco-IOS-XE-rpc:copy BLOCKS for the whole transfer (chosen
         deliberately: a real 17.15.05 silently broke the fancier async xcopy
-        while this path kept working). Running it in a thread frees the job to
+        while this path kept working; xcopy has since returned only as an
+        opt-in, unvalidated WAN method with its own watch — see
+        _xcopy_image). Running it in a thread frees the job to
         poll the growing on-device file for progress lines; the final exact size
         match is the transfer-integrity gate, and 'install add' image-signature
         validation remains the cryptographic backstop.
@@ -2586,7 +2615,7 @@ class IOSXEUpgrade(Job):
                 "install add will DOWNLOAD the image itself (download-timeout "
                 "%d min); transfer and add both complete in the operation "
                 "ledger before this job proceeds.",
-                C.ENGINE_DOWNLOAD_TIMEOUT_MIN,
+                C.WAN_TRANSFER_TIMEOUT_MIN,
                 extra=log,
             )
         self.logger.info("install add %s ...", _redact_url(path) if source_url else path, extra=log)
@@ -2613,7 +2642,7 @@ class IOSXEUpgrade(Job):
         # for our uuid completes (the version-state row appears at extract-done,
         # ~60-70s BEFORE the add's post-check phase finishes — gating on it
         # fired activates into a still-running add, which the engine drops).
-        add_budget = C.ADD_TIMEOUT + (C.ENGINE_DOWNLOAD_TIMEOUT_MIN * 60 if source_url else 0)
+        add_budget = C.ADD_TIMEOUT + (C.WAN_TRANSFER_TIMEOUT_MIN * 60 if source_url else 0)
         try:
             outcome = self._await_op(client, op_uuid, add_budget, log, "install add")
         except LedgerOpFailure as exc:
@@ -2646,6 +2675,206 @@ class IOSXEUpgrade(Job):
         if source_url:
             self._verify_engine_download(client, image, log, target_fs)
         return False
+
+    def _xcopy_image(self, client, image, log, target_fs):
+        """Async xcopy: fire, then watch the file to the recorded size.
+
+        SUCCESS is pure device state: size polls (learn-then-keyed, the same
+        zero-AVC pattern as the classic copy watch) reach the recorded size,
+        then the AUTHORITATIVE full listing confirms byte-exact — the same
+        gate that decides every copy. TIMERS HERE ONLY DECLARE FAILURE, never
+        success: xcopy's own progress/errors ride a notification stream
+        RESTCONF cannot receive and no oper ledger exists, so a stall window
+        plus the RPC's own device-side timeout leaf bound the wait. Known
+        caveat: a real 17.15.05 once silently failed to transfer via xcopy —
+        under this watch that surfaces as a stall abort: detected, but
+        without a device-published reason.
+        """
+        dest = f"{target_fs}{image.image_file_name}"
+        expected = image.image_file_size  # presence is gated before dispatch
+        op_uuid = str(uuid_lib.uuid4())
+        self.logger.info(
+            "xcopy (async) '%s' -> %s (device-side timeout %d min; success = "
+            "byte-exact %s bytes on flash; stall window %ds)...",
+            _redact_url(image.download_url),
+            dest,
+            C.WAN_TRANSFER_TIMEOUT_MIN,
+            expected,
+            C.XCOPY_STALL_SECS,
+            extra=log,
+        )
+        response = client.post_rpc(
+            C.OP_XCOPY,
+            _xcopy_payload(op_uuid, image.download_url, dest, C.WAN_TRANSFER_TIMEOUT_MIN),
+            timeout=C.RPC_TIMEOUT,
+        )
+        error_text = _rpc_error_text(response)
+        if error_text:
+            raise UpgradeAbort(
+                f"xcopy was rejected by the device: {error_text}. "
+                + _fetch_hints(image.download_url)
+            )
+        if response:
+            self.logger.info("xcopy accepted (response: %s).", response, extra=log)
+
+        started = time.monotonic()
+        deadline = started + C.WAN_TRANSFER_TIMEOUT_MIN * 60 + 300
+
+        keyed_url = None
+        keyed_ok = True
+        keyed_misses = 0
+        last_size = None  # last SUCCESSFULLY observed size (device state)
+        last_growth = started  # when an observation last showed the size move
+        absent_since = None  # first successful listing that lacked the file
+        polls = 0
+
+        def _observe():
+            """One cycle: (size, observed).
+
+            observed=False means the read itself failed — an unreadable poll
+            NEVER ages any failure clock (the overall deadline bounds
+            unobservable stretches). Keyed reads keep the classic watch's
+            latches: a 4xx rejection or two consecutive misses drops to the
+            full-listing floor with a breadcrumb.
+            """
+            nonlocal keyed_url, keyed_ok, keyed_misses
+            if keyed_ok and keyed_url is not None:
+                try:
+                    size = _keyed_size_read(client, keyed_url, image.image_file_name)
+                except RestconfError as exc:
+                    status = getattr(exc, "status_code", None)
+                    if status is not None and 400 <= status < 500:
+                        keyed_ok = False
+                        self.logger.info(
+                            "Keyed progress read rejected by this release (%s) "
+                            "— full-listing polls for the rest of this transfer.",
+                            exc,
+                            extra=log,
+                        )
+                    size = None
+                if size is not None:
+                    keyed_misses = 0
+                    return size, True
+                keyed_url = None
+                keyed_misses += 1
+                if keyed_ok and keyed_misses >= 2:
+                    keyed_ok = False
+                    self.logger.info(
+                        "Keyed progress reads missed twice — staying on full "
+                        "listings for the rest of this transfer.",
+                        extra=log,
+                    )
+            listing = self._read_q_filesystem(client, retries=1)
+            if listing is None:
+                return None, False
+            ctx = _find_target_file_entry(listing, image.image_file_name, target_fs)
+            if ctx is None:
+                return None, True  # a real listing that lacks the file
+            keys, pname, path, size = ctx
+            if keyed_ok and keys is not None and path:
+                keyed_url = _keyed_content_url(keys, pname, path)
+            return size, True
+
+        while True:
+            self._check_stop()
+            if time.monotonic() > deadline:
+                raise UpgradeAbort(
+                    f"xcopy did not reach the expected size within the "
+                    f"{C.WAN_TRANSFER_TIMEOUT_MIN}-minute transfer window "
+                    f"(last observed: "
+                    f"{last_size if last_size is not None else 'no file'} of "
+                    f"{expected} bytes). The device aborts the transfer itself "
+                    "at this timeout; re-run to retry, or raise "
+                    "WAN_TRANSFER_TIMEOUT_MIN AND the job time limits together."
+                )
+            time.sleep(C.POLL_INTERVAL)
+            polls += 1
+            size, observed = _observe()
+            now = time.monotonic()
+            if not observed:
+                continue
+            if size is None:
+                absent_since = absent_since or now
+                if now - absent_since >= C.XCOPY_STALL_SECS:
+                    raise UpgradeAbort(
+                        f"xcopy: successful listings showed no file on "
+                        f"{target_fs} for {C.XCOPY_STALL_SECS}s — declared "
+                        "FAILED (bounded-wait failure declaration: xcopy "
+                        "reports errors only on a notification stream RESTCONF "
+                        "cannot receive, so no device reason is readable). "
+                        "Likely an immediate fetch failure. " + _fetch_hints(image.download_url)
+                    )
+                continue
+            absent_since = None
+            if last_size is None or size != last_size:
+                last_size = size
+                last_growth = now
+            if polls % 4 == 0:
+                self.logger.info(
+                    "xcopy progress: %d%% (%s of %s bytes, %s elapsed).",
+                    min(int(size * 100 / expected), 100),
+                    size,
+                    expected,
+                    _fmt_duration(now - started),
+                    extra=log,
+                )
+            verdict = _xcopy_verdict(size, expected, now - last_growth, C.XCOPY_STALL_SECS)
+            if verdict == "waiting":
+                continue
+            # Either terminal verdict must be CONFIRMED against the
+            # authoritative full listing before it may end the transfer —
+            # keyed reads stay progress-only, exactly like the classic watch.
+            final = self._read_q_filesystem(client)
+            if final is None:
+                if verdict == "complete":
+                    raise UpgradeAbort(
+                        "xcopy reached the expected size but the authoritative "
+                        "final listing could not be read — refusing to proceed "
+                        "on a weaker signal. Re-run when the device answers."
+                    )
+                continue  # a stall cannot be confirmed from silence
+            cfound, csize = _find_target_file(final, image.image_file_name, target_fs)
+            if cfound and csize is not None and csize != last_size:
+                # The authoritative listing disagrees with the keyed view —
+                # trust it and keep watching.
+                last_size = csize
+                last_growth = time.monotonic()
+                continue
+            if verdict == "complete":
+                if (
+                    cfound
+                    and csize is not None
+                    and abs(csize - expected) <= C.SIZE_MATCH_TOLERANCE_BYTES
+                ):
+                    self.logger.info(
+                        "xcopy complete and size-verified: %s bytes on %s (%s).",
+                        csize,
+                        target_fs,
+                        _fmt_duration(time.monotonic() - started),
+                        extra=log,
+                    )
+                    return
+                # A same-named pre-existing file can satisfy size >= expected
+                # while the real transfer is still overwriting it — keep
+                # watching until the deadline rather than mis-diagnosing.
+                self.logger.info(
+                    "Size reached the recorded value but the authoritative "
+                    "listing shows %s bytes (expected %s) — a same-named file "
+                    "may still be mid-overwrite; continuing to watch.",
+                    csize if cfound else "no file",
+                    expected,
+                    extra=log,
+                )
+                last_growth = time.monotonic()
+                continue
+            raise UpgradeAbort(
+                f"xcopy stalled: successful reads showed no growth past "
+                f"{last_size} bytes for {C.XCOPY_STALL_SECS}s (expected "
+                f"{expected}), confirmed against the authoritative listing — "
+                "declared FAILED (bounded-wait; no device reason is readable "
+                "over RESTCONF). A re-run overwrites the partial file. "
+                + _fetch_hints(image.download_url)
+            )
 
     def _verify_engine_download(self, client, image, log, target_fs):
         """Byte-exact check of the engine-downloaded .bin (fail-closed).
@@ -4267,7 +4496,7 @@ def _engine_add_payload(op_uuid, path, remote):
     """install RPC input; remote adds the download-timeout watchdog leaf."""
     body = {"uuid": op_uuid, "path": path}
     if remote:
-        body["download-timeout"] = C.ENGINE_DOWNLOAD_TIMEOUT_MIN
+        body["download-timeout"] = C.WAN_TRANSFER_TIMEOUT_MIN
     return {"Cisco-IOS-XE-install-rpc:input": body}
 
 
@@ -4278,6 +4507,32 @@ def _engine_fetch_needed(found, size, expected):
     EQUALS the recorded expected size counts as already staged.
     """
     return not (found and expected and size == expected)
+
+
+def _xcopy_payload(op_uuid, source_url, dest, timeout_min):
+    """xcopy RPC input: async fetch of source_url to dest, device-side bounded."""
+    return {
+        "Cisco-IOS-XE-xcopy-rpc:input": {
+            "uuid": op_uuid,
+            "source-path": source_url,
+            "destination-path": dest,
+            "timeout": timeout_min,
+        }
+    }
+
+
+def _xcopy_verdict(size, expected, stalled_for, stall_secs):
+    """'complete' | 'stalled' | 'waiting'.
+
+    Timers only ever DECLARE FAILURE here: 'complete' requires the observed
+    size to reach the recorded expected size (device-published state); the
+    stall window merely bounds how long zero growth is tolerated.
+    """
+    if size is not None and expected and size >= expected:
+        return "complete"
+    if stalled_for >= stall_secs:
+        return "stalled"
+    return "waiting"
 
 
 def _find_target_file_entry(data, image_file_name, target_fs):

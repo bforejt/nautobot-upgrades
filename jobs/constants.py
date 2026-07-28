@@ -84,11 +84,18 @@ DATA_DEVICE_INVENTORY = (
 #: name for flash on a given platform may differ — see TARGET_FS_NAMES.
 DATA_Q_FILESYSTEM = "data/Cisco-IOS-XE-platform-software-oper:cisco-platform-software/q-filesystem"
 
-#: Classic blocking copy RPC (two decades of production miles; chosen over the
-#: async xcopy after a real 17.15.05 silently broke xcopy transfers while this
+#: Classic blocking copy RPC (two decades of production miles; kept as the
+#: DEFAULT after a real 17.15.05 silently broke xcopy transfers while this
 #: path kept working with the same URL). The job runs it in a worker thread so
 #: the on-device file size can still be polled for progress reporting.
 OP_COPY = "operations/Cisco-IOS-XE-rpc:copy"
+#: Async express-copy RPC (returns immediately; the device runs the transfer,
+#: bounded by the RPC's own timeout leaf). Reintroduced 2026-07 as an opt-in
+#: WAN transfer method after the blocking copy's ~600s DMI ceiling surfaced in
+#: the field. UNVALIDATED so far — and its progress/errors ride a notification
+#: stream RESTCONF cannot receive, so the job watches the file itself and
+#: byte-exact-gates the result (see XCOPY_STALL_SECS).
+OP_XCOPY = "operations/Cisco-IOS-XE-xcopy-rpc:xcopy"
 
 #: Write running-config to startup-config (cisco-ia, no input; output is a
 #: result string). Advertised on every supported platform 17.9.1-26.1.1.
@@ -140,17 +147,27 @@ QFS_READ_RETRIES = 3
 #: Overall budget (seconds) for the copy: the blocking RPC's HTTP timeout in the
 #: worker thread, and the watcher's deadline for the whole transfer.
 COPY_TIMEOUT = 3600
-#: Engine-managed download (opt-in): 'install add' pulls the image itself from
-#: the download URL. That RPC returns immediately, so the DMI/ConfD ~600-second
-#: ceiling on BLOCKING RPCs (which kills the classic copy on slow WANs — field
-#: report 2026-07) never applies; the transfer is tracked in the install
-#: engine's operation ledger. Feeds the install RPC's download-timeout leaf
-#: (MINUTES, model range 1-1440) and extends the job's add ledger-wait budget.
+#: WAN transfer window (MINUTES) shared by both opt-in WAN transfer methods —
+#: they exist because the device's DMI/ConfD layer kills any BLOCKING RPC
+#: after ~600s (internal, not configurable; field report 2026-07), which the
+#: classic copy hits on slow WANs while both WAN methods return immediately:
+#:   * Engine download: feeds the install RPC's download-timeout leaf (model
+#:     range 1-1440 min) and extends the add ledger-wait budget.
+#:   * Async xcopy: feeds the xcopy RPC's timeout leaf (the device aborts the
+#:     transfer itself after this) and bounds the job's file watch.
 #: MUST fit inside the job's Celery limits (soft_time_limit 7200s): 90 min
-#: download + ADD_TIMEOUT = 6600s < 7200s. For very slow WANs raise this AND
-#: the job's soft/hard time limits together (Nautobot lets an admin override
-#: a Job's time limits in the UI) — one knob without the other cannot work.
-ENGINE_DOWNLOAD_TIMEOUT_MIN = 90
+#: + ADD_TIMEOUT = 6600s < 7200s. For very slow WANs raise this AND the job's
+#: soft/hard time limits together (Nautobot lets an admin override a Job's
+#: time limits in the UI) — one knob without the other cannot work.
+WAN_TRANSFER_TIMEOUT_MIN = 90
+#: Async xcopy stall window (SECONDS): with xcopy, errors ride a notification
+#: stream RESTCONF cannot receive (no oper ledger exists), so the only failure
+#: signal is OBSERVED zero growth: successful reads showing the same size for
+#: this long (unreadable polls never age the clock — the transfer window
+#: bounds those), re-confirmed against the authoritative listing before the
+#: abort. Timers here only ever declare failure — success is always the
+#: byte-exact size gate.
+XCOPY_STALL_SECS = 300
 
 POLL_INTERVAL = 30
 
