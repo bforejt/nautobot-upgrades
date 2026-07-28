@@ -924,12 +924,26 @@ class IOSXEUpgrade(Job):
             else:
                 self.logger.info(
                     "Copy step deferred to the install engine: install add will "
-                    "download '%s' itself (download-timeout %d min), tracked in "
-                    "the device's operation ledger.",
+                    "download '%s' itself, tracked in the device's operation "
+                    "ledger (job-side wait budget %d min; the device applies "
+                    "its own default download bound).",
                     _redact_url(image.download_url),
                     C.WAN_TRANSFER_TIMEOUT_MIN,
                     extra=log,
                 )
+                if found:
+                    self.logger.warning(
+                        "A same-named file already exists on %s with the WRONG "
+                        "size (%s bytes, expected %s) — the install engine may "
+                        "reuse it and fail package verification (bench-observed). "
+                        "If the add fails verify, remove the stale file "
+                        "('install remove inactive' clears unreferenced images) "
+                        "and re-run.",
+                        target_fs,
+                        pre_size if pre_size is not None else "unreadable",
+                        image.image_file_size or "unrecorded",
+                        extra=log,
+                    )
         else:
             self._copy_image(client, image, log, target_fs)
 
@@ -2612,9 +2626,9 @@ class IOSXEUpgrade(Job):
         self._wait_for_engine_idle(client, log, "install add")
         if source_url:
             self.logger.info(
-                "install add will DOWNLOAD the image itself (download-timeout "
-                "%d min); transfer and add both complete in the operation "
-                "ledger before this job proceeds.",
+                "install add will DOWNLOAD the image itself; transfer and add "
+                "both complete in the operation ledger before this job "
+                "proceeds (job-side wait budget %d min).",
                 C.WAN_TRANSFER_TIMEOUT_MIN,
                 extra=log,
             )
@@ -4493,11 +4507,20 @@ def _entry_size(entry):
 
 
 def _engine_add_payload(op_uuid, path, remote):
-    """install RPC input; remote adds the download-timeout watchdog leaf."""
-    body = {"uuid": op_uuid, "path": path}
-    if remote:
-        body["download-timeout"] = C.WAN_TRANSFER_TIMEOUT_MIN
-    return {"Cisco-IOS-XE-install-rpc:input": body}
+    """install RPC input for a local add or an engine-managed remote download.
+
+    The model's download-timeout leaf is DELIBERATELY NOT SENT (bench,
+    2026-07-28, 17.18.03): the device interprets the value roughly as
+    SECONDS despite the model saying minutes (1-1440) — sending 10 strangled
+    a healthy LAN download mid-transfer, while omitting the leaf let the
+    device default (~2000, observed) carry a full image. Seconds cannot be
+    sent instead: confd enforces the modeled 1-1440 range. Device-side
+    bounding rides the default; job-side bounding is the extended ledger
+    wait budget (WAN_TRANSFER_TIMEOUT_MIN). `remote` is kept for future
+    remote-only leaves.
+    """
+    del remote  # no remote-only leaves today; see docstring
+    return {"Cisco-IOS-XE-install-rpc:input": {"uuid": op_uuid, "path": path}}
 
 
 def _engine_fetch_needed(found, size, expected):

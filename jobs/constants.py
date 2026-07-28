@@ -151,10 +151,15 @@ COPY_TIMEOUT = 3600
 #: they exist because the device's DMI/ConfD layer kills any BLOCKING RPC
 #: after ~600s (internal, not configurable; field report 2026-07), which the
 #: classic copy hits on slow WANs while both WAN methods return immediately:
-#:   * Engine download: feeds the install RPC's download-timeout leaf (model
-#:     range 1-1440 min) and extends the add ledger-wait budget.
-#:   * Async xcopy: feeds the xcopy RPC's timeout leaf (the device aborts the
-#:     transfer itself after this) and bounds the job's file watch.
+#:   * Engine download: extends the add ledger-wait budget (JOB-side only —
+#:     the install RPC's download-timeout leaf is deliberately NOT sent:
+#:     bench 2026-07-28 on 17.18.03 showed the device treats the value
+#:     roughly as SECONDS despite the modeled minutes, strangling healthy
+#:     transfers; the device's own default, ~2000 observed, applies instead).
+#:   * Async xcopy: feeds the xcopy RPC's timeout leaf and bounds the job's
+#:     file watch. CAVEAT: the same seconds-vs-minutes unit bug may apply to
+#:     this leaf — verify on the bench (a transfer dying at ~N seconds after
+#:     sending N is the tell) before trusting it on WAN links.
 #: MUST fit inside the job's Celery limits (soft_time_limit 7200s): 90 min
 #: + ADD_TIMEOUT = 6600s < 7200s. For very slow WANs raise this AND the job's
 #: soft/hard time limits together (Nautobot lets an admin override a Job's

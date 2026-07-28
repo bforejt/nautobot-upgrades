@@ -520,7 +520,11 @@ failed at distant sites with `HTTP 400 "application timeout"`. Both WAN
 methods fire asynchronously and return immediately, so that ceiling never
 applies.
 
-> **Maturity:** both WAN methods are newly built — **not yet field-validated**.
+> **Maturity:** **Engine download is bench-validated end-to-end** (17.18.03
+> autonomous 9300, HTTP source, download → add → uuid-keyed `install-op-succ`
+> in the ledger, 2026-07-28) but **not yet proven at a WAN site** (a >600s
+> transfer is the outstanding proof case). **Async xcopy is not yet
+> validated** — its retest with corrected payloads is pending.
 > Classic copy remains the default and the recommended path on LAN-speed
 > links. Validate on a lab device first, and report results either way
 > ([Contributing](#contributing)). One known history item: a real 17.15.05
@@ -540,10 +544,17 @@ applies.
 Shared semantics: a file already on flash byte-exact is skipped by every
 method; the free-space gate, `install add`'s mandatory signature validation,
 and all downstream gates are unchanged; and the WAN transfer window
-(`WAN_TRANSFER_TIMEOUT_MIN`, **90 minutes** by default) must fit the job's
-overall time limits — for very slow WANs raise that constant **and** the
-job's soft/hard time limits **together** (Nautobot lets an admin override a
-Job's time limits in the UI).
+(`WAN_TRANSFER_TIMEOUT_MIN`, **90 minutes** by default) is the **job-side**
+wait budget and must fit the job's overall time limits — for very slow WANs
+raise that constant **and** the job's soft/hard time limits **together**
+(Nautobot lets an admin override a Job's time limits in the UI). The install
+model's `download-timeout` leaf is deliberately **not sent**: on real
+hardware (17.18.03 bench) the device interprets the value roughly as
+*seconds* despite the modeled minutes, strangling healthy transfers — the
+device's own default (~2000 observed, ≈33 min) applies device-side instead.
+Also bench-observed: a **stale same-named file** on flash can poison the
+engine's add (package verification fails) — the job warns when it detects
+one; clear it with `install remove inactive` before re-running.
 
 **Async xcopy** fires `Cisco-IOS-XE-xcopy-rpc:xcopy` (with its device-side
 `timeout` leaf, so the device bounds the transfer itself) and then watches
@@ -558,8 +569,8 @@ no oper ledger exists, so a failed transfer is *detected* promptly but
 carries no device reason. Works on every run scope — this is the WAN answer
 for **Step 1-only pre-staging**.
 
-**Engine download** hands the URL to `install add` itself (with the install
-model's `download-timeout` leaf): transfer and add complete as
+**Engine download** hands the URL to `install add` itself: transfer and add
+complete as
 **operation-ledger records keyed by this run's uuid** — device-published
 state end to end, with the engine's own fail/timeout verdicts. On releases
 that don't populate the ledger, the job falls back to version-state
