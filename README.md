@@ -523,8 +523,13 @@ applies.
 > **Maturity:** **Engine download is bench-validated end-to-end** (17.18.03
 > autonomous 9300, HTTP source, download → add → uuid-keyed `install-op-succ`
 > in the ledger, 2026-07-28) but **not yet proven at a WAN site** (a >600s
-> transfer is the outstanding proof case). **Async xcopy is not yet
-> validated** — its retest with corrected payloads is pending.
+> transfer is the outstanding proof case). **Async xcopy's failure modes are
+> fully root-caused on the bench** (port-carrying URLs, an omit-means-zero
+> timeout leaf, verbatim destination handling — all fixed or guarded here;
+> port-less transfer confirmed on the wire) — a full clean-room
+> end-to-end pass and the WAN case remain outstanding. Bonus finding: xcopy
+> operations are **uuid-keyed install-oper ledger records**, so a
+> ledger-primary upgrade of its status tracking is queued as follow-up.
 > Classic copy remains the default and the recommended path on LAN-speed
 > links. Validate on a lab device first, and report results either way
 > ([Contributing](#contributing)). One known history item: a real 17.15.05
@@ -538,7 +543,7 @@ applies.
 | Slow-WAN safe (>600s transfers) | ✗ | ✓ | ✓ |
 | Step 1-only staging | ✓ | ✓ | ✗ refused — the download lives inside `install add` |
 | Success decided by | byte-exact size gate (warns if no size recorded) | **the same byte-exact gate** | install-oper ledger + byte-exact check |
-| Failure reported by | the device's own error, in seconds | stall window only — **no device reason readable** | the engine's ledger fail/timeout records |
+| Failure reported by | the device's own error, in seconds | observed stall window (+ uuid-keyed ledger records — discovered on bench, tracking upgrade queued) | the engine's ledger fail/timeout records |
 | Needs the recorded file size | recommended | **required** — it is the only completion signal | recommended |
 
 Shared semantics: a file already on flash byte-exact is skipped by every
@@ -557,9 +562,14 @@ engine's add (package verification fails) — the job warns when it detects
 one; clear it with `install remove inactive` before re-running.
 
 **Async xcopy** fires `Cisco-IOS-XE-xcopy-rpc:xcopy` (with its device-side
-`timeout` leaf, so the device bounds the transfer itself) and then watches
-the file with the same learn-then-keyed, zero-AVC pattern as the classic
-watch. **Success is pure device state** — the recorded size reached on
+`timeout` leaf always set — omitting it means an instantly-expired window,
+bench-proven) and then watches the file with the same learn-then-keyed,
+zero-AVC pattern as the classic watch. **Hard constraint (bench- and
+wire-proven on 17.18.03): the image URL must not carry an explicit port** —
+the device's express-copy parser fails locally on any `:port` (zero packets
+sent), so a `:9080`-style firmware URL is refused up front with guidance;
+serve images on a standard port (one extra `listen` line on the firmware
+server) to use this method. **Success is pure device state** — the recorded size reached on
 flash, then the authoritative listing confirms byte-exact. **Timers only
 ever declare failure** (`XCOPY_STALL_SECS`, 300 s of *observed* zero growth —
 unreadable polls never age the clock, and a stall is re-confirmed against the

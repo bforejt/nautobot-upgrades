@@ -752,6 +752,18 @@ class IOSXEUpgrade(Job):
                 "RESTCONF cannot receive). Record the file size on the "
                 "SoftwareImageFile, or pick another transfer method."
             )
+        if transfer_method == "xcopy":
+            url_problem = _xcopy_url_unsupported(image.download_url)
+            if url_problem:
+                raise UpgradeAbort(
+                    f"Async xcopy cannot use this image URL: it carries "
+                    f"{url_problem}. Bench-proven (17.18.03): the device's "
+                    "express-copy parser fails connect() locally on any "
+                    "explicit port — no packet is even sent. Serve the image "
+                    "on a standard port with no port in the URL (one extra "
+                    "'listen' line on the firmware server), or pick another "
+                    "transfer method."
+                )
         # Operator-requested pre-upgrade clean (deliberate override of the
         # staged-conflict stop) — never in dry-run (it writes). Runs BEFORE the
         # free-space gate so the gate evaluates the CLEANED flash.
@@ -2704,7 +2716,11 @@ class IOSXEUpgrade(Job):
         under this watch that surfaces as a stall abort: detected, but
         without a device-published reason.
         """
-        dest = f"{target_fs}{image.image_file_name}"
+        # Destination is the BARE filename (bench-proven): xcopy passes
+        # destination-path VERBATIM into the download descriptor's filename
+        # field — an IOS-style 'flash:' prefix poisons it, while the device
+        # supplies the flash mount as dest-dir itself.
+        dest = image.image_file_name
         expected = image.image_file_size  # presence is gated before dispatch
         op_uuid = str(uuid_lib.uuid4())
         self.logger.info(
@@ -2719,7 +2735,7 @@ class IOSXEUpgrade(Job):
         )
         response = client.post_rpc(
             C.OP_XCOPY,
-            _xcopy_payload(op_uuid, image.download_url, dest, C.WAN_TRANSFER_TIMEOUT_MIN),
+            _xcopy_payload(op_uuid, image.download_url, dest, C.WAN_TRANSFER_TIMEOUT_MIN * 60),
             timeout=C.RPC_TIMEOUT,
         )
         error_text = _rpc_error_text(response)
@@ -4532,16 +4548,43 @@ def _engine_fetch_needed(found, size, expected):
     return not (found and expected and size == expected)
 
 
-def _xcopy_payload(op_uuid, source_url, dest, timeout_min):
-    """xcopy RPC input: async fetch of source_url to dest, device-side bounded."""
+def _xcopy_payload(op_uuid, source_url, dest, timeout_value):
+    """xcopy RPC input — every field shape here is bench-earned (17.18.03):
+
+    * timeout MUST be sent: omitting it lands 0 in the download descriptor
+      (instant kill), unlike install's leaf which defaults sanely to 2000.
+      The value sent is seconds-scale (WAN_TRANSFER_TIMEOUT_MIN * 60): safe
+      whether the device reads seconds (=the intended window) or the modeled
+      minutes (=merely over-generous; the job's own watch budget governs).
+    * dest is a BARE filename — destination-path is passed verbatim into the
+      descriptor's dest-filename; prefixes poison it.
+    * source_url must be PORT-LESS — guarded upstream (_xcopy_url_unsupported).
+    """
     return {
         "Cisco-IOS-XE-xcopy-rpc:input": {
             "uuid": op_uuid,
             "source-path": source_url,
             "destination-path": dest,
-            "timeout": timeout_min,
+            "timeout": timeout_value,
         }
     }
+
+
+def _xcopy_url_unsupported(url):
+    """Reason-string when xcopy's parser cannot handle this URL, else None.
+
+    Bench-proven (17.18.03, 2026-07-28, wire-confirmed): an explicit port in
+    source-path makes the express-copy utility fail connect() locally — zero
+    packets emitted — while the same URL works via classic copy and install
+    add. Its documented URL grammar has no port form; require port-less URLs.
+    """
+    try:
+        port = urllib_parse.urlsplit(url).port
+    except ValueError:
+        return "a port/host form the parser rejects"
+    if port is not None:
+        return f"an explicit port (:{port})"
+    return None
 
 
 def _xcopy_verdict(size, expected, stalled_for, stall_secs):

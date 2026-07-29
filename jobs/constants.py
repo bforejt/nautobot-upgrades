@@ -156,10 +156,12 @@ COPY_TIMEOUT = 3600
 #:     bench 2026-07-28 on 17.18.03 showed the device treats the value
 #:     roughly as SECONDS despite the modeled minutes, strangling healthy
 #:     transfers; the device's own default, ~2000 observed, applies instead).
-#:   * Async xcopy: feeds the xcopy RPC's timeout leaf and bounds the job's
-#:     file watch. CAVEAT: the same seconds-vs-minutes unit bug may apply to
-#:     this leaf — verify on the bench (a transfer dying at ~N seconds after
-#:     sending N is the tell) before trusting it on WAN links.
+#:   * Async xcopy: bounds the job's file watch, and (x60, seconds-scale —
+#:     unit-safe either way) feeds the xcopy RPC's timeout leaf, which MUST be
+#:     sent: omitting it lands 0 in the download descriptor (instant kill —
+#:     bench-proven). Also bench-proven: xcopy source URLs must be PORT-LESS
+#:     (its parser fails locally on any explicit port) and destination-path
+#:     must be a bare filename.
 #: MUST fit inside the job's Celery limits (soft_time_limit 7200s): 90 min
 #: + ADD_TIMEOUT = 6600s < 7200s. For very slow WANs raise this AND the job's
 #: soft/hard time limits together (Nautobot lets an admin override a Job's
