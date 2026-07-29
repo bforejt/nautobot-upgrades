@@ -313,7 +313,8 @@ HASHLIB_SUPPORTED = ("md5", "sha1", "sha224", "sha256", "sha384", "sha512")
 #: DEVICE-FACING base URL stored in SoftwareImageFile.download_url as
 #: "<base>/<filename>". Must be reachable from the device management network AND
 #: the Nautobot worker, and matches the firmware server's FIRMWARE_SERVER_NAME +
-#: HTTP port (e.g. http://192.0.2.10:9080/images/ — the companion stack writes
+#: HTTP port (e.g. http://192.0.2.10/images/ — port-less, since the companion
+#: stack now serves HTTP on the protocol-default port 80; the stack writes
 #: this into .env, plain HTTP by default because device HTTPS clients validate
 #: the server cert against their trustpoints and reject the self-signed one).
 #: REQUIRED: set this env var on the worker, or use the per-run field / a full

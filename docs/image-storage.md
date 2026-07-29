@@ -16,7 +16,7 @@ the storage model:
    │ Nautobot core              │      │ "nautobot-composer" `firmware` profile │
    │  dcim.SoftwareVersion      │      │  • Filebrowser UI  :8088 (engineers)   │
    │  dcim.SoftwareImageFile    │      │  • nginx firmware-download             │
-   │   • download_url ──────────┼─────▶│      :9080 http / :9443 https (devices)│
+   │   • download_url ──────────┼─────▶│      :80 http / :9443 https  (devices) │
    │   • checksum + algorithm    │      │    shared volume, read-only, ACL       │
    │   • file size               │      └──────────────────────────────────────┘
    │   • mapped device types      │                 ▲              ▲
@@ -36,7 +36,7 @@ the storage model:
   `firmware` profile (where all testing ran); it is one convenient option, not a
   requirement. Two services share one volume:
   - **Filebrowser** (`:8088`, authenticated) — engineers upload/manage images.
-  - **nginx `firmware-download`** (`:9080` HTTP / `:9443` HTTPS, read-only) —
+  - **nginx `firmware-download`** (HTTP on `:80` / `:9443` HTTPS, read-only) —
     serves the same files to devices, **unauthenticated but network/ACL
     restricted**. Directory listing off; GET/HEAD only; `Content-Type:
     application/octet-stream`; HEAD returns a correct `Content-Length`; byte-range
@@ -48,7 +48,7 @@ Device-facing (this is what gets stored in `download_url` and handed to the
 device's `copy` RPC):
 
 ```
-http://<host>:9080/images/<filename>      # DEFAULT — device TLS clients reject the self-signed cert
+http://<host>/images/<filename>           # DEFAULT — port-less (async xcopy refuses explicit ports); TLS clients reject the self-signed cert
 https://<host>:9443/images/<filename>     # opt-in per run ("Use HTTPS URL") once devices trust the cert
 ```
 
