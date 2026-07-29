@@ -3401,8 +3401,10 @@ def _fetch_hints(url):
         hints.append(
             "MOST LIKELY: the device does not trust the firmware server's TLS "
             "certificate (self-signed). Fix: use the HTTP URL on the "
-            "mgmt-restricted network (edit the image's download_url to "
-            "http://<host>:9080/images/...), or install the server's CA in a "
+            "mgmt-restricted network (edit the image's download_url to the "
+            "port-less form http://<host>/images/... — the FIRMWARE_BASE_URL "
+            "value in the worker env; async xcopy also refuses explicit "
+            "ports), or install the server's CA in a "
             "device trustpoint (crypto pki trustpoint + authenticate)"
         )
     hints.append(
