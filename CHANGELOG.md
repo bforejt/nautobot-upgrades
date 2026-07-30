@@ -9,16 +9,19 @@ Stable trains (`MAJOR.MINOR.x` branches) receive **bug fixes only** — see
 
 ## [Unreleased] — on `main` (active churn; pin `1.0.x` for stability)
 
-Transfer-engine rework, headed for the next major train once field-proven:
+Transfer-engine rework plus Dynamic Group roster selection, headed for
+the next major train once the transfer path is field-proven:
 
 ### Added
 - **Dynamic group selection**: a `Dynamic groups` input alongside the
-  device picker — groups resolve **live at run start** (filter-based via
-  their own query, never cached membership; static via assignments), the
-  final roster is the deduplicated union with explicit picks, every
-  group's resolved roster is logged (Dry-run is the preview), empty groups
-  warn loudly, and an empty total refuses. No count-confirmation gate, by
-  decision.
+  device picker — groups resolve **live at run start** via the platform's
+  own fresh-membership computation (filter-, set-, and static-type groups;
+  never a stale cache), the final roster is the deduplicated union with
+  explicit picks, every group's resolution is logged with exact count and
+  the first 20 names (Dry-run is the preview), empty and match-all groups
+  warn loudly by name, and an empty total refuses. No count-confirmation
+  gate, by decision. Pre-existing ScheduledJobs keep working: inputs added
+  since 1.0 carry defaults, so stored kwargs from older forms fire cleanly.
 - **Async xcopy transfer** (`Cisco-IOS-XE-xcopy-rpc`), ledger-primary: the
   install engine runs the transfer as a uuid-keyed operation-ledger record
   (immune to the platform's ~600s blocking-RPC ceiling that kills classic
