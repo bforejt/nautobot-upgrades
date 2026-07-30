@@ -173,7 +173,7 @@ gate and abort.
 
 | Component | Supported | Notes |
 | --- | --- | --- |
-| **Nautobot** | **2.4 LTM** and **3.1+** | Job execution verified on **both 2.4 LTM and 3.1, with the same behavior on either**; the current test bed is a stock **2.4.36**, with earlier volume on 3.1. **3.0 is untested by choice** — unmaintained since 3.1 shipped. Earlier 2.x (≥ 2.2) *may* work but is untested. |
+| **Nautobot** | **2.4 LTM** and **3.1+** | Job execution verified on **both 2.4 LTM and 3.1, with the same behavior on either**; the current test bed is a stock **2.4.36**, with earlier volume on 3.1. **3.0 is untested by choice** — unmaintained since 3.1 shipped. Earlier 2.x (≥ 2.2) *may* work but is untested (dynamic-group resolution uses the platform's fresh-membership API, 2.3+; earlier 2.x falls back to the group's query). |
 | **Device OS** | Cisco IOS-XE **≥ 17.9.1** (incl. 26.x) | Hardware-validated across **17.12–26.1**; every YANG model the job touches verified against Cisco's published models 17.9.1–26.1.1. Model presence ≠ runtime behavior — do one supervised run per new train. Rebuild letters (17.15.4**d**) are **distinct versions**. |
 | **Platform** | Catalyst **9300 family** + **C8000V** | **9300 and 9300L** hardware-tested; the remaining 9300 variants (LM/X) run the identical cat9k image and flow (run pending). **C8000V** (autonomous): **validated live** — a full 17.12 → 17.15.5 upgrade on a running Cat8kv, with `bootflash:` discovered from the device. **9500** (StackWise Virtual): **hardware-validated in production** — a 9500-16X SVL pair upgraded as the lab core. **9200** and **9400/9600**: model sets identical (runs pending). **9800 WLC**: mechanically compatible but **operationally out of scope** — controller only, no AP predownload; a full-scope run is warned in-job. Nexus/NX-OS is a different API — not supported. **3650/3850 cannot be supported** (their terminal 16.12 train lacks the install API; Cisco's replacement, the 9300L, is supported). |
 
@@ -390,6 +390,50 @@ pre-check, progress polls, transfer verify — see
 [SELinux AVC log events](#selinux-avc-log-events-cause-and-workaround)
 for the cause and the workaround). The repeated `%DMI-5-AUTH_PASSED`
 entries are this job's own RESTCONF polling.
+
+### Selecting devices at scale
+
+Two roster sources, one merged run: pick **Devices** explicitly (the
+filters above the picker narrow its list — they scope the *picker only*,
+never group membership), and/or select **Dynamic groups**. The final
+roster is the union of both, deduplicated — a device selected twice runs
+once.
+
+The three scenarios this is built for:
+
+- **Lab / one-off test** — pick the device(s) explicitly. Unchanged.
+- **Deployment rings** — one Dynamic Group per ring, one run per ring.
+  Ring membership is managed centrally in Nautobot, and the job takes the
+  ring's **current** truth at each run.
+- **Fleet sweeps / stragglers** — a Dynamic Group whose filter encodes the
+  predicate (e.g. *software version = the one being retired*) selects
+  exactly the devices still needing the move, every time it runs.
+
+**Live resolution, deliberately.** Groups are resolved at run start via
+the platform's own fresh-membership computation
+(`update_cached_members()` — the documented cross-version API), never
+from a stale cache: on Nautobot 2.4 that computes from the group's query,
+on 3.1 from its membership queryset, and it covers all three group types —
+filter-based, set-based ("group of groups"), and static assignments.
+(Side effect embraced: the refresh keeps the group's page in Nautobot
+showing exactly the roster the run used.) A stored ScheduledJob therefore
+re-resolves at **each** fire — membership drift between save and fire is
+intentional (that is what makes rings work), and the run log is the audit
+record: every group's resolution is logged at start (exact count, method,
+and the first 20 names), which also makes **Dry-run the roster preview**.
+One permissions note: group membership is resolved with the job's own
+database access, **not** the submitting user's device-view permissions — a
+user permitted to run this job and view a group can upgrade member
+devices their view constraints would hide from the Devices picker, so
+scope who can run the job and who can view/edit the groups accordingly.
+
+**No count-confirmation gate, deliberately.** Selecting a named group is
+the expressed intention; a type-the-number ritual adds friction, not
+safety. The safety net is unchanged and per-device: Dry-run first, then
+the install-mode gate, version floor, staged-conflict stop, and free-space
+gate on every member of the roster. Loud edges: a group resolving to zero
+devices warns by name (usually a drifted filter), and an empty total
+roster refuses the run before anything is touched.
 
 ### Parallel batches
 
@@ -920,7 +964,8 @@ mode.
 | Input | Required | Purpose |
 | --- | --- | --- |
 | Location / Role / Status / Platform / Device type / Current version / Tags | no | Optional filters that narrow the **Devices** picker for field operations. |
-| Devices | yes | Target devices to upgrade (narrowed by the filters above). |
+| Devices | no* | Target devices to upgrade (narrowed by the filters above). Optional when Dynamic groups supply the roster; *at least one of Devices / Dynamic groups must yield a device or the run refuses. |
+| Dynamic groups | no* | Device Dynamic Groups, resolved **live at run start** via the platform's own membership computation (filter-based, set-based "group of groups", and static — never a stale cache). The final roster is the **union** of both selectors, deduplicated; each group's resolution is logged (exact count + first 20 names), so **Dry-run is the preview**. Membership resolves with the job's database access, not the submitter's device-view permissions. See [Selecting devices at scale](#selecting-devices-at-scale). |
 | Target version | yes | Core `SoftwareVersion` to upgrade to. |
 | Clean device first | no | ⚠️ **Default off.** Before upgrading, remove ALL software the device is not running — including **any version another engineer staged** (overrides the staged-conflict stop). See [Cleaning a device first](#cleaning-a-device-first). |
 | Run scope | no | Order of operations, safest first: **Step 1 - Copy image** (**default** — a forgotten dropdown can never reload a device), **Steps 1 & 2 - Copy image and prep** (`install add`, no reload), **Full - Copy, Activate, Reload** (the only choice that reloads; a real upgrade requires selecting it deliberately). See [Pre-staging](#pre-staging-stage-now-activate-in-the-window). |
