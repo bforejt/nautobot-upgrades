@@ -84,10 +84,13 @@ DATA_DEVICE_INVENTORY = (
 #: name for flash on a given platform may differ — see TARGET_FS_NAMES.
 DATA_Q_FILESYSTEM = "data/Cisco-IOS-XE-platform-software-oper:cisco-platform-software/q-filesystem"
 
-#: Classic blocking copy RPC (two decades of production miles; kept as the
-#: DEFAULT after a real 17.15.05 silently broke xcopy transfers while this
-#: path kept working with the same URL). The job runs it in a worker thread so
-#: the on-device file size can still be polled for progress reporting.
+#: Classic blocking copy RPC (two decades of production miles; the FALLBACK
+#: TIER since 2026-07: async xcopy is the default transfer, and this path
+#: takes over up front when a pre-fire guard rules xcopy out (ported URL,
+#: no recorded size) or after a device-reported terminal xcopy failure.
+#: Kept selectable outright ('Classic copy only') — it is the transfer with
+#: the field history, and it tolerates ported firmware URLs. The job runs
+#: it in a worker thread so the on-device file size can still be polled.
 OP_COPY = "operations/Cisco-IOS-XE-rpc:copy"
 #: Async express-copy RPC (returns immediately; the device runs the transfer,
 #: bounded by the RPC's own timeout leaf). Reintroduced 2026-07 as an opt-in
@@ -163,22 +166,16 @@ QFS_READ_RETRIES = 3
 #: Overall budget (seconds) for the copy: the blocking RPC's HTTP timeout in the
 #: worker thread, and the watcher's deadline for the whole transfer.
 COPY_TIMEOUT = 3600
-#: WAN transfer window (MINUTES) shared by both opt-in WAN transfer methods —
-#: they exist because the device's DMI/ConfD layer kills any BLOCKING RPC
-#: after ~600s (internal, not configurable; field report 2026-07), which the
-#: classic copy hits on slow WANs while both WAN methods return immediately:
-#:   * Engine download: extends the add ledger-wait budget (JOB-side only —
-#:     the install RPC's download-timeout leaf is deliberately NOT sent:
-#:     bench 2026-07-28 on 17.18.03 showed the device treats the value
-#:     roughly as SECONDS despite the modeled minutes, strangling healthy
-#:     transfers; the device's own default, ~2000 observed, applies instead).
-#:   * Async xcopy: bounds the job's ledger-primary transfer watch (see
-#:     XCOPY_STALL_SECS), and (x60, seconds-scale — unit-safe either way)
-#:     feeds the xcopy RPC's timeout leaf, which MUST be
-#:     sent: omitting it lands 0 in the download descriptor (instant kill —
-#:     bench-proven). Also bench-proven: xcopy source URLs must be PORT-LESS
-#:     (its parser fails locally on any explicit port) and destination-path
-#:     must be a bare filename.
+#: xcopy transfer window (MINUTES). Async xcopy exists because the device's
+#: DMI/ConfD layer kills any BLOCKING RPC after ~600s (internal, not
+#: configurable; field report 2026-07), which the classic copy hits on slow
+#: WANs while the async fire returns immediately. This value bounds the
+#: job's ledger-primary transfer watch (see XCOPY_STALL_SECS), and (x60,
+#: seconds-scale — unit-safe either way) feeds the xcopy RPC's timeout
+#: leaf, which MUST be sent: omitting it lands 0 in the download descriptor
+#: (instant kill — bench-proven). Also bench-proven: xcopy source URLs must
+#: be PORT-LESS (its parser fails locally on any explicit port) and
+#: destination-path must be a bare filename.
 #: MUST fit inside the job's Celery limits (soft_time_limit 7200s): 90 min
 #: + ADD_TIMEOUT = 6600s < 7200s. For very slow WANs raise this AND the job's
 #: soft/hard time limits together (Nautobot lets an admin override a Job's

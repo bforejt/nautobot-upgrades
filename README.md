@@ -3,6 +3,15 @@
 A native **Nautobot Job** that reliably and cautiously upgrades **Cisco IOS-XE**
 devices — **Catalyst 9300** primarily — driven entirely over **RESTCONF**.
 
+> **⚠ Development status (2026-07): `main` is in active churn.** The transfer
+> engine is being reworked — async `xcopy` (install-engine ledger-tracked) is
+> now the **default** transfer with classic copy as its fallback tier, and the
+> engine-download experiment has been removed. These enhancements are being
+> field-proven as they land. **If you want stability, pin a release train:
+> production should track `1.0.x`** (bug fixes only — see
+> [Releases & pinning](#releases--pinning)). Everything documented below
+> describes `main`.
+
 ## Current status
 
 **A work in progress — and going well.** Thoroughly exercised on real Catalyst
@@ -59,13 +68,25 @@ production hardening, so every run should still start with **Dry-run**.
 **Key design choices** (from an up-front analysis, to avoid reinvention):
 
 - **RESTCONF drives the entire upgrade** on modern IOS-XE — the
-  `Cisco-IOS-XE-install-rpc` model (`install`/`activate`/`commit`/`remove`) plus
-  the classic `Cisco-IOS-XE-rpc:copy`. The floor is **17.9.1**, the lowest
-  model-complete release; older is refused. (The async `xcopy` was pulled
-  from the default path after a real 17.15.05 silently broke it; it returns
-  as an opt-in WAN method — now **bench-validated end-to-end** with
-  ledger-primary status tracking, WAN field runs pending — see
-  [Image transfer methods](#image-transfer-methods-wan-options).)
+  `Cisco-IOS-XE-install-rpc` model (`install`/`activate`/`commit`/`remove`),
+  `Cisco-IOS-XE-xcopy-rpc`, and the classic `Cisco-IOS-XE-rpc:copy`. There is
+  no SSH/CLI path, on principle. The floor is **17.9.1**, the lowest
+  model-complete release; older is refused.
+- **Ledger-first, no guessing**: every decision prefers state the device
+  itself publishes. The install engine's **operation ledger** (uuid-keyed
+  records) and **package inventory** are the primary sources of truth —
+  over filesystem walks, over version-row inference, over timers. Where a
+  timer exists at all, it only ever **declares failure** (a bounded wait),
+  never success, and device-published verdicts always outrank it. Addresses
+  and paths are never guessed: they are observed from what the device
+  published, or the code falls back loudly to a broader read.
+- **Async xcopy is the default transfer** (the engine runs it, ledger-
+  tracked, immune to the platform's ~600s blocking-RPC ceiling) with the
+  field-proven classic copy as its **fallback tier**. History honestly
+  told: a real 17.15.05 once silently broke xcopy — root-caused in 2026-07
+  to the device's port-URL parser, fixed with a guard; the fallback tier
+  exists for exactly this class of surprise. See
+  [Image transfer methods](#image-transfer-methods-wan-options).
 - **Integrity without the on-device `verify` RPC**: optional server-side
   **hash-verify** at registration, a **byte-exact size match** after every copy,
   and `install add`'s **mandatory signature validation** before activation —
@@ -100,10 +121,11 @@ on the diagram above map to this list):
    compatibility; then — after the opt-in **Clean device first** — **enough
    free space**. A dry run validates all of these, free space included, before
    it stops.
-3. **Copy + verify** — the device pulls the image (classic `copy` RPC, watched
-   for live progress), gated on a **byte-exact size match**. Skipped if the
-   file is already on flash. (Two opt-in WAN methods — async `xcopy` and an
-   engine-managed download — avoid the device's blocking-RPC ceiling; see
+3. **Copy + verify** — the device pulls the image (async `xcopy` by default:
+   the install engine runs the transfer, ledger-tracked and immune to the
+   platform's blocking-RPC ceiling, with the classic `copy` RPC as the
+   fallback tier), gated on a **byte-exact size match**. Skipped if the
+   file is already on flash. (See
    [Image transfer methods (WAN options)](#image-transfer-methods-wan-options).)
 4. **`install add`** — extract and stage the image to **every member**, with
    Cisco's **mandatory image signature validation** (a corrupt or untrusted
@@ -426,7 +448,7 @@ interval), queued devices never start, and the cancelled run logs the full
 at safe boundaries — re-running the upgrade job later picks each one up
 (idempotent gates + commit-to-be-safe). Cancelling a *queued* run simply
 prevents it from starting. One exception to "everything stops": an **async
-WAN transfer in flight** (Async xcopy or an engine download) keeps running
+WAN transfer in flight** (an async xcopy) keeps running
 *on the device* after the stop until it finishes or its own timeout fails
 it — the stop message says so, and the engine-idle gate makes the eventual
 re-run wait it out safely.
@@ -514,111 +536,117 @@ only reports what would be removed.
 
 ### Image transfer methods (WAN options)
 
-The **Image transfer method** dropdown (default **Classic copy**) selects how
-the image reaches the device. The two WAN options exist because of a
-field-found platform limit: the classic `copy` RPC is a **blocking** call, and
-the device's management plane (DMI/ConfD) kills any blocking RPC after roughly
+The **Image transfer method** dropdown (default **Async xcopy**) selects how
+the image reaches the device. Async xcopy exists because of a field-found
+platform limit: the classic `copy` RPC is a **blocking** call, and the
+device's management plane (DMI/ConfD) kills any blocking RPC after roughly
 **600 seconds** — an internal, non-configurable limit (it is *not*
 `ip http timeout-policy`, which never aborts an in-flight request). A ~1 GB
 image over a slow WAN legitimately needs longer, so Step 1 deterministically
-failed at distant sites with `HTTP 400 "application timeout"`. Both WAN
-methods fire asynchronously and return immediately, so that ceiling never
-applies.
+failed at distant sites with `HTTP 400 "application timeout"`. The async
+fire returns immediately, so that ceiling never applies.
 
-> **Maturity:** **Engine download is bench-validated end-to-end** (17.18.03
-> autonomous 9300, HTTP source, download → add → uuid-keyed `install-op-succ`
-> in the ledger, 2026-07-28) but **not yet proven at a WAN site** (a >600s
-> transfer is the outstanding proof case). **Async xcopy is bench-validated
-> end-to-end** (2026-07-29/30, same bench, port-80 server): after every
-> failure mode was root-caused (port-carrying URLs, an omit-means-zero
-> timeout leaf, verbatim destination handling — all fixed or guarded here), a
-> full transfer completed with the engine's own `install-op-succ` ledger
-> verdict and a byte-exact size match — including a **14m56s transfer, well
-> past the ~600s ceiling** that kills classic copy. xcopy status tracking is
-> now **ledger-primary** (the operation is a uuid-keyed install-oper record;
-> the in-flight and terminal shapes were both captured on the bench). WAN
-> field runs remain outstanding for both methods. Classic copy remains the
-> default and the recommended path on LAN-speed links. Validate on a lab
-> device first, and report results either way
-> ([Contributing](#contributing)). One known history item: a real 17.15.05
-> once **silently failed to transfer via xcopy** (no public bug exists; in
-> hindsight consistent with the port-URL parser failure root-caused here).
-> Bench xcopy on the exact trains your fleet runs.
+**The tiers.** Async xcopy is the primary; **classic copy is the fallback
+tier**, taken in exactly two situations:
 
-| | Classic copy (default) | Async xcopy (WAN) | Engine download (WAN) |
-| --- | --- | --- | --- |
-| Slow-WAN safe (>600s transfers) | ✗ | ✓ | ✓ |
-| Step 1-only staging | ✓ | ✓ | ✗ refused — the download lives inside `install add` |
-| Success decided by | byte-exact size gate (warns if no size recorded) | **install-oper ledger verdict + byte-exact check** | install-oper ledger + byte-exact check |
-| Failure reported by | the device's own error, in seconds | **the engine's ledger fail/timeout records** (device-published reason) | the engine's ledger fail/timeout records |
-| Needs the recorded file size | recommended | **required** — the byte-exact confirmation of the ledger verdict | recommended |
+1. **Up front (pre-fire guards, dry-run visible):** the image URL carries an
+   explicit port (bench- and wire-proven on 17.18.03: the device's
+   express-copy parser fails locally on any `:port`, zero packets sent —
+   serve images port-less to use xcopy; the reference nautobot-composer
+   setup serves port 80 by default since its 2026-07 move), or the image has
+   no recorded file size (xcopy's byte-exact confirmation needs it). The
+   run logs the reason and uses classic copy.
+2. **After a POSITIVELY TERMINAL device-reported xcopy failure:** the
+   engine's ledger publishes a failure verdict, the fire is rejected, or
+   readable ledger polls prove the fire never became an operation
+   (fire-lost with nothing grown on flash). Ambiguous ends — the job
+   deadline, a stop/cancel, unreadable-ledger streaks, a ledger record that
+   vanished mid-watch, or any observed file growth without a ledger
+   record — **never fall back**: the engine may still be writing the file,
+   and a fallback copy would put two writers on one file.
+
+Honesty note on the fallback: on a genuinely slow WAN the classic copy can
+itself die at the ~600s ceiling — the fallback restores the proven LAN
+behavior, it does not rescue WAN transfers. Fix the xcopy precondition (the
+log names it) instead of re-running the fallback. Pick **Classic copy
+only** to skip xcopy entirely (the pre-2.0 behavior, with the field
+history).
+
+> **Maturity:** **Async xcopy is bench-validated end-to-end** (2026-07-29/30,
+> 17.18.03 autonomous 9300, port-80 server): after every failure mode was
+> root-caused (port-carrying URLs, an omit-means-zero timeout leaf, verbatim
+> destination handling — all fixed or guarded here), full transfers completed
+> with the engine's own `install-op-succ` ledger verdict and byte-exact size
+> matches — including **~15-minute transfers, well past the ~600s ceiling**
+> that kills classic copy, one of them the job's own first live lab run.
+> WAN **field** runs remain outstanding. Validate on a lab device first, and
+> report results either way ([Contributing](#contributing)). One known
+> history item: a real 17.15.05 once **silently failed to transfer via
+> xcopy** (no public bug exists; in hindsight consistent with the port-URL
+> parser failure root-caused here) — that history is why the fallback tier
+> and the per-train bench advice exist. Bench xcopy on the exact trains your
+> fleet runs.
+
+| | Async xcopy (default) | Classic copy (fallback tier / selectable) |
+| --- | --- | --- |
+| Slow-WAN safe (>600s transfers) | ✓ | ✗ (the ~600s DMI ceiling) |
+| Step 1-only staging | ✓ | ✓ |
+| Success decided by | **install-oper ledger verdict + byte-exact check** (normally from the engine's package inventory — no filesystem walk) | byte-exact size gate (warns if no size recorded) |
+| Failure reported by | **the engine's ledger fail/timeout records** (device-published reason) | the device's own error, in seconds |
+| Needs the recorded file size | **required** (falls back to classic when absent) | recommended |
+| Ported firmware URLs (`:9080`-style) | ✗ guarded — falls back to classic | ✓ |
 
 Shared semantics: a file already on flash byte-exact is skipped by every
-method; the free-space gate, `install add`'s mandatory signature validation,
-and all downstream gates are unchanged; and the WAN transfer window
+tier — for xcopy the pre-check itself is **ledger-first** (the engine's
+package inventory names the file and a keyed read corroborates the byte
+count, both walk-free; the authoritative listing decides whenever they
+cannot). The free-space gate, `install add`'s mandatory signature
+validation, and all downstream gates are unchanged. The transfer window
 (`WAN_TRANSFER_TIMEOUT_MIN`, **90 minutes** by default) is the **job-side**
 wait budget and must fit the job's overall time limits — for very slow WANs
 raise that constant **and** the job's soft/hard time limits **together**
-(Nautobot lets an admin override a Job's time limits in the UI). The install
-model's `download-timeout` leaf is deliberately **not sent**: on real
-hardware (17.18.03 bench) the device interprets the value roughly as
-*seconds* despite the modeled minutes, strangling healthy transfers — the
-device's own default (~2000 observed, ≈33 min) applies device-side instead.
-Also bench-observed: a **stale same-named file** on flash can poison the
-engine's add (package verification fails) — the job warns when it detects
-one; clear it with `install remove inactive` before re-running.
+(Nautobot lets an admin override a Job's time limits in the UI).
 
-**Async xcopy** fires `Cisco-IOS-XE-xcopy-rpc:xcopy` (with its device-side
-`timeout` leaf always set — omitting it means an instantly-expired window,
-bench-proven) and then tracks **the engine's own ledger record for this
-run's uuid** — the operation is a uuid-keyed install-oper record
-(bench-captured 2026-07-29/30: in-flight under `install-oper` with the
-download transaction `in-progress`; terminal migrated to `install-oper-hist`
-with `install-op-succ`/`-fail`). **Hard constraint (bench- and
-wire-proven on 17.18.03): the image URL must not carry an explicit port** —
-the device's express-copy parser fails locally on any `:port` (zero packets
-sent), so a ported firmware URL is refused up front with guidance; serve
-images on a standard port to use this method (the reference
-nautobot-composer setup serves port 80 by default since its 2026-07 move).
-**Success is the engine's published verdict, confirmed byte-exact** — the
-same integrity gate every transfer faces, now normally satisfied without a
-filesystem walk: the engine's own **package inventory**
-(`install-location-information/install-packages`, captured live 2026-07-30)
-publishes the landed file's exact byte size, its `verify-ok` status, and a
-timestamp the job gates against this operation; entries vanish when files
-are deleted, and the authoritative listing remains the fallback whenever
-the inventory cannot confirm. The watcher's progress address is likewise
-**constructed from device-published state** (the descriptor's
-dest-dir/dest-filename plus the partition-stats keys) and probed with the
-classic learn-from-listing as the floor.
-**Failure is the engine's published failing transaction** (e.g.
-`install-txn-download → fail`, sub-state `install-download-fail`) — a
-device reason, not an inference. File-size polls remain for progress
-display (the same learn-then-keyed, zero-AVC pattern as the classic watch);
-zero growth logs a warning but never aborts while the ledger says running —
-the RPC's own timeout fails a dead transfer on-device. Job-side failure
-declarations are fallback tiers only: the fire-lost bound
-(`XCOPY_STALL_SECS`: readable ledger polls — counted, never wall time —
-that never show the uuid) and the transfer-window deadline
-(`WAN_TRANSFER_TIMEOUT_MIN` + 300 s slack, a backstop that should never
-fire before the RPC's own on-device timeout has already produced a ledger
-verdict). One honesty note shared with engine download: **a job stop or
-cancel cannot stop the device-side transfer** — the engine keeps running
-it until it completes or its own timeout fails it; the engine-idle gate
-before every fire makes a later re-run wait it out safely. Works on every
-run scope — this is the WAN answer for **Step 1-only pre-staging**.
+**How the xcopy watch works.** The fire (`Cisco-IOS-XE-xcopy-rpc:xcopy`,
+its device-side `timeout` leaf always set — omitting it means an
+instantly-expired window, bench-proven) is followed by tracking **the
+engine's own ledger record for this run's uuid** (bench-captured: in-flight
+under `install-oper` with the download transaction `in-progress`; terminal
+migrated to `install-oper-hist` with `install-op-succ`/`-fail`). **Success
+is the engine's published verdict, confirmed byte-exact** — normally from
+the engine's own **package inventory**
+(`install-location-information/install-packages`, captured live
+2026-07-30), which publishes the landed file's exact byte size, its
+`verify-ok` status, and a timestamp the job gates against this operation;
+entries vanish when files are deleted, and the authoritative listing
+remains the fallback whenever the inventory cannot confirm. **Failure is
+the engine's published failing transaction** (e.g. `install-txn-download →
+fail`, sub-state `install-download-fail`) — a device reason, not an
+inference. File-size polls remain for progress display via a walk-free
+keyed address **constructed from device-published state** (the descriptor's
+dest-dir/dest-filename plus the partition-stats keys), with the classic
+learn-from-listing as the floor; zero growth logs a warning but never
+aborts while the ledger says running — the RPC's own timeout fails a dead
+transfer on-device. Job-side failure declarations are fallback tiers only:
+the fire-lost bound (`XCOPY_STALL_SECS`: readable ledger polls — counted,
+never wall time — that never show the uuid) and the transfer-window
+deadline (a backstop past the RPC's own on-device timeout). **A job stop or
+cancel cannot stop the device-side transfer** — the engine keeps running it
+until it completes or its own timeout fails it; the engine-idle gate before
+every fire makes a later re-run wait it out safely. Works on every run
+scope, including **Step 1-only pre-staging** over the WAN.
 
-**Engine download** hands the URL to `install add` itself: transfer and add
-complete as
-**operation-ledger records keyed by this run's uuid** — device-published
-state end to end, with the engine's own fail/timeout verdicts. On releases
-that don't populate the ledger, the job falls back to version-state
-inference exactly as the classic add does, labeled as a fallback. The landed
-`.bin` is size-checked where readable (a mismatch aborts before activation).
-Because the download happens inside `install add` (Step 2), **Step 1-only
-runs are refused** unless the file is already on flash — use Steps 1 & 2 to
-pre-stage over the WAN, or Async xcopy for copy-only staging.
-
+**Removed: the engine-download experiment (2026-07).** A third method —
+handing the URL to `install add` itself — was bench-validated end-to-end
+(2026-07-28: the install RPC accepts a remote URL as `path`; transfer and
+add complete as uuid-keyed ledger records) and then removed: with xcopy as
+the default and classic copy covering ported-URL servers as the fallback,
+it had no remaining niche worth a third per-train bench matrix. Findings
+retained for the record: the install model's `download-timeout` leaf is
+interpreted roughly as *seconds* despite the modeled minutes (sending 10
+strangled a healthy transfer; the device default ~2000 applies when the
+leaf is omitted), and the same seconds-vs-minutes confusion shapes how the
+xcopy timeout leaf is sent today.
 ### Saving running-config before the reload (Full runs)
 
 The CLI `reload` asks *"System configuration has been modified. Save?"* —
@@ -885,7 +913,7 @@ mode.
 | Save running-config after commit | no | **Default off.** After the commit and Nautobot sync, write running-config to startup. Normalizes startup to the new OS's rendering (ends the persistent startup/running diff) — **but** during the soak window an old-syntax startup is the safer rollback path. See [Saving running-config after the commit](#saving-running-config-after-the-commit-opt-in-soak-trade-off). |
 | Golden Config backup (before & after) | no | **Default off.** Snapshot configs via the Golden Config backup job before any upgrades start (failure **aborts** the run) and after all devices finish (failure warns). Requires the Golden Config app. See [Golden Config backups](#golden-config-backups-before--after). |
 | Pre/post health checks | no | **Default off.** Snapshot ports, CDP/LLDP neighbors, and environment before activation; compare after commit with a ~10-min convergence window. Report-only: trunk-port and environment findings log at error level, the device's own abnormal-reboot verdict is checked, artifacts attach to the Job Result. See [Pre/post health checks](#prepost-health-checks-report-only). |
-| Image transfer method | no | **Default: Classic copy.** Dropdown adding two WAN options that avoid the device's ~10-minute ceiling on the blocking copy RPC, both tracked via the install engine's own uuid-keyed ledger: **Async xcopy** (keeps Step 1-only staging; success = engine ledger verdict + byte-exact size; needs a port-less image URL) and **Engine download** (`install add` pulls the URL itself; refuses Step 1-only). **Both are bench-validated end-to-end; WAN field runs pending.** See [Image transfer methods (WAN options)](#image-transfer-methods-wan-options). |
+| Image transfer method | no | **Default: Async xcopy** — the install engine runs the transfer (uuid-keyed ledger tracking; immune to the device's ~10-minute ceiling on the blocking copy RPC; success = engine ledger verdict + byte-exact), **falling back to classic copy** when a pre-fire guard (ported image URL, no recorded file size) or a device-reported terminal failure rules xcopy out. **Classic copy only** skips xcopy entirely (the pre-2.0 behavior). Bench-validated end-to-end; WAN field runs pending. See [Image transfer methods (WAN options)](#image-transfer-methods-wan-options). |
 | Quiet SELinux log noise on terminals | no | **Default off.** The SELinux AVC-denial messages come from how the job watches files during an upgrade (observed so far only on Catalyst 9300 switches; benign in our testing — not a Cisco-confirmed cosmetic defect; see below); enable this if you watch the **physical console or terminal-monitor (SSH)** and want them quieted there. `show logging` and syslog servers still record everything. Applied to the RUNNING config at the start of the run (every release); unsaved — erased by the reload — unless combined with *Save running-config before reload* on a **Full** run. See [SELinux AVC log events](#selinux-avc-log-events-cause-and-workaround). |
 | Secrets group override | no | Force one Secrets Group for the whole run; by default each device uses its own assigned group. |
 | Remove inactive | no | After commit, reclaim space (default **off** — keeps the rollback image for a soak period). |
@@ -906,7 +934,6 @@ mode.
 | Per-poll copy progress after the learn (walk-free, no SELinux bursts) | `GET .../q-filesystem=<fru>,<slot>,<bay>,<chassis>/partitions=<name>/partition-content=<full-path>` (address exactly as a real listing published it) |
 | Copy image | `POST .../operations/Cisco-IOS-XE-rpc:copy` (worker thread) |
 | Copy image (Async xcopy, opt-in) | `POST .../operations/Cisco-IOS-XE-xcopy-rpc:xcopy` (async; tracked via the engine's uuid-keyed install-oper ledger — the install-oper GET above, polled each cycle; success = ledger verdict confirmed byte-exact; file-size polls are progress display only) |
-| Copy image (Engine download, opt-in) | transfer happens inside `POST .../operations/Cisco-IOS-XE-install-rpc:install` (image URL as `path` + `download-timeout`) |
 | Add / activate / commit / remove | `POST .../operations/Cisco-IOS-XE-install-rpc:{install,activate,install-commit,remove}` |
 | Health snapshots (opt-in; pre + convergence re-polls) | `GET .../Cisco-IOS-XE-interfaces-oper:interfaces/interface?fields=name;admin-status;oper-status`, `GET .../cdp-oper:cdp-neighbor-details`, `GET .../lldp-oper:lldp-entries`, `GET .../environment-oper:environment-sensors`, `GET .../device-hardware-oper:.../device-system-data` (reboot reason) |
 | Trunk identification (opt-in, once at the pre-snapshot) | `GET .../Cisco-IOS-XE-native:native/interface` (config read) |
@@ -1049,16 +1076,20 @@ sighting, and the final verify listing — instead
 of **one every 30 seconds for the whole transfer** (~30 for a 15-minute
 copy; the device's audit rate-limiter sometimes truncates the tail of
 that storm, but a fresh run is loud). Every fallback still logs a
-breadcrumb attributed to its device. With the **Async xcopy** method the
-profile shrinks further — typically **two** bursts (the shared
-partition-stats read and the pre-check listing): the transfer watch rides
-the install-oper ledger plus a keyed address constructed from
+breadcrumb attributed to its device. With **Async xcopy** (the default) the
+profile shrinks further — typically **one** burst, the shared
+partition-stats read: the pre-check is ledger-first (the engine's package
+inventory plus a keyed corroboration read, both walk-free; the listing
+walks only when they cannot decide), the transfer watch rides the
+install-oper ledger plus a keyed address constructed from
 device-published state, and the final byte-exact confirm normally comes
 from the engine's own package inventory instead of a listing. A live
 console capture (2026-07-30) showed bursts only at the read phases — the
-pre-fire cluster and the first watch poll (a sighting walk this change
-replaces with the constructed address); the two-burst profile is the
-expected result, to be confirmed on the next monitored run.
+pre-fire cluster and the first watch poll (reads these changes replace);
+the one-burst profile is the expected result, to be confirmed on the next
+monitored run. Whether the partition-stats read itself can go walk-free is
+an open bench question (our probes showed `fields` filters server-side
+AFTER the walk; an RFC 8040 `depth`-limited read is the untested candidate).
 
 **Job-managed quieting (opt-in).** The messages did not affect any upgrade in our testing (above) — a result
 of how the job (and any `show` command) watches files on the filesystem —
