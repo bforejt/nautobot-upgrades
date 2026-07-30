@@ -248,7 +248,9 @@ HEALTH_POLL_INTERVAL = 30
 #: server-side, so this is a payload-size choice, not a log-noise one), and
 #: without the four location-key leaves selected EXPLICITLY the response
 #: omits the entries' fru/slot/bay/chassis keys — RFC 8040 does not promise
-#: ancestor keys; ask for them.
+#: ancestor keys; ask for them. BENCH 2026-07-30: this exact projection
+#: costs ~2 AVC lines (mount statfs, not a file walk). Do NOT trim it to
+#: names-only — that form returned denials AND no response on a real 9300.
 QFS_PARTITIONS_FIELDS = "fru;slot;bay;chassis;partitions(name;total-size;used-size)"
 #: How long to wait for "install add" to finish staging the package. The target
 #: version appears in install-oper as soon as the add STARTS, so the gate waits

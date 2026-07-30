@@ -2018,12 +2018,18 @@ class IOSXEUpgrade(Job):
     def _read_partitions(self, client, retries=None, log=None):
         """Partition stats ONLY (name/total/used) — never the per-file listing.
 
-        The `fields` form keeps the response to partition stats instead of
-        the full multi-hundred-entry file listing — a payload/parse-size
-        choice, not an AVC one (probes proved `fields` is a post-filter
-        server-side). A release that rejects `fields` falls back to the
-        full read — the parsers handle either shape. Each caller reads
-        fresh: no cache, no staleness invariants (simplification 2026-07-10).
+        FIELD-MEASURED (bench 2026-07-30, 9300 17.18.03): this read emits
+        ~2 SELinux AVC lines (mount-level statfs touching '/', mnt_t) — NOT
+        the ~100-line file-enumeration walk a full listing triggers. It is
+        the job's cheapest remaining AVC source and the ONLY native RESTCONF
+        source of partition totals. DO NOT "optimize" the fields projection:
+        the names-only form (dropping total-size;used-size) bench-FAILED the
+        same day — denials AND no response from the device. RFC 8040 depth
+        is a post-filter on this backend (device-tested: prunes output,
+        still collects/denies) — not an alternative. A release that rejects
+        `fields` falls back to the full read — the parsers handle either
+        shape. Each caller reads fresh: no cache, no staleness invariants
+        (simplification 2026-07-10).
         """
         try:
             return (
@@ -2726,10 +2732,19 @@ class IOSXEUpgrade(Job):
         bench-verified) with ios-dir scoping the filesystem, and a keyed
         read of the entry's own pkg-dir/pkg-name corroborates the byte
         count — two zero-AVC reads, no filesystem walk. A skip is never
-        decided on anything weaker than byte-exact from BOTH sources. The
-        SKIP decision can be walk-free; a fetch-needed decision always
-        takes the authoritative full listing (the walk that catches stale
-        same-named files and seeds the baseline).
+        decided on anything weaker than byte-exact from BOTH sources.
+
+        ABSENCE is walk-free too (bench 2026-07-30: keyed partition-content
+        reads are AVC-silent for HITS AND MISSES on a real 9300): when the
+        inventory has no entry for the filename, keyed probes of the
+        device-published candidate dirs decide — a hit answers with the
+        size (catching classic-copied files the inventory doesn't track); a
+        clean miss on every candidate dir confirms absence. A FALSE absence
+        (wrong address form) only costs a harmless re-transfer that
+        overwrites, so this deliberately differs from the WATCH rule where
+        a keyed 404 never proves anything. The authoritative full listing
+        remains the fallback tier for every gap (probe error, no address,
+        no candidate dirs, inventory/keyed disagreement).
         """
         expected = image.image_file_size  # guaranteed by the pre-fire guard
         filename = image.image_file_name
@@ -2739,7 +2754,8 @@ class IOSXEUpgrade(Job):
             ledger = {}
         address = _partition_address(partitions_data, target_fs)
         if address is not None:
-            for pkg_dir, pkg in _find_inventory_by_name(ledger, filename, target_fs):
+            entries = _find_inventory_by_name(ledger, filename, target_fs)
+            for pkg_dir, pkg in entries:
                 try:
                     if int(str(pkg.get("pkg-size", "")).strip()) != int(expected):
                         continue  # inventory names a wrong-size twin
@@ -2761,6 +2777,55 @@ class IOSXEUpgrade(Job):
                     )
                     return True, size
                 break  # inventory and keyed read disagree — the listing decides
+            if not entries:
+                # No inventory entry names this file — probe the
+                # device-published candidate dirs for a walk-free answer.
+                hit_size = None
+                probed = 0
+                for cand_dir in _known_flash_dirs(ledger, target_fs)[:3]:
+                    keyed = _keyed_content_url(address[0], address[1], f"{cand_dir}/{filename}")
+                    try:
+                        size = _keyed_size_read(client, keyed, filename)
+                    except RestconfError:
+                        probed = 0  # probe unreliable — the listing decides
+                        break
+                    probed += 1
+                    if size is not None:
+                        hit_size = size
+                        break
+                if hit_size is not None:
+                    if abs(hit_size - expected) <= C.SIZE_MATCH_TOLERANCE_BYTES:
+                        self.logger.info(
+                            "Image already on %s byte-exact (%s bytes) — "
+                            "sighted by a keyed read (not in the package "
+                            "inventory; e.g. classic-copied); skipping the "
+                            "transfer (no filesystem walk).",
+                            target_fs,
+                            hit_size,
+                            extra=log,
+                        )
+                        return True, hit_size
+                    self.logger.warning(
+                        "A same-named file already exists on %s with the "
+                        "WRONG size (%s bytes, expected %s; keyed read, no "
+                        "walk) — this transfer overwrites it.",
+                        target_fs,
+                        hit_size,
+                        expected,
+                        extra=log,
+                    )
+                    return False, hit_size
+                if probed:
+                    self.logger.info(
+                        "Image absent from %s — confirmed walk-free (no "
+                        "package-inventory entry; keyed probes of %d "
+                        "device-published dir(s) all missed). Proceeding to "
+                        "transfer.",
+                        target_fs,
+                        probed,
+                        extra=log,
+                    )
+                    return False, None
         listing = self._read_q_filesystem(client)
         if listing is None:
             self.logger.warning(
@@ -5078,6 +5143,42 @@ def _find_inventory_by_name(data, filename, target_fs):
     return found
 
 
+def _known_flash_dirs(data, target_fs):
+    """Ordered unique directory candidates for the target filesystem's mount.
+
+    Device-published sources ONLY (never a guessed mount root): pkg-dir from
+    any package-inventory entry whose ios-dir matches the target filesystem,
+    then dest-dir from any download descriptor in the ledger (hist records
+    persist across runs — '/mnt/sd3/user' on the bench 9300). Used by the
+    pre-check to construct keyed absence probes; bench 2026-07-30 proved
+    keyed misses are walk-free. A wrong candidate dir only produces a
+    harmless miss — absence requires every probe to miss.
+    """
+    wanted = str(target_fs).rstrip(":").lower()
+    dirs = []
+
+    def _add(value):
+        d = str(value or "").rstrip("/")
+        if d and d not in dirs:
+            dirs.append(d)
+
+    def _walk(node):
+        if isinstance(node, dict):
+            if "pkg-dir" in node and _partition_matches(node.get("ios-dir"), wanted):
+                _add(node.get("pkg-dir"))
+            param = node.get("download-param")
+            if isinstance(param, dict):
+                _add(param.get("dest-dir"))
+            for value in node.values():
+                _walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    _walk(data or {})
+    return dirs
+
+
 def _parse_ledger_time(value):
     """datetime for an ISO-8601 ledger timestamp — or None (never guess).
 
@@ -5231,10 +5332,13 @@ def _keyed_size_read(client, keyed_url, image_file_name):
     LENIENT scan for any entry whose basename equals the image file name —
     the shape the field-proven pre-simplification parser accepted. The
     lenient scan is safe here because the keyed URL already constrains the
-    response to the one addressed entry and these reads are PROGRESS-ONLY.
-    404/empty is None (the caller re-learns from a full listing — a keyed
-    404 is NEVER treated as file absence). RestconfError propagates so the
-    caller can distinguish a rejected URL form from a transient blip.
+    response to the one addressed entry. 404/empty is None; what None MEANS
+    is the caller's contract: the WATCH treats it as a miss and re-learns
+    from a full listing (never as file absence — mid-transfer stakes), while
+    the PRE-CHECK may treat a corroborated all-dirs miss as absence (bench
+    2026-07-30: keyed misses are AVC-silent; a false absent there only
+    costs a harmless overwriting re-transfer). RestconfError propagates so
+    the caller can distinguish a rejected URL form from a transient blip.
     """
     data = client.get(keyed_url, ok_404=True)
     if not isinstance(data, dict):

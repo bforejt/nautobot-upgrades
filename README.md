@@ -610,10 +610,12 @@ xcopy entirely (the pre-2.0 behavior, with the field history).
 | Ported firmware URLs (`:9080`-style) | ✗ guarded — falls back to classic | ✓ |
 
 Shared semantics: a file already on flash byte-exact is skipped by every
-tier — for xcopy the pre-check itself is **ledger-first** (the engine's
-package inventory names the file and a keyed read corroborates the byte
-count, both walk-free; the authoritative listing decides whenever they
-cannot). The free-space gate, `install add`'s mandatory signature
+tier — for xcopy the pre-check itself is **ledger-first and fully
+walk-free on the happy path** (the engine's package inventory names the
+file and a keyed read corroborates the byte count; **absence** is likewise
+decided by keyed probes of device-published candidate dirs — bench-proven
+AVC-silent for hits and misses, 2026-07-30 — with the authoritative
+listing as the fallback tier whenever any of it cannot decide). The free-space gate, `install add`'s mandatory signature
 validation, and all downstream gates are unchanged. The transfer window
 (`WAN_TRANSFER_TIMEOUT_MIN`, **90 minutes** by default) is the **job-side**
 wait budget and must fit the job's overall time limits — for very slow WANs
@@ -1090,21 +1092,21 @@ of **one every 30 seconds for the whole transfer** (~30 for a 15-minute
 copy; the device's audit rate-limiter sometimes truncates the tail of
 that storm, but a fresh run is loud). Every fallback still logs a
 breadcrumb attributed to its device. With **Async xcopy** (the default) the
-profile shrinks further — typically **two** bursts on a run that actually
-transfers (the shared partition-stats read plus the pre-check listing,
-which decides fetch-needed and catches stale same-named files), and
-**one** on an already-staged run (the ledger-first pre-check — the
-engine's package inventory plus a keyed corroboration read, both
-walk-free — decides the skip without a listing). The transfer watch rides
-the install-oper ledger plus a keyed address constructed from
-device-published state, and the final byte-exact confirm normally comes
-from the engine's own package inventory instead of a listing. A live
-console capture (2026-07-30) showed bursts only at the read phases — the
-pre-fire cluster and the first watch poll (reads these changes replace);
-the reduced profile is the expected result, to be confirmed on the next
-monitored run. Whether the partition-stats read itself can go walk-free is
-an open bench question (our probes showed `fields` filters server-side
-AFTER the walk; an RFC 8040 `depth`-limited read is the untested candidate).
+expected profile is now **~2 AVC lines per run, every run type** — and
+they are not a walk at all. Bench-measured 2026-07-30 on a real 9300
+(17.18.03): the shared partition-stats read emits ~2 mount-level statfs
+denials (`"/"`, `mnt_t`) — the ~100-line file-enumeration burst belongs
+only to full `partition-content` listings, which the happy path no longer
+performs anywhere: the pre-check decides **both** skip and absence
+walk-free (the engine's package inventory plus keyed reads — bench-proven
+AVC-silent for **hits and misses alike**), the transfer watch rides the
+install-oper ledger plus a constructed keyed address, and the final
+byte-exact confirm comes from the package inventory. The full listing
+survives only as the loud fallback tier for every gap. Two device-tested
+dead ends worth recording: RFC 8040 `depth` is a **post-filter** on this
+backend (returns pruned output, still collects and denies — not an
+alternative), and trimming the partition-stats projection to names-only
+returned denials AND no response — do not "optimize" that read.
 
 **Job-managed quieting (opt-in).** The messages did not affect any upgrade in our testing (above) — a result
 of how the job (and any `show` command) watches files on the filesystem —
