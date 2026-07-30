@@ -324,12 +324,12 @@ class IOSXEUpgrade(Job):
         description=(
             "How the image reaches the device. Classic copy is the default. "
             "The two WAN methods avoid the device's ~10-minute internal limit "
-            "on the blocking copy RPC: Async xcopy keeps Step 1-only staging "
-            "but REQUIRES the image's recorded file size and reports no "
-            "device error detail; Engine download is ledger-tracked but "
-            "refuses Step 1-only runs unless the image is already on flash. "
-            "Neither WAN method is field-validated yet. See 'Image transfer "
-            "methods' in the project README."
+            "on the blocking copy RPC; both are tracked via the install "
+            "engine's own ledger: Async xcopy keeps Step 1-only staging but "
+            "REQUIRES the image's recorded file size and a port-less image "
+            "URL; Engine download refuses Step 1-only runs unless the image "
+            "is already on flash. Both are bench-validated; WAN field runs "
+            "pending. See 'Image transfer methods' in the project README."
         ),
     )
     secrets_group_override = ObjectVar(
@@ -746,11 +746,11 @@ class IOSXEUpgrade(Job):
         image = self._resolve_image(device, target_version, log)
         if transfer_method == "xcopy" and not image.image_file_size:
             raise UpgradeAbort(
-                "Async xcopy needs the image's recorded file size — reaching "
-                "that size on flash is its ONLY completion signal (xcopy "
-                "reports progress and errors solely on a notification stream "
-                "RESTCONF cannot receive). Record the file size on the "
-                "SoftwareImageFile, or pick another transfer method."
+                "Async xcopy needs the image's recorded file size — the "
+                "engine's ledger verdict is confirmed byte-exact against it "
+                "(the same integrity gate every transfer faces). Record the "
+                "file size on the SoftwareImageFile, or pick another "
+                "transfer method."
             )
         if transfer_method == "xcopy":
             url_problem = _xcopy_url_unsupported(image.download_url)
@@ -898,8 +898,9 @@ class IOSXEUpgrade(Job):
         # DMI/ConfD ~600s ceiling on slow WANs — field report 2026-07):
         #   copy (default): classic blocking copy in a worker thread, watched
         #     to a size-verified completion inside _copy_image;
-        #   xcopy: async fire-and-watch — _xcopy_image watches the file to the
-        #     recorded byte-exact size (works for every run scope);
+        #   xcopy: async fire-and-watch — _xcopy_image tracks the engine's
+        #     uuid-keyed ledger record to its own success/failure verdict,
+        #     then byte-exact confirms (works for every run scope);
         #   install: defer the transfer to 'install add' itself (the engine
         #     downloads the URL in the background, ledger-tracked; Step 1-only
         #     runs are refused since the copy happens inside the add).
@@ -2703,18 +2704,25 @@ class IOSXEUpgrade(Job):
         return False
 
     def _xcopy_image(self, client, image, log, target_fs):
-        """Async xcopy: fire, then watch the file to the recorded size.
+        """Async xcopy: fire, then watch the ENGINE'S OWN LEDGER to a verdict.
 
-        SUCCESS is pure device state: size polls (learn-then-keyed, the same
-        zero-AVC pattern as the classic copy watch) reach the recorded size,
-        then the AUTHORITATIVE full listing confirms byte-exact — the same
-        gate that decides every copy. TIMERS HERE ONLY DECLARE FAILURE, never
-        success: xcopy's own progress/errors ride a notification stream
-        RESTCONF cannot receive and no oper ledger exists, so a stall window
-        plus the RPC's own device-side timeout leaf bound the wait. Known
-        caveat: a real 17.15.05 once silently failed to transfer via xcopy —
-        under this watch that surfaces as a stall abort: detected, but
-        without a device-published reason.
+        LEDGER-PRIMARY (bench 2026-07-29/30, 17.18.03): xcopy operations are
+        uuid-keyed install-oper records. In flight the record sits under
+        install-oper (txn install-txn-download 'in-progress', epoch-zero
+        end-time = unset); on completion it MIGRATES to install-oper-hist
+        with op-status install-op-succ/-fail + op-done op-complete. SUCCESS
+        is therefore the engine's own published verdict, confirmed byte-exact
+        against the authoritative listing (the gate every transfer faces).
+        FAILURE quotes the engine's failing transaction — the device reason
+        the old file-only watch could never read (a captured bench failure
+        published install-txn-download -> fail with sub-state
+        install-download-fail). File-size polls remain for PROGRESS DISPLAY
+        only (learn-then-keyed, the zero-AVC pattern); a growth stall warns
+        but never declares failure while the ledger says running — the
+        RPC's own timeout leaf turns a dead transfer into a ledger failure
+        well before the job deadline. The only timer that declares failure
+        is the fire-lost bound: readable ledger polls that never show our
+        uuid at all.
         """
         # Destination is the BARE filename (bench-proven): xcopy passes
         # destination-path VERBATIM into the download descriptor's filename
@@ -2724,13 +2732,13 @@ class IOSXEUpgrade(Job):
         expected = image.image_file_size  # presence is gated before dispatch
         op_uuid = str(uuid_lib.uuid4())
         self.logger.info(
-            "xcopy (async) '%s' -> %s (device-side timeout %d min; success = "
-            "byte-exact %s bytes on flash; stall window %ds)...",
+            "xcopy (async) '%s' -> %s (uuid %s; device-side timeout %d min; "
+            "success = engine ledger verdict + byte-exact %s bytes on flash)...",
             _redact_url(image.download_url),
             dest,
+            op_uuid,
             C.WAN_TRANSFER_TIMEOUT_MIN,
             expected,
-            C.XCOPY_STALL_SECS,
             extra=log,
         )
         response = client.post_rpc(
@@ -2753,9 +2761,11 @@ class IOSXEUpgrade(Job):
         keyed_url = None
         keyed_ok = True
         keyed_misses = 0
-        last_size = None  # last SUCCESSFULLY observed size (device state)
+        last_size = None  # last SUCCESSFULLY observed size (progress display)
         last_growth = started  # when an observation last showed the size move
-        absent_since = None  # first successful listing that lacked the file
+        ledger_absent_since = None  # first READABLE ledger poll lacking our uuid
+        error_streak = 0  # consecutive unreadable ledger polls
+        stall_warned = False
         polls = 0
 
         def _observe():
@@ -2809,102 +2819,135 @@ class IOSXEUpgrade(Job):
             self._check_stop()
             if time.monotonic() > deadline:
                 raise UpgradeAbort(
-                    f"xcopy did not reach the expected size within the "
-                    f"{C.WAN_TRANSFER_TIMEOUT_MIN}-minute transfer window "
-                    f"(last observed: "
+                    f"xcopy passed the job's transfer window "
+                    f"({C.WAN_TRANSFER_TIMEOUT_MIN} min + slack) without a "
+                    f"terminal ledger verdict (last observed: "
                     f"{last_size if last_size is not None else 'no file'} of "
-                    f"{expected} bytes). The device aborts the transfer itself "
-                    "at this timeout; re-run to retry, or raise "
-                    "WAN_TRANSFER_TIMEOUT_MIN AND the job time limits together."
+                    f"{expected} bytes). The RPC's own timeout should have "
+                    "failed the operation on-device before this — check "
+                    "install-oper-hist for the uuid above; re-run to retry, or "
+                    "raise WAN_TRANSFER_TIMEOUT_MIN AND the job time limits "
+                    "together."
                 )
             time.sleep(C.POLL_INTERVAL)
             polls += 1
-            size, observed = _observe()
-            now = time.monotonic()
-            if not observed:
-                continue
-            if size is None:
-                absent_since = absent_since or now
-                if now - absent_since >= C.XCOPY_STALL_SECS:
-                    raise UpgradeAbort(
-                        f"xcopy: successful listings showed no file on "
-                        f"{target_fs} for {C.XCOPY_STALL_SECS}s — declared "
-                        "FAILED (bounded-wait failure declaration: xcopy "
-                        "reports errors only on a notification stream RESTCONF "
-                        "cannot receive, so no device reason is readable). "
-                        "Likely an immediate fetch failure. " + _fetch_hints(image.download_url)
-                    )
-                continue
-            absent_since = None
-            if last_size is None or size != last_size:
-                last_size = size
-                last_growth = now
-            if polls % 4 == 0:
+            # PRIMARY: the engine's own ledger record for our uuid.
+            try:
+                ledger = client.get(C.DATA_INSTALL_OPER, ok_404=True) or {}
+            except RestconfError as exc:
+                error_streak += 1
+                if error_streak >= C.LEDGER_BLIP_POLLS:
+                    raise
                 self.logger.info(
-                    "xcopy progress: %d%% (%s of %s bytes, %s elapsed).",
-                    min(int(size * 100 / expected), 100),
-                    size,
-                    expected,
-                    _fmt_duration(now - started),
+                    "xcopy ledger read failed (%s) — transient blip %d/%d, "
+                    "retrying (unreadable polls never age failure clocks).",
+                    exc,
+                    error_streak,
+                    C.LEDGER_BLIP_POLLS,
                     extra=log,
                 )
-            verdict = _xcopy_verdict(size, expected, now - last_growth, C.XCOPY_STALL_SECS)
-            if verdict == "waiting":
                 continue
-            # Either terminal verdict must be CONFIRMED against the
-            # authoritative full listing before it may end the transfer —
-            # keyed reads stay progress-only, exactly like the classic watch.
-            final = self._read_q_filesystem(client)
-            if final is None:
-                if verdict == "complete":
+            error_streak = 0
+            now = time.monotonic()
+            status, detail = _classify_ops(_find_op_records(ledger, op_uuid))
+            if status == "absent":
+                ledger_absent_since = ledger_absent_since or now
+                absent_for = now - ledger_absent_since
+            else:
+                ledger_absent_since = None
+                absent_for = 0.0
+            verdict = _xcopy_ledger_verdict(status, absent_for, C.XCOPY_STALL_SECS)
+            if verdict == "failure":
+                last_note = last_size if last_size is not None else "no file sighted"
+                raise UpgradeAbort(
+                    f"xcopy FAILED — the install engine's ledger reports: "
+                    f"{detail}. Last observed file size: {last_note} "
+                    f"(expected {expected} bytes). A re-run overwrites any "
+                    "partial file. " + _fetch_hints(image.download_url)
+                )
+            if verdict == "fire-lost":
+                raise UpgradeAbort(
+                    f"xcopy produced no install-oper ledger record for uuid "
+                    f"{op_uuid} within {C.XCOPY_STALL_SECS}s of readable "
+                    "ledger polls — the accepted fire never became an engine "
+                    "operation. " + _fetch_hints(image.download_url)
+                )
+            if verdict == "success":
+                # The engine's verdict is authoritative for the TRANSFER;
+                # byte-exact against the authoritative listing remains the
+                # job's own integrity gate (guards Nautobot metadata and the
+                # re-run skip logic, same as every other transfer method).
+                final = self._read_q_filesystem(client)
+                if final is None:
                     raise UpgradeAbort(
-                        "xcopy reached the expected size but the authoritative "
-                        "final listing could not be read — refusing to proceed "
-                        "on a weaker signal. Re-run when the device answers."
+                        "xcopy succeeded per the engine ledger but the "
+                        "authoritative final listing could not be read — "
+                        "refusing to proceed on a weaker signal. Re-run when "
+                        "the device answers."
                     )
-                continue  # a stall cannot be confirmed from silence
-            cfound, csize = _find_target_file(final, image.image_file_name, target_fs)
-            if cfound and csize is not None and csize != last_size:
-                # The authoritative listing disagrees with the keyed view —
-                # trust it and keep watching.
-                last_size = csize
-                last_growth = time.monotonic()
-                continue
-            if verdict == "complete":
+                cfound, csize = _find_target_file(final, image.image_file_name, target_fs)
                 if (
                     cfound
                     and csize is not None
                     and abs(csize - expected) <= C.SIZE_MATCH_TOLERANCE_BYTES
                 ):
                     self.logger.info(
-                        "xcopy complete and size-verified: %s bytes on %s (%s).",
+                        "xcopy complete (engine ledger: %s) and size-verified: "
+                        "%s bytes on %s (%s).",
+                        detail,
                         csize,
                         target_fs,
                         _fmt_duration(time.monotonic() - started),
                         extra=log,
                     )
                     return
-                # A same-named pre-existing file can satisfy size >= expected
-                # while the real transfer is still overwriting it — keep
-                # watching until the deadline rather than mis-diagnosing.
+                raise UpgradeAbort(
+                    f"xcopy succeeded per the engine ledger but the "
+                    f"authoritative listing shows "
+                    f"{csize if cfound else 'no file'} bytes (expected "
+                    f"{expected}) — byte-exact verification failed. Check that "
+                    "the server-hosted file matches the size recorded in "
+                    "Nautobot, then re-run."
+                )
+            # verdict == 'wait': ledger says running (or briefly absent) —
+            # file-size reads are PROGRESS DISPLAY plus an advisory stall
+            # warning, never a failure verdict.
+            size, observed = _observe()
+            now = time.monotonic()
+            if observed and size is not None:
+                if last_size is None or size != last_size:
+                    last_size = size
+                    last_growth = now
+                    stall_warned = False
+                if polls % 4 == 0:
+                    self.logger.info(
+                        "xcopy progress: %d%% (%s of %s bytes, %s elapsed; engine phase: %s).",
+                        min(int(size * 100 / expected), 100),
+                        size,
+                        expected,
+                        _fmt_duration(now - started),
+                        detail,
+                        extra=log,
+                    )
+                if not stall_warned and now - last_growth >= C.XCOPY_STALL_SECS:
+                    stall_warned = True
+                    self.logger.warning(
+                        "xcopy file growth stalled at %s bytes for %ds while "
+                        "the engine still reports the operation running — "
+                        "waiting for the engine's own verdict (its timeout "
+                        "fails a dead transfer on-device).",
+                        size,
+                        C.XCOPY_STALL_SECS,
+                        extra=log,
+                    )
+            elif polls % 4 == 0:
                 self.logger.info(
-                    "Size reached the recorded value but the authoritative "
-                    "listing shows %s bytes (expected %s) — a same-named file "
-                    "may still be mid-overwrite; continuing to watch.",
-                    csize if cfound else "no file",
-                    expected,
+                    "xcopy running (engine phase: %s; %s elapsed; file not sighted on %s yet)...",
+                    detail,
+                    _fmt_duration(now - started),
+                    target_fs,
                     extra=log,
                 )
-                last_growth = time.monotonic()
-                continue
-            raise UpgradeAbort(
-                f"xcopy stalled: successful reads showed no growth past "
-                f"{last_size} bytes for {C.XCOPY_STALL_SECS}s (expected "
-                f"{expected}), confirmed against the authoritative listing — "
-                "declared FAILED (bounded-wait; no device reason is readable "
-                "over RESTCONF). A re-run overwrites the partial file. "
-                + _fetch_hints(image.download_url)
-            )
 
     def _verify_engine_download(self, client, image, log, target_fs):
         """Byte-exact check of the engine-downloaded .bin (fail-closed).
@@ -4587,18 +4630,24 @@ def _xcopy_url_unsupported(url):
     return None
 
 
-def _xcopy_verdict(size, expected, stalled_for, stall_secs):
-    """'complete' | 'stalled' | 'waiting'.
+def _xcopy_ledger_verdict(status, absent_for, stall_secs):
+    """'success' | 'failure' | 'fire-lost' | 'wait' from a uuid's ledger state.
 
-    Timers only ever DECLARE FAILURE here: 'complete' requires the observed
-    size to reach the recorded expected size (device-published state); the
-    stall window merely bounds how long zero growth is tolerated.
+    status is _classify_ops() output — the engine's own account, so
+    'success'/'failure' pass straight through (device-published verdicts).
+    The ONLY timer here is the fire-lost bound: 'absent' (readable ledger
+    polls that never show the uuid) is tolerated for stall_secs before the
+    fire is declared lost; the caller must never age this clock on
+    unreadable polls. 'running' always waits — a dead transfer becomes a
+    ledger FAILURE via the RPC's own device-side timeout, not a job timer.
     """
-    if size is not None and expected and size >= expected:
-        return "complete"
-    if stalled_for >= stall_secs:
-        return "stalled"
-    return "waiting"
+    if status == "failure":
+        return "failure"
+    if status == "success":
+        return "success"
+    if status == "absent" and absent_for >= stall_secs:
+        return "fire-lost"
+    return "wait"
 
 
 def _find_target_file_entry(data, image_file_name, target_fs):

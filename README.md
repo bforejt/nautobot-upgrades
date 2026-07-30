@@ -63,8 +63,9 @@ production hardening, so every run should still start with **Dry-run**.
   the classic `Cisco-IOS-XE-rpc:copy`. The floor is **17.9.1**, the lowest
   model-complete release; older is refused. (The async `xcopy` was pulled
   from the default path after a real 17.15.05 silently broke it; it returns
-  only as an opt-in, unvalidated WAN method with a stall-abort safety net —
-  see [Image transfer methods](#image-transfer-methods-wan-options).)
+  as an opt-in WAN method — now **bench-validated end-to-end** with
+  ledger-primary status tracking, WAN field runs pending — see
+  [Image transfer methods](#image-transfer-methods-wan-options).)
 - **Integrity without the on-device `verify` RPC**: optional server-side
   **hash-verify** at registration, a **byte-exact size match** after every copy,
   and `install add`'s **mandatory signature validation** before activation —
@@ -523,28 +524,30 @@ applies.
 > **Maturity:** **Engine download is bench-validated end-to-end** (17.18.03
 > autonomous 9300, HTTP source, download → add → uuid-keyed `install-op-succ`
 > in the ledger, 2026-07-28) but **not yet proven at a WAN site** (a >600s
-> transfer is the outstanding proof case). **Async xcopy's failure modes are
-> fully root-caused on the bench** (port-carrying URLs, an omit-means-zero
-> timeout leaf, verbatim destination handling — all fixed or guarded here;
-> port-less transfer confirmed on the wire) — a full clean-room
-> end-to-end pass and the WAN case remain outstanding. Bonus finding: xcopy
-> operations are **uuid-keyed install-oper ledger records**, so a
-> ledger-primary upgrade of its status tracking is queued as follow-up.
-> Classic copy remains the default and the recommended path on LAN-speed
-> links. Validate on a lab device first, and report results either way
+> transfer is the outstanding proof case). **Async xcopy is bench-validated
+> end-to-end** (2026-07-29/30, same bench, port-80 server): after every
+> failure mode was root-caused (port-carrying URLs, an omit-means-zero
+> timeout leaf, verbatim destination handling — all fixed or guarded here), a
+> full transfer completed with the engine's own `install-op-succ` ledger
+> verdict and a byte-exact size match — including a **14m56s transfer, well
+> past the ~600s ceiling** that kills classic copy. xcopy status tracking is
+> now **ledger-primary** (the operation is a uuid-keyed install-oper record;
+> the in-flight and terminal shapes were both captured on the bench). WAN
+> field runs remain outstanding for both methods. Classic copy remains the
+> default and the recommended path on LAN-speed links. Validate on a lab
+> device first, and report results either way
 > ([Contributing](#contributing)). One known history item: a real 17.15.05
-> once **silently failed to transfer via xcopy** (no public bug exists);
-> under this job's watch that failure mode surfaces as a stall abort —
-> detected, but without a device-published reason. Bench xcopy on the exact
-> trains your fleet runs.
+> once **silently failed to transfer via xcopy** (no public bug exists; in
+> hindsight consistent with the port-URL parser failure root-caused here).
+> Bench xcopy on the exact trains your fleet runs.
 
 | | Classic copy (default) | Async xcopy (WAN) | Engine download (WAN) |
 | --- | --- | --- | --- |
 | Slow-WAN safe (>600s transfers) | ✗ | ✓ | ✓ |
 | Step 1-only staging | ✓ | ✓ | ✗ refused — the download lives inside `install add` |
-| Success decided by | byte-exact size gate (warns if no size recorded) | **the same byte-exact gate** | install-oper ledger + byte-exact check |
-| Failure reported by | the device's own error, in seconds | observed stall window (+ uuid-keyed ledger records — discovered on bench, tracking upgrade queued) | the engine's ledger fail/timeout records |
-| Needs the recorded file size | recommended | **required** — it is the only completion signal | recommended |
+| Success decided by | byte-exact size gate (warns if no size recorded) | **install-oper ledger verdict + byte-exact check** | install-oper ledger + byte-exact check |
+| Failure reported by | the device's own error, in seconds | **the engine's ledger fail/timeout records** (device-published reason) | the engine's ledger fail/timeout records |
+| Needs the recorded file size | recommended | **required** — the byte-exact confirmation of the ledger verdict | recommended |
 
 Shared semantics: a file already on flash byte-exact is skipped by every
 method; the free-space gate, `install add`'s mandatory signature validation,
@@ -563,21 +566,27 @@ one; clear it with `install remove inactive` before re-running.
 
 **Async xcopy** fires `Cisco-IOS-XE-xcopy-rpc:xcopy` (with its device-side
 `timeout` leaf always set — omitting it means an instantly-expired window,
-bench-proven) and then watches the file with the same learn-then-keyed,
-zero-AVC pattern as the classic watch. **Hard constraint (bench- and
+bench-proven) and then tracks **the engine's own ledger record for this
+run's uuid** — the operation is a uuid-keyed install-oper record
+(bench-captured 2026-07-29/30: in-flight under `install-oper` with the
+download transaction `in-progress`; terminal migrated to `install-oper-hist`
+with `install-op-succ`/`-fail`). **Hard constraint (bench- and
 wire-proven on 17.18.03): the image URL must not carry an explicit port** —
 the device's express-copy parser fails locally on any `:port` (zero packets
-sent), so a `:9080`-style firmware URL is refused up front with guidance;
-serve images on a standard port (one extra `listen` line on the firmware
-server) to use this method. **Success is pure device state** — the recorded size reached on
-flash, then the authoritative listing confirms byte-exact. **Timers only
-ever declare failure** (`XCOPY_STALL_SECS`, 300 s of *observed* zero growth —
-unreadable polls never age the clock, and a stall is re-confirmed against the
-authoritative listing before it aborts): xcopy's
-progress and errors ride a notification stream RESTCONF cannot receive and
-no oper ledger exists, so a failed transfer is *detected* promptly but
-carries no device reason. Works on every run scope — this is the WAN answer
-for **Step 1-only pre-staging**.
+sent), so a ported firmware URL is refused up front with guidance; serve
+images on a standard port to use this method (the reference
+nautobot-composer setup serves port 80 by default since its 2026-07 move).
+**Success is the engine's published verdict, then the authoritative listing
+confirms byte-exact** — the same integrity gate every transfer faces.
+**Failure is the engine's published failing transaction** (e.g.
+`install-txn-download → fail`, sub-state `install-download-fail`) — a
+device reason, not an inference. File-size polls remain for progress
+display (the same learn-then-keyed, zero-AVC pattern as the classic watch);
+zero growth logs a warning but never aborts while the ledger says running —
+the RPC's own timeout fails a dead transfer on-device. The only job-side
+failure timer left is the fire-lost bound (`XCOPY_STALL_SECS`: readable
+ledger polls that never show the uuid). Works on every run scope — this is
+the WAN answer for **Step 1-only pre-staging**.
 
 **Engine download** hands the URL to `install add` itself: transfer and add
 complete as
@@ -856,7 +865,7 @@ mode.
 | Save running-config after commit | no | **Default off.** After the commit and Nautobot sync, write running-config to startup. Normalizes startup to the new OS's rendering (ends the persistent startup/running diff) — **but** during the soak window an old-syntax startup is the safer rollback path. See [Saving running-config after the commit](#saving-running-config-after-the-commit-opt-in-soak-trade-off). |
 | Golden Config backup (before & after) | no | **Default off.** Snapshot configs via the Golden Config backup job before any upgrades start (failure **aborts** the run) and after all devices finish (failure warns). Requires the Golden Config app. See [Golden Config backups](#golden-config-backups-before--after). |
 | Pre/post health checks | no | **Default off.** Snapshot ports, CDP/LLDP neighbors, and environment before activation; compare after commit with a ~10-min convergence window. Report-only: trunk-port and environment findings log at error level, the device's own abnormal-reboot verdict is checked, artifacts attach to the Job Result. See [Pre/post health checks](#prepost-health-checks-report-only). |
-| Image transfer method | no | **Default: Classic copy.** Dropdown adding two WAN options that avoid the device's ~10-minute ceiling on the blocking copy RPC: **Async xcopy** (keeps Step 1-only staging; success = byte-exact size on flash; no device error detail) and **Engine download** (`install add` pulls the URL itself, ledger-tracked; refuses Step 1-only). **Both WAN methods are new — not yet field-validated.** See [Image transfer methods (WAN options)](#image-transfer-methods-wan-options). |
+| Image transfer method | no | **Default: Classic copy.** Dropdown adding two WAN options that avoid the device's ~10-minute ceiling on the blocking copy RPC, both tracked via the install engine's own uuid-keyed ledger: **Async xcopy** (keeps Step 1-only staging; success = engine ledger verdict + byte-exact size; needs a port-less image URL) and **Engine download** (`install add` pulls the URL itself; refuses Step 1-only). **Both are bench-validated end-to-end; WAN field runs pending.** See [Image transfer methods (WAN options)](#image-transfer-methods-wan-options). |
 | Quiet SELinux log noise on terminals | no | **Default off.** The SELinux AVC-denial messages come from how the job watches files during an upgrade (observed so far only on Catalyst 9300 switches; benign in our testing — not a Cisco-confirmed cosmetic defect; see below); enable this if you watch the **physical console or terminal-monitor (SSH)** and want them quieted there. `show logging` and syslog servers still record everything. Applied to the RUNNING config at the start of the run (every release); unsaved — erased by the reload — unless combined with *Save running-config before reload* on a **Full** run. See [SELinux AVC log events](#selinux-avc-log-events-cause-and-workaround). |
 | Secrets group override | no | Force one Secrets Group for the whole run; by default each device uses its own assigned group. |
 | Remove inactive | no | After commit, reclaim space (default **off** — keeps the rollback image for a soak period). |

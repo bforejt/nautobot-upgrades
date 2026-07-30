@@ -92,9 +92,12 @@ OP_COPY = "operations/Cisco-IOS-XE-rpc:copy"
 #: Async express-copy RPC (returns immediately; the device runs the transfer,
 #: bounded by the RPC's own timeout leaf). Reintroduced 2026-07 as an opt-in
 #: WAN transfer method after the blocking copy's ~600s DMI ceiling surfaced in
-#: the field. UNVALIDATED so far — and its progress/errors ride a notification
-#: stream RESTCONF cannot receive, so the job watches the file itself and
-#: byte-exact-gates the result (see XCOPY_STALL_SECS).
+#: the field. BENCH-VALIDATED END-TO-END 2026-07-29/30 (17.18.03, port-80
+#: server): the operation is a uuid-keyed install-oper LEDGER record (txn
+#: chain sched -> dwnld-precheck -> download -> notify; terminal op-status
+#: install-op-succ + op-done op-complete), a 14m56s transfer — past the
+#: ~600s DMI ceiling — completed and byte-exact matched. The watch is
+#: ledger-primary (see XCOPY_STALL_SECS); WAN field runs still outstanding.
 OP_XCOPY = "operations/Cisco-IOS-XE-xcopy-rpc:xcopy"
 
 #: Write running-config to startup-config (cisco-ia, no input; output is a
@@ -167,13 +170,16 @@ COPY_TIMEOUT = 3600
 #: soft/hard time limits together (Nautobot lets an admin override a Job's
 #: time limits in the UI) — one knob without the other cannot work.
 WAN_TRANSFER_TIMEOUT_MIN = 90
-#: Async xcopy stall window (SECONDS): with xcopy, errors ride a notification
-#: stream RESTCONF cannot receive (no oper ledger exists), so the only failure
-#: signal is OBSERVED zero growth: successful reads showing the same size for
-#: this long (unreadable polls never age the clock — the transfer window
-#: bounds those), re-confirmed against the authoritative listing before the
-#: abort. Timers here only ever declare failure — success is always the
-#: byte-exact size gate.
+#: Async xcopy fire-lost bound + stall-warning window (SECONDS). The watch is
+#: LEDGER-PRIMARY (bench 2026-07-29/30, 17.18.03: xcopy ops are uuid-keyed
+#: install-oper records — in-flight under install-oper, terminal migrated to
+#: install-oper-hist with op-status install-op-succ/-fail), so failure and
+#: success both come from the ENGINE'S OWN VERDICT (success additionally
+#: byte-exact confirmed). This window now bounds only two things: (1) how
+#: long READABLE ledger polls may lack the uuid before the fire is declared
+#: lost (unreadable polls never age the clock), and (2) when zero file
+#: growth logs an advisory WARNING — never an abort — while the ledger says
+#: running (the RPC's own timeout leaf fails a dead transfer on-device).
 XCOPY_STALL_SECS = 300
 
 POLL_INTERVAL = 30
