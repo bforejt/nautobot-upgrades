@@ -580,8 +580,17 @@ the device's express-copy parser fails locally on any `:port` (zero packets
 sent), so a ported firmware URL is refused up front with guidance; serve
 images on a standard port to use this method (the reference
 nautobot-composer setup serves port 80 by default since its 2026-07 move).
-**Success is the engine's published verdict, then the authoritative listing
-confirms byte-exact** — the same integrity gate every transfer faces.
+**Success is the engine's published verdict, confirmed byte-exact** — the
+same integrity gate every transfer faces, now normally satisfied without a
+filesystem walk: the engine's own **package inventory**
+(`install-location-information/install-packages`, captured live 2026-07-30)
+publishes the landed file's exact byte size, its `verify-ok` status, and a
+timestamp the job gates against this operation; entries vanish when files
+are deleted, and the authoritative listing remains the fallback whenever
+the inventory cannot confirm. The watcher's progress address is likewise
+**constructed from device-published state** (the descriptor's
+dest-dir/dest-filename plus the partition-stats keys) and probed with the
+classic learn-from-listing as the floor.
 **Failure is the engine's published failing transaction** (e.g.
 `install-txn-download → fail`, sub-state `install-download-fail`) — a
 device reason, not an inference. File-size polls remain for progress
@@ -1040,7 +1049,16 @@ sighting, and the final verify listing — instead
 of **one every 30 seconds for the whole transfer** (~30 for a 15-minute
 copy; the device's audit rate-limiter sometimes truncates the tail of
 that storm, but a fresh run is loud). Every fallback still logs a
-breadcrumb attributed to its device.
+breadcrumb attributed to its device. With the **Async xcopy** method the
+profile shrinks further — typically **two** bursts (the shared
+partition-stats read and the pre-check listing): the transfer watch rides
+the install-oper ledger plus a keyed address constructed from
+device-published state, and the final byte-exact confirm normally comes
+from the engine's own package inventory instead of a listing. A live
+console capture (2026-07-30) showed bursts only at the read phases — the
+pre-fire cluster and the first watch poll (a sighting walk this change
+replaces with the constructed address); the two-burst profile is the
+expected result, to be confirmed on the next monitored run.
 
 **Job-managed quieting (opt-in).** The messages did not affect any upgrade in our testing (above) — a result
 of how the job (and any `show` command) watches files on the filesystem —

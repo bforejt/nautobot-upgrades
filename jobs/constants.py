@@ -98,6 +98,19 @@ OP_COPY = "operations/Cisco-IOS-XE-rpc:copy"
 #: install-op-succ + op-done op-complete), a 14m56s transfer — past the
 #: ~600s DMI ceiling — completed and byte-exact matched. The watch is
 #: ledger-primary (see XCOPY_STALL_SECS); WAN field runs still outstanding.
+#: BONUS (2026-07-30, live job run): install-location-information/
+#: install-packages publishes per-bin pkg-dir + pkg-name + ios-dir
+#: ("flash:" — the device's own mount<->IOS-fs mapping) + pkg-data with
+#: pkg-size (EXACT bin byte size, user-verified), verify-status and a
+#: timestamp; entries vanish when the file is deleted. The job uses it for
+#: a walk-free byte-exact confirm (listing fallback), timestamp-gated
+#: against this op. NOTE the op-level ledger `timeout` echoed 2070 on both
+#: observed runs despite two DIFFERENT sent leaf values — 2000 (the
+#: Postman-fired bench run, 2026-07-29) and 5400 (the live job run,
+#: 2026-07-30) — so the op-level value appears not to track the leaf. If a
+#: long WAN transfer dies at ~34-35 min (2070s) with a ledger timeout
+#: record, the op-level value binds and the leaf may be decorative; watch
+#: for this on the first >34-minute field transfer.
 OP_XCOPY = "operations/Cisco-IOS-XE-xcopy-rpc:xcopy"
 
 #: Write running-config to startup-config (cisco-ia, no input; output is a
