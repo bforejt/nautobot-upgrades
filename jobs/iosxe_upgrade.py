@@ -124,13 +124,16 @@ class EngineBusy(UpgradeAbort):
 class XcopyFailed(UpgradeAbort):
     """xcopy ended in a POSITIVELY TERMINAL failure — safe to fall back.
 
-    Raised ONLY when the device itself settled the transfer's fate: the
-    fire was rejected, the ledger published a failure verdict, or readable
-    ledger polls proved the fire never became an operation. The dispatch
-    catches this class to retry via classic copy. Ambiguous ends (deadline,
-    stop, unreadable-ledger streaks, vanished-after-seen) deliberately stay
-    plain UpgradeAbort: the engine may still be writing the file, and a
-    fallback copy would put two writers on one file.
+    Raised for exactly three ends: the fire was REJECTED (device-reported),
+    the ledger published a FAILURE verdict (device-reported), or FIRE-LOST
+    — readable ledger polls never showed the uuid AND a fresh authoritative
+    listing positively lacks the destination file (both device-published
+    reads; only the wait bound is job-side). The dispatch catches this
+    class to retry via classic copy. Ambiguous ends (deadline, stop,
+    unreadable-ledger streaks, vanished-after-seen, any post-fire change to
+    the destination, an unreadable declaration-time listing) deliberately
+    stay plain UpgradeAbort: the engine may still be writing the file, and
+    a fallback copy would put two writers on one file.
     """
 
 
@@ -398,15 +401,17 @@ class IOSXEUpgrade(Job):
         has_sensitive_variables = False
         dryrun_default = True
         # With parallel batches the makespan is ~ceil(devices / parallelism) x
-        # one worst-case device (copy 3600 + add 1200 + reload 120+1800 + slack),
+        # one worst-case device (transfer + add 1200 + reload 120+1800 + slack),
         # plus up to 2x GC_BACKUP_TIMEOUT (900s each) of serial Golden Config
         # backup waits and up to ~HEALTH_CONVERGENCE_TIMEOUT + one capture
         # (~13 min worst case) of post-upgrade health polling, when those
-        # options are on; the opt-in WAN transfer methods can hold the copy
-        # watch (xcopy) or the add wait (engine download) for up to
-        # WAN_TRANSFER_TIMEOUT_MIN (90 min default) and must fit these limits
-        # too — raise the constant and these limits TOGETHER for very slow
-        # WANs.
+        # options are on. The DEFAULT transfer (async xcopy) can hold the
+        # watch up to WAN_TRANSFER_TIMEOUT_MIN (90 min) + 300s slack; a
+        # terminal xcopy failure then STACKS the classic-copy fallback
+        # (COPY_TIMEOUT 3600s) on top — a worst-case both-tiers device can
+        # exceed the soft limit and be cooperatively stopped mid-fallback
+        # (recovered by an idempotent re-run). Raise the constant and these
+        # limits TOGETHER for very slow WANs.
         # size batches so that fits inside the soft limit. SoftTimeLimitExceeded
         # is re-raised (never swallowed); queued devices are cancelled and named,
         # in-flight devices are recovered by an idempotent re-run.
@@ -757,10 +762,24 @@ class IOSXEUpgrade(Job):
         self._gate_install_mode(client, log)
 
         image = self._resolve_image(device, target_version, log)
+        # Saved automations (ScheduledJobs) bypass the form's choice
+        # validation, so a value from a removed option (the 2026-07
+        # engine-download 'install') can arrive here — fail LOUDLY instead
+        # of silently rerouting a stored intent.
+        if transfer_method in (None, ""):
+            transfer_method = "xcopy"  # optional-field omission -> the default
+        elif transfer_method not in ("xcopy", "copy"):
+            raise UpgradeAbort(
+                f"Unknown transfer method {transfer_method!r}. The 'install' "
+                "(engine download) method was removed 2026-07 — re-save the "
+                "scheduled job/automation with 'xcopy' (default, classic-copy "
+                "fallback) or 'copy'."
+            )
         # Pre-fire fallback guards (dry-run visible): when a wire-proven
         # precondition says xcopy cannot work for THIS image, the run falls
         # back to the classic copy tier up front — a logged decision, not an
         # abort (the operator picked the default; the job picks the tier).
+        xcopy_demoted = False
         if transfer_method == "xcopy":
             fallback_reason = None
             if not image.image_file_size:
@@ -781,6 +800,7 @@ class IOSXEUpgrade(Job):
                     )
             if fallback_reason:
                 transfer_method = "copy"
+                xcopy_demoted = True
                 self.logger.warning(
                     "Async xcopy is unavailable for this image: %s. This run "
                     "uses the classic copy tier instead.",
@@ -905,8 +925,14 @@ class IOSXEUpgrade(Job):
                 )
             else:
                 cfg_note += (
-                    " Classic copy only: the blocking copy RPC would run in "
-                    "a worker thread, watched to a size-verified completion."
+                    (
+                        " Classic copy (xcopy ruled out by a pre-fire guard — "
+                        "see the warning above):"
+                        if xcopy_demoted
+                        else " Classic copy only:"
+                    )
+                    + " the blocking copy RPC would run in a worker thread, "
+                    "watched to a size-verified completion."
                 )
             return f"DRY-RUN ok:{clean_note}{cfg_note} {planned}. All pre-flight gates passed."
 
@@ -921,9 +947,19 @@ class IOSXEUpgrade(Job):
         # device-reported failure. Ambiguous ends never fall back — the
         # engine may still be writing the file (see XcopyFailed).
         if transfer_method == "xcopy":
-            if not self._xcopy_precheck_skip(client, image, log, target_fs, partitions):
+            skip, pre_fire_size = self._xcopy_precheck_skip(
+                client, image, log, target_fs, partitions
+            )
+            if not skip:
                 try:
-                    self._xcopy_image(client, image, log, target_fs, partitions_data=partitions)
+                    self._xcopy_image(
+                        client,
+                        image,
+                        log,
+                        target_fs,
+                        partitions_data=partitions,
+                        pre_fire_size=pre_fire_size,
+                    )
                 except XcopyFailed as exc:
                     self.logger.warning(
                         "xcopy ended in a device-reported terminal failure — "
@@ -2312,14 +2348,17 @@ class IOSXEUpgrade(Job):
     def _copy_image(self, client, image, log, target_fs):
         """Run the classic copy RPC in a worker thread and watch its progress.
 
-        The classic Cisco-IOS-XE-rpc:copy BLOCKS for the whole transfer (chosen
-        deliberately: a real 17.15.05 silently broke the fancier async xcopy
-        while this path kept working; xcopy has since returned only as an
-        opt-in, unvalidated WAN method with its own watch — see
-        _xcopy_image). Running it in a thread frees the job to
-        poll the growing on-device file for progress lines; the final exact size
-        match is the transfer-integrity gate, and 'install add' image-signature
-        validation remains the cryptographic backstop.
+        The classic Cisco-IOS-XE-rpc:copy BLOCKS for the whole transfer. This
+        is the FALLBACK tier (and the 'Classic copy only' opt-out): async
+        xcopy is the default, and dispatch lands here only when a pre-fire
+        guard or a positively terminal device-reported xcopy failure rules
+        xcopy out — see _xcopy_image / XcopyFailed. (The fallback is wired
+        partly on history: a real 17.15.05 silently broke async xcopy while
+        this path kept working with the same URL.) Running it in a thread
+        frees the job to poll the growing on-device file for progress lines;
+        the final exact size match is the transfer-integrity gate, and
+        'install add' image-signature validation remains the cryptographic
+        backstop.
         """
         dest = f"{target_fs}{image.image_file_name}"
         expected = image.image_file_size
@@ -2677,14 +2716,20 @@ class IOSXEUpgrade(Job):
     def _xcopy_precheck_skip(self, client, image, log, target_fs, partitions_data):
         """True when the image is already on flash byte-exact — walk-free first.
 
+        Returns (skip, pre_fire_size): pre_fire_size is the size of a
+        same-named file observed BEFORE the fire (None when absent or
+        unreadable) — the watch seeds its growth baseline with it so a
+        static pre-existing twin never counts as post-fire change.
+
         LEDGER-FIRST pre-check (2026-07-31): the engine's package inventory
         names every bin on flash (entries vanish with deleted files —
         bench-verified) with ios-dir scoping the filesystem, and a keyed
         read of the entry's own pkg-dir/pkg-name corroborates the byte
         count — two zero-AVC reads, no filesystem walk. A skip is never
-        decided on anything weaker than byte-exact from BOTH sources. Any
-        gap (no entry, no keyed answer, any disagreement) falls back to the
-        authoritative full listing — exactly the old pre-check, one walk.
+        decided on anything weaker than byte-exact from BOTH sources. The
+        SKIP decision can be walk-free; a fetch-needed decision always
+        takes the authoritative full listing (the walk that catches stale
+        same-named files and seeds the baseline).
         """
         expected = image.image_file_size  # guaranteed by the pre-fire guard
         filename = image.image_file_name
@@ -2714,7 +2759,7 @@ class IOSXEUpgrade(Job):
                         size,
                         extra=log,
                     )
-                    return True
+                    return True, size
                 break  # inventory and keyed read disagree — the listing decides
         listing = self._read_q_filesystem(client)
         if listing is None:
@@ -2724,7 +2769,7 @@ class IOSXEUpgrade(Job):
                 "must be fetched.",
                 extra=log,
             )
-            return False
+            return False, None
         found, pre_size = _find_target_file(listing, filename, target_fs)
         if not _engine_fetch_needed(found, pre_size, expected):
             self.logger.info(
@@ -2734,7 +2779,7 @@ class IOSXEUpgrade(Job):
                 pre_size,
                 extra=log,
             )
-            return True
+            return True, pre_size
         if found:
             self.logger.warning(
                 "A same-named file already exists on %s with the WRONG size "
@@ -2744,9 +2789,9 @@ class IOSXEUpgrade(Job):
                 expected,
                 extra=log,
             )
-        return False
+        return False, pre_size if found else None
 
-    def _xcopy_image(self, client, image, log, target_fs, partitions_data=None):
+    def _xcopy_image(self, client, image, log, target_fs, partitions_data=None, pre_fire_size=None):
         """Async xcopy: fire, then watch the ENGINE'S OWN LEDGER to a verdict.
 
         LEDGER-PRIMARY (bench 2026-07-29/30, 17.18.03): xcopy operations are
@@ -2826,7 +2871,10 @@ class IOSXEUpgrade(Job):
         keyed_url = None
         keyed_ok = True
         keyed_misses = 0
-        last_size = None  # last SUCCESSFULLY observed size (progress display)
+        # Seed the baseline with the pre-fire observation: a static
+        # pre-existing same-named file must never count as post-fire change
+        # (only a size that DIFFERS from this baseline stamps last_growth).
+        last_size = pre_fire_size
         last_growth = started  # when an observation last showed the size move
         readable_absent_polls = 0  # READABLE ledger polls lacking our uuid;
         # unreadable polls never increment, so blips are genuinely clock-neutral
@@ -3001,32 +3049,76 @@ class IOSXEUpgrade(Job):
                 )
             if verdict == "fire-lost":
                 if last_growth > started:
-                    # A file HAS grown since the fire while no ledger record
-                    # exists — a ghost transfer may be running (a release
-                    # that accepts xcopy without publishing records). A
-                    # fallback copy would be a second writer on the same
-                    # file: abort plainly instead.
+                    # The destination CHANGED since the fire (last_size is
+                    # seeded with the pre-fire observation, so a static
+                    # pre-existing twin never trips this) while no ledger
+                    # record exists — a ghost transfer may be running (a
+                    # release that accepts xcopy without publishing records).
+                    # A fallback copy would be a second writer: abort plainly.
                     raise UpgradeAbort(
                         f"xcopy: no install-oper ledger record for uuid "
-                        f"{op_uuid}, but the destination file GREW after the "
-                        f"fire (last observed {last_size} of {expected} "
+                        f"{op_uuid}, but the destination file CHANGED after "
+                        f"the fire (last observed {last_size} of {expected} "
                         "bytes) — a transfer this release does not ledger "
                         "may still be running. NOT falling back (two writers "
                         "on one file); wait for the file to settle, check "
                         "'show install log', then re-run."
                     )
-                # No engine operation ever existed for the uuid (readable
-                # polls proved it) and nothing grew — no second-writer risk,
-                # fallback-eligible.
+                # Never seen in the ledger and no observed change. 'Nothing
+                # grew' must be POSITIVE state, not absence of evidence
+                # (observations can fail exactly while flash is under ghost
+                # write I/O) — decide from a fresh authoritative listing at
+                # declaration time, full retries, like the vanish branch.
+                final = self._read_q_filesystem(client)
+                if final is None:
+                    raise UpgradeAbort(
+                        f"xcopy: no install-oper ledger record for uuid "
+                        f"{op_uuid} within {C.XCOPY_STALL_SECS}s of readable "
+                        "ledger polls, AND the filesystem could not be read "
+                        "to prove nothing is being written — ambiguous end, "
+                        "NOT falling back. Check 'show install log' and the "
+                        "file on flash, then re-run."
+                    )
+                ffound, fsize = _find_target_file(final, image.image_file_name, target_fs)
+                if (
+                    ffound
+                    and fsize is not None
+                    and abs(fsize - expected) <= C.SIZE_MATCH_TOLERANCE_BYTES
+                ):
+                    self.logger.warning(
+                        "xcopy produced no ledger record for uuid %s, but the "
+                        "file is byte-exact on %s (%s bytes) — accepting the "
+                        "transfer on the authoritative listing (a release "
+                        "that does not ledger xcopy may have completed it).",
+                        op_uuid,
+                        target_fs,
+                        fsize,
+                        extra=log,
+                    )
+                    return
+                if ffound:
+                    raise UpgradeAbort(
+                        f"xcopy: no install-oper ledger record for uuid "
+                        f"{op_uuid}, and the authoritative listing shows "
+                        f"'{image.image_file_name}' on {target_fs} at "
+                        f"{fsize if fsize is not None else 'an unreadable size'} "
+                        f"(expected {expected}) — a possible ghost writer or a "
+                        "stale same-named file. NOT falling back (two writers "
+                        "on one file); clear the file ('install remove "
+                        "inactive' or delete it) to restore fallback "
+                        "eligibility, then re-run."
+                    )
+                # The authoritative listing POSITIVELY lacks the file and the
+                # ledger positively lacks the uuid — both device-published
+                # reads; only the wait bound is job-side. No engine operation
+                # and nothing on flash: no second-writer risk.
                 raise XcopyFailed(
                     f"xcopy: no install-oper ledger record for uuid {op_uuid} "
                     f"appeared within {C.XCOPY_STALL_SECS}s of readable ledger "
-                    "polls — declaring the fire LOST (bounded-wait fallback, "
-                    "not a device-published verdict). Most likely the accepted "
-                    "fire never became an engine operation, but a release that "
-                    "does not publish xcopy ledger records looks identical — "
-                    "check 'show install log' and the file on flash before "
-                    "re-firing. " + _fetch_hints(image.download_url)
+                    "polls and the authoritative listing shows no destination "
+                    "file — the accepted fire never became an engine "
+                    "operation (or this release neither ledgers nor ran it). "
+                    + _fetch_hints(image.download_url)
                 )
             if verdict == "success":
                 # The engine's verdict is authoritative for the TRANSFER;

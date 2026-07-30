@@ -93,9 +93,10 @@ DATA_Q_FILESYSTEM = "data/Cisco-IOS-XE-platform-software-oper:cisco-platform-sof
 #: it in a worker thread so the on-device file size can still be polled.
 OP_COPY = "operations/Cisco-IOS-XE-rpc:copy"
 #: Async express-copy RPC (returns immediately; the device runs the transfer,
-#: bounded by the RPC's own timeout leaf). Reintroduced 2026-07 as an opt-in
-#: WAN transfer method after the blocking copy's ~600s DMI ceiling surfaced in
-#: the field. BENCH-VALIDATED END-TO-END 2026-07-29/30 (17.18.03, port-80
+#: bounded by the RPC's own timeout leaf). Reintroduced 2026-07 (opt-in at
+#: first) after the blocking copy's ~600s DMI ceiling surfaced in the field;
+#: the DEFAULT transfer tier since the 2026-07 two-tier rework (classic copy
+#: is the fallback tier — see OP_COPY). BENCH-VALIDATED END-TO-END 2026-07-29/30 (17.18.03, port-80
 #: server): the operation is a uuid-keyed install-oper LEDGER record (txn
 #: chain sched -> dwnld-precheck -> download -> notify; terminal op-status
 #: install-op-succ + op-done op-complete), a 14m56s transfer — past the
@@ -176,10 +177,16 @@ COPY_TIMEOUT = 3600
 #: (instant kill — bench-proven). Also bench-proven: xcopy source URLs must
 #: be PORT-LESS (its parser fails locally on any explicit port) and
 #: destination-path must be a bare filename.
-#: MUST fit inside the job's Celery limits (soft_time_limit 7200s): 90 min
-#: + ADD_TIMEOUT = 6600s < 7200s. For very slow WANs raise this AND the job's
-#: soft/hard time limits together (Nautobot lets an admin override a Job's
-#: time limits in the UI) — one knob without the other cannot work.
+#: Budget math vs the job's Celery limits (soft_time_limit 7200s): the
+#: xcopy watch alone fits — 90 min x60 + 300s slack + ADD_TIMEOUT = 6900s
+#: < 7200s. A WORST-CASE TIER STACK does not: a device-timeout xcopy
+#: failure followed by the full classic-copy fallback (COPY_TIMEOUT 3600s)
+#: plus the add exceeds the soft limit, and the run is cooperatively
+#: stopped mid-fallback — safe (idempotent gates recover on re-run) but
+#: incomplete. If your WAN routinely needs both tiers, raise this constant
+#: AND the job's soft/hard time limits together (Nautobot lets an admin
+#: override a Job's time limits in the UI) — one knob without the other
+#: cannot work.
 WAN_TRANSFER_TIMEOUT_MIN = 90
 #: Async xcopy fire-lost bound + stall-warning window (SECONDS). The watch is
 #: LEDGER-PRIMARY (bench 2026-07-29/30, 17.18.03: xcopy ops are uuid-keyed

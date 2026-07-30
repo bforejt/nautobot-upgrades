@@ -121,11 +121,11 @@
 <rect x="474" y="1957" width="177" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="562.5" y="1963" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B85450"><tspan x="562.5" dy="0">error / timeout /</tspan><tspan x="562.5" dy="14">mismatch</tspan></text>
 <rect x="600" y="1943" width="330" height="66" rx="6" ry="6" fill="#F8CECC" stroke="#B85450" stroke-width="1.5"/>
 <text x="765.0" y="1967" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#8a1f1f"><tspan x="765.0" dy="0">ABORT</tspan></text>
-<text x="765.0" y="1978" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#5b1414"><tspan x="765.0" dy="0">Copy RPC failed/refused, timed out,</tspan><tspan x="765.0" dy="14">or on-device size ≠ expected — abort</tspan></text>
+<text x="765.0" y="1972" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#5b1414"><tspan x="765.0" dy="0">Terminal xcopy failure falls back to</tspan><tspan x="765.0" dy="14">classic copy once; ambiguous ends and</tspan><tspan x="765.0" dy="14">size ≠ expected abort</tspan></text>
 <path d="M 275 1976 L 250 1976" fill="none" stroke="#D79B00" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
 <rect x="220" y="1957" width="86" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="262.5" y="1970" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B7791f"><tspan x="262.5" dy="0">size unknown</tspan></text>
 <rect x="30" y="1946" width="220" height="60" rx="6" ry="6" fill="#FFE6CC" stroke="#D79B00" stroke-width="1.5"/>
-<text x="140.0" y="1969" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#7a4f00"><tspan x="140.0" dy="0">No expected size → warn; rely on</tspan><tspan x="140.0" dy="14">install add signature validation</tspan></text>
+<text x="140.0" y="1969" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10.5" fill="#7a4f00"><tspan x="140.0" dy="0">No expected size → classic tier; warn,</tspan><tspan x="140.0" dy="14">rely on install add signature validation</tspan></text>
 <path d="M 140 2006 L 140 2072 L 275 2072" fill="none" stroke="#D79B00" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
 <rect x="178" y="2053" width="60" height="18" rx="3" fill="#ffffff" fill-opacity="0.85" stroke="none"/><text x="207.5" y="2066" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#B7791f"><tspan x="207.5" dy="0">continue</tspan></text>
 <path d="M 525 2072 L 600 2072" fill="none" stroke="#2E7D32" stroke-width="1.5" marker-end="url(#arrow)"/>
@@ -207,7 +207,7 @@
 <polygon points="400,1742.0 525.0,1784 400,1826.0 275.0,1784" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
 <text x="400" y="1784" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Dry-run?</tspan></text>
 <rect x="250" y="1852" width="300" height="56" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
-<text x="400" y="1866" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">File-listing pre-check (skip if staged) →</tspan><tspan x="400" dy="14">classic copy in worker thread; progress:</tspan><tspan x="400" dy="14">learn address at first sighting → keyed polls</tspan></text>
+<text x="400" y="1866" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="400" dy="0">Ledger-first pre-check (skip if staged) →</tspan><tspan x="400" dy="14">async xcopy fire → engine-ledger watch</tspan><tspan x="400" dy="14">(fallback tier: classic copy in worker thread)</tspan></text>
 <polygon points="400,1934.0 525.0,1976 400,2018.0 275.0,1976" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
 <text x="400" y="1969" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="400" dy="0">Transfer complete</tspan><tspan x="400" dy="14">&amp; size matches?</tspan></text>
 <polygon points="400,2030.0 525.0,2072 400,2114.0 275.0,2072" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>

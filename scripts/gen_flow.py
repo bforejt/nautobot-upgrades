@@ -5,22 +5,22 @@ from one node/edge model that mirrors IOSXEUpgrade._upgrade_device()."""
 import html
 import os
 
-CX = 400          # spine center x
-PITCH = 96        # row center-to-center
-TOP = 56          # first row center y
+CX = 400  # spine center x
+PITCH = 96  # row center-to-center
+TOP = 56  # first row center y
 
 # Geometry per node type: (width, height)
 GEOM = {
     "start": (300, 50),
-    "end":   (320, 54),
-    "proc":  (300, 56),
-    "dec":   (250, 84),
+    "end": (320, 54),
+    "proc": (300, 56),
+    "dec": (250, 84),
 }
 ABORT_W, ABORT_H = 330, 66
 WARN_W, WARN_H = 220, 60
 OKR_W, OKR_H = 330, 56
-RIGHT_X = 600     # left edge of right-column boxes
-LEFT_RX = 250     # right edge of left-column (warn) boxes
+RIGHT_X = 600  # left edge of right-column boxes
+LEFT_RX = 250  # right edge of left-column (warn) boxes
 
 # spine: ordered. Each: id, type, text, and optional branches:
 #   abort=(condlabel, reasontext)       -> red box on the right
@@ -31,99 +31,285 @@ LEFT_RX = 250     # right edge of left-column (warn) boxes
 SPINE = [
     ("start", "start", "FOR EACH selected device\n(up to 'Parallelism' concurrently)", {}),
     ("host", "proc", "Resolve mgmt host\n(primary_ip4 / primary_ip)", {}),
-    ("d_ip", "dec", "Primary IP set?",
-     {"abort": ("No", "No primary IP set")}),
+    ("d_ip", "dec", "Primary IP set?", {"abort": ("No", "No primary IP set")}),
     ("cred", "proc", "Resolve credentials\n(job override OR device Secrets Group)", {}),
-    ("d_cred", "dec", "Secrets group +\nusername & password?",
-     {"abort": ("No", "No Secrets Group / secret missing")}),
+    (
+        "d_cred",
+        "dec",
+        "Secrets group +\nusername & password?",
+        {"abort": ("No", "No Secrets Group / secret missing")},
+    ),
     ("reach", "proc", "GET device-system-data\n(auth + reachability)", {}),
-    ("d_reach", "dec", "Reachable &\nauthenticated?",
-     {"abort": ("No", "HTTP 401 auth / 403 privilege /\nunreachable (RESTCONF disabled?)")}),
+    (
+        "d_reach",
+        "dec",
+        "Reachable &\nauthenticated?",
+        {"abort": ("No", "HTTP 401 auth / 403 privilege /\nunreachable (RESTCONF disabled?)")},
+    ),
     ("curr", "proc", "Read current version\n(from the reachability response)", {}),
-    ("d_target", "dec", "Already on\ntarget version?",
-     {"okright": ("Yes", "Already on target → no-op if committed;\nelse install commit (commit-to-be-safe)"),
-      "passlabel": "No"}),
-    ("avcsup", "proc",
-     "Opt-in: quiet SELinux noise on terminals\n(running-config; console + term-mon only;\n"
-     "all releases; read-first; warn-only)", {}),
-    ("d_floor", "dec", "Version parses\n& ≥ 17.9.1?",
-     {"abort": ("No", "Unknown version, or below the\n17.9.1 support floor"),
-      "passlabel": "Yes"}),
+    (
+        "d_target",
+        "dec",
+        "Already on\ntarget version?",
+        {
+            "okright": (
+                "Yes",
+                "Already on target → no-op if committed;\nelse install commit (commit-to-be-safe)",
+            ),
+            "passlabel": "No",
+        },
+    ),
+    (
+        "avcsup",
+        "proc",
+        "Opt-in: quiet SELinux noise on terminals\n(running-config; console + term-mon only;\n"
+        "all releases; read-first; warn-only)",
+        {},
+    ),
+    (
+        "d_floor",
+        "dec",
+        "Version parses\n& ≥ 17.9.1?",
+        {
+            "abort": ("No", "Unknown version, or below the\n17.9.1 support floor"),
+            "passlabel": "Yes",
+        },
+    ),
     ("mode", "proc", "Read oper-state boot-mode\n(install-oper, all members)", {}),
-    ("d_mode", "dec", "All members\nINSTALL mode?",
-     {"abort": ("bundle / bad /\nunconfirmed",
-                "BUNDLE, unrecognized or UNCONFIRMED\nmode, or install-oper unreadable\n(fail-closed — no override exists)"),
-      "warn": ("install-bundle",
-               "install-bundle variant → proceed\n(install mode, booted from a .bin)"),
-      "passlabel": "Yes"}),
+    (
+        "d_mode",
+        "dec",
+        "All members\nINSTALL mode?",
+        {
+            "abort": (
+                "bundle / bad /\nunconfirmed",
+                "BUNDLE, unrecognized or UNCONFIRMED\nmode, or install-oper unreadable\n(fail-closed — no override exists)",
+            ),
+            "warn": (
+                "install-bundle",
+                "install-bundle variant → proceed\n(install mode, booted from a .bin)",
+            ),
+            "passlabel": "Yes",
+        },
+    ),
     ("img", "proc", "Resolve image (device override →\ndevice-type map → default)", {}),
-    ("d_img", "dec", "Image has filename\n& download URL?",
-     {"abort": ("No", "No compatible image, or missing\nfilename / download URL"),
-      "passlabel": "Yes"}),
-    ("d_clean", "dec", "Clean device first\nticked? (default off)",
-     {"warn": ("Yes", "Remove ALL inactive/staged software\n(engine-decided; overrides the staged-\nconflict stop; failures ABORT)"),
-      "passlabel": "No"}),
-    ("space", "proc", "Target fs: boot-config hint (zero-walk)\ncorroborated by ONE shared partitions read\n+ free-space gate (CLEANED flash)", {}),
-    ("d_space", "dec", "Free ≥ image × 2\n(or ≥ 2 GB if size unknown)?",
-     {"abort": ("No", "Free space unconfirmed or\ninsufficient"), "passlabel": "Yes"}),
-    ("d_dry", "dec", "Dry-run?",
-     {"okright": ("Yes", "DONE: DRY-RUN — pre-flight\npassed, no changes made"),
-      "passlabel": "No"}),
-    ("copy", "proc",
-     "File-listing pre-check (skip if staged) →\nclassic copy in worker thread; progress:\nlearn address at first sighting → keyed polls", {}),
-    ("d_size", "dec", "Transfer complete\n& size matches?",
-     {"abort": ("error / timeout /\nmismatch", "Copy RPC failed/refused, timed out,\nor on-device size ≠ expected — abort"),
-      "warn": ("size unknown", "No expected size → warn; rely on\ninstall add signature validation"),
-      "passlabel": "match"}),
-    ("d_stagecopy", "dec", "Run scope =\nstage-copy?",
-     {"okright": ("Yes", "DONE: STAGED (copy) — window run\nwill skip the verified copy"),
-      "passlabel": "full / stage-add"}),
-    ("roster", "proc", "Capture chassis roster (stack members /\nstandalone chassis serials from inventory)", {}),
-    ("add", "proc",
-     "install add (skipped if already staged) →\ntrack our op-uuid in the operation ledger\n"
-     "to op-complete (state inference fallback)", {}),
-    ("d_stageadd", "dec", "Run scope =\nstage-add?",
-     {"okright": ("Yes", "DONE: STAGED (add) — marked for\nactivation; window run: activate →\nreload → commit only"),
-      "passlabel": "full"}),
-    ("healthpre", "proc",
-     "Opt-in: health baseline snapshot\n(ports/CDP/LLDP/env/reboot-reason;\nread failure ABORTS before activation)", {}),
-    ("cfgsync", "proc",
-     "Opt-in: save running-config before reload\n(RPC reloads never prompt; detection removed\n"
-     "— SNMP-only source); else a reminder logs", {}),
-    ("idle", "proc",
-     "Engine-idle gate before EVERY install write:\nsys-activity = no-activity on all members\n"
-     "(settle delay only pre-activate w/o signal)", {}),
-    ("act", "proc",
-     "install activate (non-ISSU, by full internal\nversion; ledger-tracked,\n"
-     "re-sent on ledger-absent evidence)", {}),
-    ("d_act", "dec", "Activation started?\n(ledger / state / device drop)",
-     {"abort": ("No", "Ledger-recorded failure, or never\nregistered despite re-sends — abort\n(engaged runs get an extended budget)"),
-      "passlabel": "Yes"}),
-    ("waitc", "proc",
-     "Wait for reload: must observe the device\ngo DOWN, then boot the target stably\n"
-     "(2 consecutive matching polls)", {}),
-    ("d_confirm", "dec", "Target version\nstably confirmed?",
-     {"abort": ("No", "Not confirmed before timeout — NOT\ncommitted; auto-rollback should revert"),
-      "passlabel": "Yes"}),
-    ("d_members", "dec", "All chassis\nrejoined?",
-     {"abort": ("No", "Member(s) missing after reload — NOT\ncommitted; auto-rollback should revert"),
-      "warn": ("roster unknown", "Roster unreadable pre-upgrade →\nskip completeness check"),
-      "passlabel": "Yes / standalone"}),
-    ("rollbackchk", "proc", "Report auto-rollback timer status\n(informational; commit follows)", {}),
-    ("commit", "proc",
-     "install commit → ledger-confirmed,\ncross-checked against committed state", {}),
-    ("d_commit", "dec", "Commit\nsucceeded?",
-     {"abort": ("failed", "Commit failed — ACTIVATED but NOT\ncommitted; manual intervention / re-run"),
-      "warn": ("unconfirmed", "Not confirmed in time → warn;\nverify manually (remove-inactive\nis skipped)"),
-      "passlabel": "Yes"}),
+    (
+        "d_img",
+        "dec",
+        "Image has filename\n& download URL?",
+        {
+            "abort": ("No", "No compatible image, or missing\nfilename / download URL"),
+            "passlabel": "Yes",
+        },
+    ),
+    (
+        "d_clean",
+        "dec",
+        "Clean device first\nticked? (default off)",
+        {
+            "warn": (
+                "Yes",
+                "Remove ALL inactive/staged software\n(engine-decided; overrides the staged-\nconflict stop; failures ABORT)",
+            ),
+            "passlabel": "No",
+        },
+    ),
+    (
+        "space",
+        "proc",
+        "Target fs: boot-config hint (zero-walk)\ncorroborated by ONE shared partitions read\n+ free-space gate (CLEANED flash)",
+        {},
+    ),
+    (
+        "d_space",
+        "dec",
+        "Free ≥ image × 2\n(or ≥ 2 GB if size unknown)?",
+        {"abort": ("No", "Free space unconfirmed or\ninsufficient"), "passlabel": "Yes"},
+    ),
+    (
+        "d_dry",
+        "dec",
+        "Dry-run?",
+        {
+            "okright": ("Yes", "DONE: DRY-RUN — pre-flight\npassed, no changes made"),
+            "passlabel": "No",
+        },
+    ),
+    (
+        "copy",
+        "proc",
+        "Ledger-first pre-check (skip if staged) →\nasync xcopy fire → engine-ledger watch\n(fallback tier: classic copy in worker thread)",
+        {},
+    ),
+    (
+        "d_size",
+        "dec",
+        "Transfer complete\n& size matches?",
+        {
+            "abort": (
+                "error / timeout /\nmismatch",
+                "Terminal xcopy failure falls back to\nclassic copy once; ambiguous ends and\nsize ≠ expected abort",
+            ),
+            "warn": (
+                "size unknown",
+                "No expected size → classic tier; warn,\nrely on install add signature validation",
+            ),
+            "passlabel": "match",
+        },
+    ),
+    (
+        "d_stagecopy",
+        "dec",
+        "Run scope =\nstage-copy?",
+        {
+            "okright": ("Yes", "DONE: STAGED (copy) — window run\nwill skip the verified copy"),
+            "passlabel": "full / stage-add",
+        },
+    ),
+    (
+        "roster",
+        "proc",
+        "Capture chassis roster (stack members /\nstandalone chassis serials from inventory)",
+        {},
+    ),
+    (
+        "add",
+        "proc",
+        "install add (skipped if already staged) →\ntrack our op-uuid in the operation ledger\n"
+        "to op-complete (state inference fallback)",
+        {},
+    ),
+    (
+        "d_stageadd",
+        "dec",
+        "Run scope =\nstage-add?",
+        {
+            "okright": (
+                "Yes",
+                "DONE: STAGED (add) — marked for\nactivation; window run: activate →\nreload → commit only",
+            ),
+            "passlabel": "full",
+        },
+    ),
+    (
+        "healthpre",
+        "proc",
+        "Opt-in: health baseline snapshot\n(ports/CDP/LLDP/env/reboot-reason;\nread failure ABORTS before activation)",
+        {},
+    ),
+    (
+        "cfgsync",
+        "proc",
+        "Opt-in: save running-config before reload\n(RPC reloads never prompt; detection removed\n"
+        "— SNMP-only source); else a reminder logs",
+        {},
+    ),
+    (
+        "idle",
+        "proc",
+        "Engine-idle gate before EVERY install write:\nsys-activity = no-activity on all members\n"
+        "(settle delay only pre-activate w/o signal)",
+        {},
+    ),
+    (
+        "act",
+        "proc",
+        "install activate (non-ISSU, by full internal\nversion; ledger-tracked,\n"
+        "re-sent on ledger-absent evidence)",
+        {},
+    ),
+    (
+        "d_act",
+        "dec",
+        "Activation started?\n(ledger / state / device drop)",
+        {
+            "abort": (
+                "No",
+                "Ledger-recorded failure, or never\nregistered despite re-sends — abort\n(engaged runs get an extended budget)",
+            ),
+            "passlabel": "Yes",
+        },
+    ),
+    (
+        "waitc",
+        "proc",
+        "Wait for reload: must observe the device\ngo DOWN, then boot the target stably\n"
+        "(2 consecutive matching polls)",
+        {},
+    ),
+    (
+        "d_confirm",
+        "dec",
+        "Target version\nstably confirmed?",
+        {
+            "abort": (
+                "No",
+                "Not confirmed before timeout — NOT\ncommitted; auto-rollback should revert",
+            ),
+            "passlabel": "Yes",
+        },
+    ),
+    (
+        "d_members",
+        "dec",
+        "All chassis\nrejoined?",
+        {
+            "abort": (
+                "No",
+                "Member(s) missing after reload — NOT\ncommitted; auto-rollback should revert",
+            ),
+            "warn": ("roster unknown", "Roster unreadable pre-upgrade →\nskip completeness check"),
+            "passlabel": "Yes / standalone",
+        },
+    ),
+    (
+        "rollbackchk",
+        "proc",
+        "Report auto-rollback timer status\n(informational; commit follows)",
+        {},
+    ),
+    (
+        "commit",
+        "proc",
+        "install commit → ledger-confirmed,\ncross-checked against committed state",
+        {},
+    ),
+    (
+        "d_commit",
+        "dec",
+        "Commit\nsucceeded?",
+        {
+            "abort": (
+                "failed",
+                "Commit failed — ACTIVATED but NOT\ncommitted; manual intervention / re-run",
+            ),
+            "warn": (
+                "unconfirmed",
+                "Not confirmed in time → warn;\nverify manually (remove-inactive\nis skipped)",
+            ),
+            "passlabel": "Yes",
+        },
+    ),
     ("sync", "proc", "Sync Nautobot software_version\n(warn on fail; already committed)", {}),
-    ("saveafter", "proc",
-     "Opt-in: save running-config after commit\n(soak trade-off — see README; failure FAILS\nthe device, the upgrade stays committed)", {}),
-    ("d_remove", "dec", "remove_inactive\nenabled?",
-     {"passlabel": "Yes", "bypass": ("No", "skip")}),
+    (
+        "saveafter",
+        "proc",
+        "Opt-in: save running-config after commit\n(soak trade-off — see README; failure FAILS\nthe device, the upgrade stays committed)",
+        {},
+    ),
+    (
+        "d_remove",
+        "dec",
+        "remove_inactive\nenabled?",
+        {"passlabel": "Yes", "bypass": ("No", "skip")},
+    ),
     ("remove", "proc", "install remove inactive (idle-gated,\nledger-tracked; warn on fail)", {}),
-    ("healthpost", "proc",
-     "Opt-in: post-upgrade health report\n(convergence-aware; report-only —\ntrunk/env/abnormal-reboot at error level)", {}),
+    (
+        "healthpost",
+        "proc",
+        "Opt-in: post-upgrade health report\n(convergence-aware; report-only —\ntrunk/env/abnormal-reboot at error level)",
+        {},
+    ),
     ("ok", "end", "DONE: UPGRADED & COMMITTED ✓", {}),
 ]
 
@@ -138,10 +324,12 @@ ORDER = [nid for nid, *_ in SPINE]
 WIDTH = 980
 HEIGHT = CY[ORDER[-1]] + 80
 
-LEGEND = ("Legend:  diamonds = decisions  ·  red = ABORT this device "
-          "(logs the reason, continues with the next device; ANY abort marks "
-          "the whole Job Result FAILED at the end)  ·  "
-          "amber = warn & continue  ·  green = successful end state.")
+LEGEND = (
+    "Legend:  diamonds = decisions  ·  red = ABORT this device "
+    "(logs the reason, continues with the next device; ANY abort marks "
+    "the whole Job Result FAILED at the end)  ·  "
+    "amber = warn & continue  ·  green = successful end state."
+)
 
 # ---------------------------------------------------------------- SVG output --
 
@@ -159,9 +347,11 @@ def svg_text(cx, cy, text, size=12, bold=False, color="#1a1a1a", anchor="middle"
     lh = size + 3
     start = cy - (len(ls) - 1) * lh / 2
     weight = ' font-weight="bold"' if bold else ""
-    out = [f'<text x="{cx}" y="{start:.0f}" text-anchor="{anchor}" '
-           f'font-family="Helvetica,Arial,sans-serif" font-size="{size}"{weight} '
-           f'fill="{color}">']
+    out = [
+        f'<text x="{cx}" y="{start:.0f}" text-anchor="{anchor}" '
+        f'font-family="Helvetica,Arial,sans-serif" font-size="{size}"{weight} '
+        f'fill="{color}">'
+    ]
     for k, ln in enumerate(ls):
         dy = 0 if k == 0 else lh
         out.append(f'<tspan x="{cx}" dy="{dy:.0f}">{esc(ln)}</tspan>')
@@ -170,33 +360,41 @@ def svg_text(cx, cy, text, size=12, bold=False, color="#1a1a1a", anchor="middle"
 
 
 def rect(cx, cy, w, h, fill, stroke, rx=6):
-    return (f'<rect x="{cx-w/2:.0f}" y="{cy-h/2:.0f}" width="{w}" height="{h}" '
-            f'rx="{rx}" ry="{rx}" fill="{fill}" stroke="{stroke}" stroke-width="1.5"/>')
+    return (
+        f'<rect x="{cx - w / 2:.0f}" y="{cy - h / 2:.0f}" width="{w}" height="{h}" '
+        f'rx="{rx}" ry="{rx}" fill="{fill}" stroke="{stroke}" stroke-width="1.5"/>'
+    )
 
 
 def diamond(cx, cy, w, h, fill, stroke):
-    pts = f"{cx},{cy-h/2} {cx+w/2},{cy} {cx},{cy+h/2} {cx-w/2},{cy}"
+    pts = f"{cx},{cy - h / 2} {cx + w / 2},{cy} {cx},{cy + h / 2} {cx - w / 2},{cy}"
     return f'<polygon points="{pts}" fill="{fill}" stroke="{stroke}" stroke-width="1.5"/>'
 
 
 def arrow(x1, y1, x2, y2, dashed=False, color="#555"):
     dash = ' stroke-dasharray="5,4"' if dashed else ""
-    return (f'<path d="M {x1:.0f} {y1:.0f} L {x2:.0f} {y2:.0f}" fill="none" '
-            f'stroke="{color}" stroke-width="1.5"{dash} marker-end="url(#arrow)"/>')
+    return (
+        f'<path d="M {x1:.0f} {y1:.0f} L {x2:.0f} {y2:.0f}" fill="none" '
+        f'stroke="{color}" stroke-width="1.5"{dash} marker-end="url(#arrow)"/>'
+    )
 
 
 def elbow(points, dashed=False, color="#555"):
     d = "M " + " L ".join(f"{x:.0f} {y:.0f}" for x, y in points)
     dash = ' stroke-dasharray="5,4"' if dashed else ""
-    return (f'<path d="{d}" fill="none" stroke="{color}" stroke-width="1.5"{dash} '
-            f'marker-end="url(#arrow)"/>')
+    return (
+        f'<path d="{d}" fill="none" stroke="{color}" stroke-width="1.5"{dash} '
+        f'marker-end="url(#arrow)"/>'
+    )
 
 
 def edge_label(x, y, text, color="#333"):
     w = max(len(text) * 6.5 + 8, 18)
-    return (f'<rect x="{x-w/2:.0f}" y="{y-9:.0f}" width="{w:.0f}" height="18" rx="3" '
-            f'fill="#ffffff" fill-opacity="0.85" stroke="none"/>'
-            + svg_text(x, y + 4, text, size=11, color=color))
+    return (
+        f'<rect x="{x - w / 2:.0f}" y="{y - 9:.0f}" width="{w:.0f}" height="18" rx="3" '
+        f'fill="#ffffff" fill-opacity="0.85" stroke="none"/>'
+        + svg_text(x, y + 4, text, size=11, color=color)
+    )
 
 
 FILLS = {
@@ -211,18 +409,23 @@ FILLS = {
 
 
 def build_svg():
-    s = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {WIDTH} {HEIGHT}" '
-         f'width="{WIDTH}" height="{HEIGHT}" font-family="Helvetica,Arial,sans-serif">']
-    s.append('<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" '
-             'refY="3" orient="auto" markerUnits="strokeWidth">'
-             '<path d="M0,0 L8,3 L0,6 z" fill="#555"/></marker></defs>')
+    s = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {WIDTH} {HEIGHT}" '
+        f'width="{WIDTH}" height="{HEIGHT}" font-family="Helvetica,Arial,sans-serif">'
+    ]
+    s.append(
+        '<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" '
+        'refY="3" orient="auto" markerUnits="strokeWidth">'
+        '<path d="M0,0 L8,3 L0,6 z" fill="#555"/></marker></defs>'
+    )
     s.append(f'<rect x="0" y="0" width="{WIDTH}" height="{HEIGHT}" fill="#ffffff"/>')
-    s.append('<text x="20" y="28" font-size="18" font-weight="bold" fill="#111">'
-             'Cisco IOS-XE Upgrade (RESTCONF) — per-device flow</text>')
+    s.append(
+        '<text x="20" y="28" font-size="18" font-weight="bold" fill="#111">'
+        "Cisco IOS-XE Upgrade (RESTCONF) — per-device flow</text>"
+    )
     # legend box top-right
     s.append(rect(770, 86, 400, 96, "#fbfbfb", "#bbb", rx=6))
-    s.append(svg_text(770, 86, LEGEND.replace("  ·  ", "\n· "),
-                      size=10.5, color="#333"))
+    s.append(svg_text(770, 86, LEGEND.replace("  ·  ", "\n· "), size=10.5, color="#333"))
 
     # spine down edges (and pass labels)
     for a, b in zip(ORDER, ORDER[1:]):
@@ -242,10 +445,16 @@ def build_svg():
     if "bypass" in rem_opts:
         cond, _ = rem_opts["bypass"]
         yx = 200
-        s.append(elbow([(CX - GEOM["dec"][0] / 2, CY["d_remove"]),
-                        (yx, CY["d_remove"]),
-                        (yx, CY["healthpost"]),
-                        (CX - GEOM["proc"][0] / 2, CY["healthpost"])]))
+        s.append(
+            elbow(
+                [
+                    (CX - GEOM["dec"][0] / 2, CY["d_remove"]),
+                    (yx, CY["d_remove"]),
+                    (yx, CY["healthpost"]),
+                    (CX - GEOM["proc"][0] / 2, CY["healthpost"]),
+                ]
+            )
+        )
         s.append(edge_label(yx + 26, (CY["d_remove"] + CY["healthpost"]) / 2, cond))
 
     # branch boxes (abort/warn/okright)
@@ -279,8 +488,11 @@ def build_svg():
             nxt = ORDER[ORDER.index(nid) + 1]
             ny = CY[nxt]
             nx_left = CX - GEOM[NODES[nxt][0]][0] / 2
-            s.append(elbow([(bx, cy + WARN_H / 2), (bx, ny), (nx_left, ny)],
-                           dashed=True, color="#D79B00"))
+            s.append(
+                elbow(
+                    [(bx, cy + WARN_H / 2), (bx, ny), (nx_left, ny)], dashed=True, color="#D79B00"
+                )
+            )
             s.append(edge_label((bx + nx_left) / 2, ny - 10, "continue", color="#B7791f"))
 
     # spine nodes (draw last so they sit on top of edges)
@@ -293,8 +505,16 @@ def build_svg():
             s.append(svg_text(CX, cy, text, size=11, bold=True, color="#13335c"))
         elif typ in ("start", "end"):
             s.append(rect(CX, cy, w, h, *FILLS[typ], rx=24))
-            s.append(svg_text(CX, cy, text, size=12, bold=True,
-                              color="#1b3a6b" if typ == "start" else "#14532d"))
+            s.append(
+                svg_text(
+                    CX,
+                    cy,
+                    text,
+                    size=12,
+                    bold=True,
+                    color="#1b3a6b" if typ == "start" else "#14532d",
+                )
+            )
         else:
             s.append(rect(CX, cy, w, h, *FILLS["proc"], rx=6))
             s.append(svg_text(CX, cy, text, size=11, color="#1a1a1a"))
@@ -317,18 +537,22 @@ DRAWIO_STYLE = {
 
 
 def cell(cid, value, style, x, y, w, h):
-    return (f'        <mxCell id="{esc(cid)}" value="{esc(value)}" style="{style}" '
-            f'vertex="1" parent="1"><mxGeometry x="{x:.0f}" y="{y:.0f}" '
-            f'width="{w}" height="{h}" as="geometry"/></mxCell>')
+    return (
+        f'        <mxCell id="{esc(cid)}" value="{esc(value)}" style="{style}" '
+        f'vertex="1" parent="1"><mxGeometry x="{x:.0f}" y="{y:.0f}" '
+        f'width="{w}" height="{h}" as="geometry"/></mxCell>'
+    )
 
 
 def edge(eid, src, tgt, label="", dashed=False):
     style = "edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;"
     if dashed:
         style += "dashed=1;"
-    return (f'        <mxCell id="{esc(eid)}" value="{esc(label)}" style="{style}" '
-            f'edge="1" parent="1" source="{esc(src)}" target="{esc(tgt)}">'
-            f'<mxGeometry relative="1" as="geometry"/></mxCell>')
+    return (
+        f'        <mxCell id="{esc(eid)}" value="{esc(label)}" style="{style}" '
+        f'edge="1" parent="1" source="{esc(src)}" target="{esc(tgt)}">'
+        f'<mxGeometry relative="1" as="geometry"/></mxCell>'
+    )
 
 
 def dtext(text):
@@ -351,20 +575,39 @@ def build_drawio():
         if "abort" in opts:
             cond, reason = opts["abort"]
             bid = f"{nid}_abort"
-            cells.append(cell(bid, "ABORT&#10;" + dtext(reason), DRAWIO_STYLE["abort"],
-                              RIGHT_X, cy - ABORT_H / 2, ABORT_W, ABORT_H))
+            cells.append(
+                cell(
+                    bid,
+                    "ABORT&#10;" + dtext(reason),
+                    DRAWIO_STYLE["abort"],
+                    RIGHT_X,
+                    cy - ABORT_H / 2,
+                    ABORT_W,
+                    ABORT_H,
+                )
+            )
             edges.append(edge(f"e_{bid}", nid, bid, cond))
         if "okright" in opts:
             cond, term = opts["okright"]
             bid = f"{nid}_ok"
-            cells.append(cell(bid, dtext(term), DRAWIO_STYLE["okr"],
-                              RIGHT_X, cy - OKR_H / 2, OKR_W, OKR_H))
+            cells.append(
+                cell(bid, dtext(term), DRAWIO_STYLE["okr"], RIGHT_X, cy - OKR_H / 2, OKR_W, OKR_H)
+            )
             edges.append(edge(f"e_{bid}", nid, bid, cond))
         if "warn" in opts:
             cond, note = opts["warn"]
             bid = f"{nid}_warn"
-            cells.append(cell(bid, dtext(note), DRAWIO_STYLE["warn"],
-                              LEFT_RX - WARN_W, cy - WARN_H / 2, WARN_W, WARN_H))
+            cells.append(
+                cell(
+                    bid,
+                    dtext(note),
+                    DRAWIO_STYLE["warn"],
+                    LEFT_RX - WARN_W,
+                    cy - WARN_H / 2,
+                    WARN_W,
+                    WARN_H,
+                )
+            )
             edges.append(edge(f"e_{bid}", nid, bid, cond))
             nxt = ORDER[ORDER.index(nid) + 1]
             edges.append(edge(f"e_{bid}_join", bid, nxt, "continue", dashed=True))
@@ -379,7 +622,7 @@ def build_drawio():
     edges.append(edge("e_remove_no", "d_remove", "healthpost", "No"))
 
     body = "\n".join(cells + edges)
-    return f'''<mxfile host="app.diagrams.net" type="device">
+    return f"""<mxfile host="app.diagrams.net" type="device">
   <diagram name="IOS-XE upgrade flow" id="iosxe-upgrade-flow">
     <mxGraphModel dx="1000" dy="2000" grid="1" gridSize="10" guides="1" tooltips="1"
         connect="1" arrows="1" fold="1" page="1" pageScale="1" math="0" shadow="0">
@@ -391,7 +634,7 @@ def build_drawio():
     </mxGraphModel>
   </diagram>
 </mxfile>
-'''
+"""
 
 
 def main():
@@ -401,8 +644,10 @@ def main():
         f.write(build_svg())
     with open(os.path.join(docs, "upgrade-flow.drawio"), "w") as f:
         f.write(build_drawio())
-    print(f"wrote upgrade-flow.svg and upgrade-flow.drawio ({len(ORDER)} spine nodes, "
-          f"{HEIGHT}px tall)")
+    print(
+        f"wrote upgrade-flow.svg and upgrade-flow.drawio ({len(ORDER)} spine nodes, "
+        f"{HEIGHT}px tall)"
+    )
 
 
 if __name__ == "__main__":
