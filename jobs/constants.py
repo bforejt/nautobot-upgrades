@@ -243,14 +243,17 @@ HEALTH_POLL_INTERVAL = 30
 #: (discovery, free-space gate): the partition stats are the wanted answer,
 #: so ask for only them instead of parsing the full multi-hundred-entry file
 #: listing. Releases that ignore/reject `fields` fall back to the full read
-#: automatically (loudly logged). FIELD FACTS (real 9300, 2026-07-10):
-#: `fields` is a POST-filter on this release (the device still walks
-#: server-side, so this is a payload-size choice, not a log-noise one), and
-#: without the four location-key leaves selected EXPLICITLY the response
-#: omits the entries' fru/slot/bay/chassis keys — RFC 8040 does not promise
-#: ancestor keys; ask for them. BENCH 2026-07-30: this exact projection
-#: costs ~2 AVC lines (mount statfs, not a file walk). Do NOT trim it to
-#: names-only — that form returned denials AND no response on a real 9300.
+#: automatically (loudly logged). FIELD FACTS, reconciled: `fields` is an
+#: OUTPUT post-filter (2026-07-10 probe) — but counter-measured 2026-07-30,
+#: the underlying collection for THIS stats projection costs only ~2 AVC
+#: lines (mount-level statfs on '/', mnt_t): the ~100-line file-enumeration
+#: walk belongs to partition-content materialization, which a stats read
+#: apparently never performs. So this read is cheap on BOTH axes (payload
+#: AND log noise), which the 2026-07-10 note predates. Also: without the
+#: four location-key leaves selected EXPLICITLY the response omits the
+#: entries' fru/slot/bay/chassis keys — RFC 8040 does not promise ancestor
+#: keys; ask for them. Do NOT trim the projection to names-only — that
+#: form returned denials AND no response on a real 9300 (2026-07-30).
 QFS_PARTITIONS_FIELDS = "fru;slot;bay;chassis;partitions(name;total-size;used-size)"
 #: How long to wait for "install add" to finish staging the package. The target
 #: version appears in install-oper as soon as the add STARTS, so the gate waits

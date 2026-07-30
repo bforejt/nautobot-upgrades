@@ -1093,9 +1093,11 @@ copy; the device's audit rate-limiter sometimes truncates the tail of
 that storm, but a fresh run is loud). Every fallback still logs a
 breadcrumb attributed to its device. With **Async xcopy** (the default) the
 expected profile is now **~2 AVC lines per run, every run type** — and
-they are not a walk at all. Bench-measured 2026-07-30 on a real 9300
-(17.18.03): the shared partition-stats read emits ~2 mount-level statfs
-denials (`"/"`, `mnt_t`) — the ~100-line file-enumeration burst belongs
+they are not a walk at all. Bench-measured 2026-07-30 on a **single lab
+9300** (17.18.03); on a stack or SVL pair the partition-stats read returns
+per-member entries and the per-member line count is unmeasured — possibly
+a few more lines, still never a file walk. The read emits mount-level
+statfs denials (`"/"`, `mnt_t`) — the ~100-line file-enumeration burst belongs
 only to full `partition-content` listings, which the happy path no longer
 performs anywhere: the pre-check decides **both** skip and absence
 walk-free (the engine's package inventory plus keyed reads — bench-proven

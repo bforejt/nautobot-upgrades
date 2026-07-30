@@ -2732,19 +2732,24 @@ class IOSXEUpgrade(Job):
         bench-verified) with ios-dir scoping the filesystem, and a keyed
         read of the entry's own pkg-dir/pkg-name corroborates the byte
         count — two zero-AVC reads, no filesystem walk. A skip is never
-        decided on anything weaker than byte-exact from BOTH sources.
+        decided on anything weaker than a byte-exact, identity-checked
+        keyed sighting — corroborated by the inventory when an entry
+        exists, standing alone (single device-published source) only for
+        files the inventory does not track (e.g. classic-copied).
 
         ABSENCE is walk-free too (bench 2026-07-30: keyed partition-content
         reads are AVC-silent for HITS AND MISSES on a real 9300): when the
         inventory has no entry for the filename, keyed probes of the
         device-published candidate dirs decide — a hit answers with the
-        size (catching classic-copied files the inventory doesn't track); a
-        clean miss on every candidate dir confirms absence. A FALSE absence
-        (wrong address form) only costs a harmless re-transfer that
-        overwrites, so this deliberately differs from the WATCH rule where
-        a keyed 404 never proves anything. The authoritative full listing
-        remains the fallback tier for every gap (probe error, no address,
-        no candidate dirs, inventory/keyed disagreement).
+        size; a clean miss on every PROBED candidate dir (pkg-dirs ranked
+        first, capped at 3) confirms absence. A FALSE absence (wrong
+        address form, a dir past the cap) costs a harmless overwriting
+        re-transfer — and the watch tolerates the resulting None baseline
+        (first sighting seeds, never stamps growth) — so this deliberately
+        differs from the WATCH rule where a keyed 404 never proves
+        anything. The authoritative full listing remains the fallback tier
+        for every gap (probe error, no address, no candidate dirs,
+        inventory/keyed disagreement).
         """
         expected = image.image_file_size  # guaranteed by the pre-fire guard
         filename = image.image_file_name
@@ -2782,7 +2787,7 @@ class IOSXEUpgrade(Job):
                 # device-published candidate dirs for a walk-free answer.
                 hit_size = None
                 probed = 0
-                for cand_dir in _known_flash_dirs(ledger, target_fs)[:3]:
+                for cand_dir in _known_flash_dirs(ledger, target_fs):
                     keyed = _keyed_content_url(address[0], address[1], f"{cand_dir}/{filename}")
                     try:
                         size = _keyed_size_read(client, keyed, filename)
@@ -2936,9 +2941,11 @@ class IOSXEUpgrade(Job):
         keyed_url = None
         keyed_ok = True
         keyed_misses = 0
-        # Seed the baseline with the pre-fire observation: a static
-        # pre-existing same-named file must never count as post-fire change
-        # (only a size that DIFFERS from this baseline stamps last_growth).
+        # Seed the baseline with the pre-fire observation when one exists; a
+        # None seed (walk-free absence, unreadable listing) is completed by
+        # the FIRST watch sighting instead. Either way a static pre-existing
+        # same-named file never counts as post-fire change — only a size
+        # that DIFFERS from the established baseline stamps last_growth.
         last_size = pre_fire_size
         last_growth = started  # when an observation last showed the size move
         readable_absent_polls = 0  # READABLE ledger polls lacking our uuid;
@@ -3114,12 +3121,13 @@ class IOSXEUpgrade(Job):
                 )
             if verdict == "fire-lost":
                 if last_growth > started:
-                    # The destination CHANGED since the fire (last_size is
-                    # seeded with the pre-fire observation, so a static
-                    # pre-existing twin never trips this) while no ledger
-                    # record exists — a ghost transfer may be running (a
-                    # release that accepts xcopy without publishing records).
-                    # A fallback copy would be a second writer: abort plainly.
+                    # The destination CHANGED between two observations since
+                    # the fire (the baseline is seeded pre-fire or by the
+                    # first sighting, so a static pre-existing twin never
+                    # trips this) while no ledger record exists — a ghost
+                    # transfer may be running (a release that accepts xcopy
+                    # without publishing records). A fallback copy would be
+                    # a second writer: abort plainly.
                     raise UpgradeAbort(
                         f"xcopy: no install-oper ledger record for uuid "
                         f"{op_uuid}, but the destination file CHANGED after "
@@ -3324,7 +3332,15 @@ class IOSXEUpgrade(Job):
             size, observed = (probe_size, True) if probe_size is not None else _observe()
             now = time.monotonic()
             if observed and size is not None:
-                if last_size is None or size != last_size:
+                if last_size is None:
+                    # First sighting SEEDS the baseline — never growth. The
+                    # pre-check may legitimately hand a None baseline (its
+                    # walk-free absence tier can be a FALSE absent when a
+                    # static twin hides from the probes), so only a change
+                    # between two OBSERVED sizes may stamp last_growth; a
+                    # live ghost writer still stamps one poll later.
+                    last_size = size
+                elif size != last_size:
                     last_size = size
                     last_growth = now
                     stall_warned = False
@@ -5146,29 +5162,34 @@ def _find_inventory_by_name(data, filename, target_fs):
 def _known_flash_dirs(data, target_fs):
     """Ordered unique directory candidates for the target filesystem's mount.
 
-    Device-published sources ONLY (never a guessed mount root): pkg-dir from
-    any package-inventory entry whose ios-dir matches the target filesystem,
-    then dest-dir from any download descriptor in the ledger (hist records
-    persist across runs — '/mnt/sd3/user' on the bench 9300). Used by the
-    pre-check to construct keyed absence probes; bench 2026-07-30 proved
-    keyed misses are walk-free. A wrong candidate dir only produces a
-    harmless miss — absence requires every probe to miss.
+    Device-published sources ONLY (never a guessed mount root), RANKED:
+    pkg-dir from any package-inventory entry whose ios-dir matches the
+    target filesystem ranks FIRST regardless of document order (the YANG
+    serializes op/hist records before install-location-information, so a
+    naive walk would invert the priority — review finding), then dest-dir
+    from any download descriptor (hist persists across runs —
+    '/mnt/sd3/user' on the bench 9300). CAPPED AT 3: probes are cheap but
+    bounded; dirs beyond the cap are simply not probed and can only cause
+    a design-accepted false absence. Used by the pre-check to construct
+    keyed absence probes; bench 2026-07-30 proved keyed misses are
+    walk-free. A wrong candidate dir only produces a harmless miss.
     """
     wanted = str(target_fs).rstrip(":").lower()
-    dirs = []
+    pkg_dirs = []
+    dest_dirs = []
 
-    def _add(value):
+    def _add(bucket, value):
         d = str(value or "").rstrip("/")
-        if d and d not in dirs:
-            dirs.append(d)
+        if d and d not in bucket:
+            bucket.append(d)
 
     def _walk(node):
         if isinstance(node, dict):
             if "pkg-dir" in node and _partition_matches(node.get("ios-dir"), wanted):
-                _add(node.get("pkg-dir"))
+                _add(pkg_dirs, node.get("pkg-dir"))
             param = node.get("download-param")
             if isinstance(param, dict):
-                _add(param.get("dest-dir"))
+                _add(dest_dirs, param.get("dest-dir"))
             for value in node.values():
                 _walk(value)
         elif isinstance(node, list):
@@ -5176,7 +5197,7 @@ def _known_flash_dirs(data, target_fs):
                 _walk(item)
 
     _walk(data or {})
-    return dirs
+    return (pkg_dirs + [d for d in dest_dirs if d not in pkg_dirs])[:3]
 
 
 def _parse_ledger_time(value):
@@ -5347,9 +5368,17 @@ def _keyed_size_read(client, keyed_url, image_file_name):
         if str(key).split(":")[-1] == "partition-content":
             entry = value[0] if isinstance(value, list) and value else value
             if isinstance(entry, dict):
-                size = _entry_size(entry)
-                if size is not None:
-                    return size
+                # IDENTITY CHECK even on the strict shape: since the
+                # pre-check may decide a SKIP from this size, the entry must
+                # name OUR file — a server echoing a different entry under
+                # the keyed URL must never answer (review finding: the old
+                # progress-only justification no longer covers all callers).
+                path = entry.get("full-path") or entry.get("name") or entry.get("filename")
+                base = str(path).split(":")[-1].rsplit("/", 1)[-1] if path else ""
+                if base == image_file_name:
+                    size = _entry_size(entry)
+                    if size is not None:
+                        return size
 
     def _scan(node):
         if isinstance(node, dict):
