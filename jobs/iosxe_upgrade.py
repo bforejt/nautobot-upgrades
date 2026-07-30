@@ -2720,9 +2720,12 @@ class IOSXEUpgrade(Job):
         only (learn-then-keyed, the zero-AVC pattern); a growth stall warns
         but never declares failure while the ledger says running — the
         RPC's own timeout leaf turns a dead transfer into a ledger failure
-        well before the job deadline. The only timer that declares failure
-        is the fire-lost bound: readable ledger polls that never show our
-        uuid at all.
+        well before the job deadline. Job-side failure declarations are
+        fallback tiers only: the fire-lost bound (readable ledger polls —
+        counted, never wall time — that never show our uuid), the
+        transfer-window deadline (a 300s backstop past the RPC's own
+        on-device timeout), and LEDGER_BLIP_POLLS consecutive unreadable
+        ledger polls.
         """
         # Destination is the BARE filename (bench-proven): xcopy passes
         # destination-path VERBATIM into the download descriptor's filename
@@ -2741,6 +2744,11 @@ class IOSXEUpgrade(Job):
             expected,
             extra=log,
         )
+        # xcopy is an install-engine operation (uuid-keyed ledger record), so
+        # it takes the same engine-idle gate as every other engine write — a
+        # prior run's still-running transfer surfaces here as a wait/refusal
+        # instead of a mid-fire collision.
+        self._wait_for_engine_idle(client, log, "xcopy fire")
         response = client.post_rpc(
             C.OP_XCOPY,
             _xcopy_payload(op_uuid, image.download_url, dest, C.WAN_TRANSFER_TIMEOUT_MIN * 60),
@@ -2763,7 +2771,9 @@ class IOSXEUpgrade(Job):
         keyed_misses = 0
         last_size = None  # last SUCCESSFULLY observed size (progress display)
         last_growth = started  # when an observation last showed the size move
-        ledger_absent_since = None  # first READABLE ledger poll lacking our uuid
+        readable_absent_polls = 0  # READABLE ledger polls lacking our uuid;
+        # unreadable polls never increment, so blips are genuinely clock-neutral
+        ledger_ever_seen = False  # the uuid was observed in the ledger at least once
         error_streak = 0  # consecutive unreadable ledger polls
         stall_warned = False
         polls = 0
@@ -2816,12 +2826,26 @@ class IOSXEUpgrade(Job):
             return size, True
 
         while True:
-            self._check_stop()
+            try:
+                self._check_stop()
+            except JobStopped as exc:
+                # Be honest about what a stop CANNOT stop: the engine keeps
+                # the async transfer running on-device until it finishes or
+                # its own timeout fails it. The engine-idle gate before the
+                # fire makes a later re-run collision-safe regardless.
+                raise JobStopped(
+                    f"{exc} NOTE: the async xcopy transfer (uuid {op_uuid}) "
+                    f"continues on-device until it completes or its own "
+                    f"{C.WAN_TRANSFER_TIMEOUT_MIN}-minute timeout fails it; "
+                    "before re-running, check install-oper-hist for the uuid "
+                    "or simply re-run — the engine-idle gate waits out any "
+                    "still-running transfer."
+                ) from exc
             if time.monotonic() > deadline:
                 raise UpgradeAbort(
                     f"xcopy passed the job's transfer window "
                     f"({C.WAN_TRANSFER_TIMEOUT_MIN} min + slack) without a "
-                    f"terminal ledger verdict (last observed: "
+                    f"confirmed terminal ledger verdict (last observed: "
                     f"{last_size if last_size is not None else 'no file'} of "
                     f"{expected} bytes). The RPC's own timeout should have "
                     "failed the operation on-device before this — check "
@@ -2837,7 +2861,18 @@ class IOSXEUpgrade(Job):
             except RestconfError as exc:
                 error_streak += 1
                 if error_streak >= C.LEDGER_BLIP_POLLS:
-                    raise
+                    raise UpgradeAbort(
+                        f"xcopy ledger unreadable for {error_streak} "
+                        f"consecutive polls ({exc}"
+                        f"{_auth_hint(getattr(exc, 'status_code', None))}) — "
+                        f"uuid {op_uuid}, last observed size "
+                        f"{last_size if last_size is not None else 'no file sighted'} "
+                        f"of {expected} bytes. If the device is reloading or "
+                        "unreachable the transfer died with it; otherwise it "
+                        "may still be running on-device — check "
+                        "install-oper-hist for the uuid and the file on flash "
+                        "before re-running (a re-run overwrites any partial)."
+                    ) from exc
                 self.logger.info(
                     "xcopy ledger read failed (%s) — transient blip %d/%d, "
                     "retrying (unreadable polls never age failure clocks).",
@@ -2851,10 +2886,13 @@ class IOSXEUpgrade(Job):
             now = time.monotonic()
             status, detail = _classify_ops(_find_op_records(ledger, op_uuid))
             if status == "absent":
-                ledger_absent_since = ledger_absent_since or now
-                absent_for = now - ledger_absent_since
+                # Clock in READABLE polls, not wall time — interleaved
+                # unreadable blips must be genuinely clock-neutral.
+                readable_absent_polls += 1
+                absent_for = readable_absent_polls * C.POLL_INTERVAL
             else:
-                ledger_absent_since = None
+                ledger_ever_seen = True
+                readable_absent_polls = 0
                 absent_for = 0.0
             verdict = _xcopy_ledger_verdict(status, absent_for, C.XCOPY_STALL_SECS)
             if verdict == "failure":
@@ -2865,12 +2903,49 @@ class IOSXEUpgrade(Job):
                     f"(expected {expected} bytes). A re-run overwrites any "
                     "partial file. " + _fetch_hints(image.download_url)
                 )
+            if verdict == "fire-lost" and ledger_ever_seen:
+                # The record was OBSERVED and then vanished from both ledger
+                # sections — not a lost fire. Try the byte-exact rescue before
+                # declaring anything: a completed transfer whose record was
+                # wiped (engine restart, 'clear install state') leaves the
+                # full file on flash.
+                final = self._read_q_filesystem(client)
+                rfound, rsize = _find_target_file(final or {}, image.image_file_name, target_fs)
+                if (
+                    rfound
+                    and rsize is not None
+                    and abs(rsize - expected) <= C.SIZE_MATCH_TOLERANCE_BYTES
+                ):
+                    self.logger.warning(
+                        "xcopy ledger record for uuid %s vanished after being "
+                        "observed, but the file is byte-exact on %s (%s bytes) "
+                        "— accepting the transfer on the authoritative "
+                        "listing.",
+                        op_uuid,
+                        target_fs,
+                        rsize,
+                        extra=log,
+                    )
+                    return
+                raise UpgradeAbort(
+                    f"xcopy ledger record for uuid {op_uuid} VANISHED after "
+                    f"being observed running (absent from install-oper and "
+                    f"install-oper-hist for {C.XCOPY_STALL_SECS}s of readable "
+                    "polls) and the file is not byte-exact on flash — "
+                    "terminal state unknown (engine restart or 'clear install "
+                    "state'?). Check 'show install log' and install-oper-hist "
+                    "before re-running; a re-run overwrites any partial file."
+                )
             if verdict == "fire-lost":
                 raise UpgradeAbort(
-                    f"xcopy produced no install-oper ledger record for uuid "
-                    f"{op_uuid} within {C.XCOPY_STALL_SECS}s of readable "
-                    "ledger polls — the accepted fire never became an engine "
-                    "operation. " + _fetch_hints(image.download_url)
+                    f"xcopy: no install-oper ledger record for uuid {op_uuid} "
+                    f"appeared within {C.XCOPY_STALL_SECS}s of readable ledger "
+                    "polls — declaring the fire LOST (bounded-wait fallback, "
+                    "not a device-published verdict). Most likely the accepted "
+                    "fire never became an engine operation, but a release that "
+                    "does not publish xcopy ledger records looks identical — "
+                    "check 'show install log' and the file on flash before "
+                    "re-firing. " + _fetch_hints(image.download_url)
                 )
             if verdict == "success":
                 # The engine's verdict is authoritative for the TRANSFER;
@@ -2879,12 +2954,15 @@ class IOSXEUpgrade(Job):
                 # re-run skip logic, same as every other transfer method).
                 final = self._read_q_filesystem(client)
                 if final is None:
-                    raise UpgradeAbort(
+                    self.logger.warning(
                         "xcopy succeeded per the engine ledger but the "
                         "authoritative final listing could not be read — "
-                        "refusing to proceed on a weaker signal. Re-run when "
-                        "the device answers."
+                        "retrying the byte-exact confirm next poll (the "
+                        "terminal ledger verdict is durable; the job deadline "
+                        "bounds the wait).",
+                        extra=log,
                     )
+                    continue
                 cfound, csize = _find_target_file(final, image.image_file_name, target_fs)
                 if (
                     cfound
@@ -2901,13 +2979,15 @@ class IOSXEUpgrade(Job):
                         extra=log,
                     )
                     return
+                shown = (
+                    csize if csize is not None else ("an unreadable size" if cfound else "no file")
+                )
                 raise UpgradeAbort(
                     f"xcopy succeeded per the engine ledger but the "
-                    f"authoritative listing shows "
-                    f"{csize if cfound else 'no file'} bytes (expected "
-                    f"{expected}) — byte-exact verification failed. Check that "
-                    "the server-hosted file matches the size recorded in "
-                    "Nautobot, then re-run."
+                    f"authoritative listing shows {shown} (expected "
+                    f"{expected} bytes) — byte-exact verification failed. "
+                    "Check that the server-hosted file matches the size "
+                    "recorded in Nautobot, then re-run."
                 )
             # verdict == 'wait': ledger says running (or briefly absent) —
             # file-size reads are PROGRESS DISPLAY plus an advisory stall
@@ -2941,11 +3021,17 @@ class IOSXEUpgrade(Job):
                         extra=log,
                     )
             elif polls % 4 == 0:
+                if observed:
+                    note = f"file not sighted on {target_fs} yet"
+                elif last_size is not None:
+                    note = f"filesystem read failed this poll; last sighted {last_size} bytes"
+                else:
+                    note = "filesystem read failed this poll"
                 self.logger.info(
-                    "xcopy running (engine phase: %s; %s elapsed; file not sighted on %s yet)...",
+                    "xcopy running (engine phase: %s; %s elapsed; %s)...",
                     detail,
                     _fmt_duration(now - started),
-                    target_fs,
+                    note,
                     extra=log,
                 )
 
@@ -4637,11 +4723,14 @@ def _xcopy_ledger_verdict(status, absent_for, stall_secs):
 
     status is _classify_ops() output — the engine's own account, so
     'success'/'failure' pass straight through (device-published verdicts).
-    The ONLY timer here is the fire-lost bound: 'absent' (readable ledger
-    polls that never show the uuid) is tolerated for stall_secs before the
-    fire is declared lost; the caller must never age this clock on
-    unreadable polls. 'running' always waits — a dead transfer becomes a
-    ledger FAILURE via the RPC's own device-side timeout, not a job timer.
+    The ONLY timer here is the fire-lost bound: 'absent' is tolerated for
+    stall_secs before the fire is declared lost, where absent_for is
+    COUNTED from readable-absent polls (readable_absent_polls *
+    POLL_INTERVAL — never a wall-clock anchor), so interleaved unreadable
+    polls are genuinely clock-neutral. 'running' always waits — a dead
+    transfer becomes a ledger FAILURE via the RPC's own device-side
+    timeout, not a job timer. The caller distinguishes a never-seen
+    fire-lost from a seen-then-vanished record (byte-exact rescue).
     """
     if status == "failure":
         return "failure"

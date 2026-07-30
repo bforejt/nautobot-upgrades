@@ -123,18 +123,18 @@ class RestconfClient:
             return {}
         try:
             return resp.json()
-        except ValueError:
-            # A 2xx body that is not JSON is a device quirk worth a breadcrumb
-            # — silently coercing it to {} let one garbage reply masquerade as
-            # a genuinely empty resource (review finding).
-            self._debug(f"GET {path} returned unparsable body; treating as empty")
-            if self.logger is not None:
-                self.logger.warning(
-                    "RESTCONF GET %s returned a 2xx body that is not JSON — treating as empty.",
-                    path,
-                    extra={"object": self.log_object} if self.log_object else None,
-                )
-            return {}
+        except ValueError as exc:
+            # A non-empty 2xx body that is not JSON is NOT device-published
+            # state — coercing it to {} once let a garbage reply masquerade
+            # as a genuinely empty resource and age absence-based clocks
+            # (review findings, two rounds). Raise so callers treat it as an
+            # unreadable poll; the empty-body {} above stays: an empty 2xx IS
+            # legitimate device-published absence.
+            raise RestconfError(
+                f"GET {path} -> HTTP {resp.status_code} with a non-JSON body "
+                f"(not device-published state): {self._truncate(resp.text)}",
+                status_code=resp.status_code,
+            ) from exc
 
     def patch(self, path, payload, *, timeout=C.GET_TIMEOUT):
         """RESTCONF plain PATCH (merge) against /restconf/data.

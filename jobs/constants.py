@@ -159,8 +159,9 @@ COPY_TIMEOUT = 3600
 #:     bench 2026-07-28 on 17.18.03 showed the device treats the value
 #:     roughly as SECONDS despite the modeled minutes, strangling healthy
 #:     transfers; the device's own default, ~2000 observed, applies instead).
-#:   * Async xcopy: bounds the job's file watch, and (x60, seconds-scale —
-#:     unit-safe either way) feeds the xcopy RPC's timeout leaf, which MUST be
+#:   * Async xcopy: bounds the job's ledger-primary transfer watch (see
+#:     XCOPY_STALL_SECS), and (x60, seconds-scale — unit-safe either way)
+#:     feeds the xcopy RPC's timeout leaf, which MUST be
 #:     sent: omitting it lands 0 in the download descriptor (instant kill —
 #:     bench-proven). Also bench-proven: xcopy source URLs must be PORT-LESS
 #:     (its parser fails locally on any explicit port) and destination-path
@@ -177,9 +178,12 @@ WAN_TRANSFER_TIMEOUT_MIN = 90
 #: success both come from the ENGINE'S OWN VERDICT (success additionally
 #: byte-exact confirmed). This window now bounds only two things: (1) how
 #: long READABLE ledger polls may lack the uuid before the fire is declared
-#: lost (unreadable polls never age the clock), and (2) when zero file
-#: growth logs an advisory WARNING — never an abort — while the ledger says
-#: running (the RPC's own timeout leaf fails a dead transfer on-device).
+#: lost — counted as readable-absent polls x POLL_INTERVAL, never a
+#: wall-clock anchor, so unreadable polls are genuinely clock-neutral — and
+#: (2) when zero file growth logs an advisory WARNING — never an abort —
+#: while the ledger says running (the RPC's own timeout leaf fails a dead
+#: transfer on-device). A record seen and then VANISHED from both ledger
+#: sections is a distinct case: the job attempts a byte-exact rescue first.
 XCOPY_STALL_SECS = 300
 
 POLL_INTERVAL = 30

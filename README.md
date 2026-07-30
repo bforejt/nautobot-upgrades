@@ -425,7 +425,11 @@ interval), queued devices never start, and the cancelled run logs the full
 **completed / stopped / never-started** post-mortem. Stopped devices are left
 at safe boundaries — re-running the upgrade job later picks each one up
 (idempotent gates + commit-to-be-safe). Cancelling a *queued* run simply
-prevents it from starting.
+prevents it from starting. One exception to "everything stops": an **async
+WAN transfer in flight** (Async xcopy or an engine download) keeps running
+*on the device* after the stop until it finishes or its own timeout fails
+it — the stop message says so, and the engine-idle gate makes the eventual
+re-run wait it out safely.
 
 ### Pre-staging (stage now, activate in the window)
 
@@ -583,10 +587,17 @@ confirms byte-exact** — the same integrity gate every transfer faces.
 device reason, not an inference. File-size polls remain for progress
 display (the same learn-then-keyed, zero-AVC pattern as the classic watch);
 zero growth logs a warning but never aborts while the ledger says running —
-the RPC's own timeout fails a dead transfer on-device. The only job-side
-failure timer left is the fire-lost bound (`XCOPY_STALL_SECS`: readable
-ledger polls that never show the uuid). Works on every run scope — this is
-the WAN answer for **Step 1-only pre-staging**.
+the RPC's own timeout fails a dead transfer on-device. Job-side failure
+declarations are fallback tiers only: the fire-lost bound
+(`XCOPY_STALL_SECS`: readable ledger polls — counted, never wall time —
+that never show the uuid) and the transfer-window deadline
+(`WAN_TRANSFER_TIMEOUT_MIN` + 300 s slack, a backstop that should never
+fire before the RPC's own on-device timeout has already produced a ledger
+verdict). One honesty note shared with engine download: **a job stop or
+cancel cannot stop the device-side transfer** — the engine keeps running
+it until it completes or its own timeout fails it; the engine-idle gate
+before every fire makes a later re-run wait it out safely. Works on every
+run scope — this is the WAN answer for **Step 1-only pre-staging**.
 
 **Engine download** hands the URL to `install add` itself: transfer and add
 complete as
@@ -885,7 +896,7 @@ mode.
 | Full file listing (copy pre-check, first-sighting learn, transfer verify) | `GET .../Cisco-IOS-XE-platform-software-oper:cisco-platform-software/q-filesystem` |
 | Per-poll copy progress after the learn (walk-free, no SELinux bursts) | `GET .../q-filesystem=<fru>,<slot>,<bay>,<chassis>/partitions=<name>/partition-content=<full-path>` (address exactly as a real listing published it) |
 | Copy image | `POST .../operations/Cisco-IOS-XE-rpc:copy` (worker thread) |
-| Copy image (Async xcopy, opt-in) | `POST .../operations/Cisco-IOS-XE-xcopy-rpc:xcopy` (async; watched to the recorded size) |
+| Copy image (Async xcopy, opt-in) | `POST .../operations/Cisco-IOS-XE-xcopy-rpc:xcopy` (async; tracked via the engine's uuid-keyed install-oper ledger — the install-oper GET above, polled each cycle; success = ledger verdict confirmed byte-exact; file-size polls are progress display only) |
 | Copy image (Engine download, opt-in) | transfer happens inside `POST .../operations/Cisco-IOS-XE-install-rpc:install` (image URL as `path` + `download-timeout`) |
 | Add / activate / commit / remove | `POST .../operations/Cisco-IOS-XE-install-rpc:{install,activate,install-commit,remove}` |
 | Health snapshots (opt-in; pre + convergence re-polls) | `GET .../Cisco-IOS-XE-interfaces-oper:interfaces/interface?fields=name;admin-status;oper-status`, `GET .../cdp-oper:cdp-neighbor-details`, `GET .../lldp-oper:lldp-entries`, `GET .../environment-oper:environment-sensors`, `GET .../device-hardware-oper:.../device-system-data` (reboot reason) |
