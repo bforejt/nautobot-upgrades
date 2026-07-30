@@ -62,6 +62,7 @@ import time
 import urllib.parse as urllib_parse
 import uuid as uuid_lib
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 
 import requests
 from celery.exceptions import SoftTimeLimitExceeded
@@ -926,7 +927,7 @@ class IOSXEUpgrade(Job):
                     extra=log,
                 )
             elif transfer_method == "xcopy":
-                self._xcopy_image(client, image, log, target_fs)
+                self._xcopy_image(client, image, log, target_fs, partitions_data=partitions)
             elif run_scope == "stage-copy":
                 raise UpgradeAbort(
                     "Engine download performs the copy INSIDE 'install add' "
@@ -2703,7 +2704,7 @@ class IOSXEUpgrade(Job):
             self._verify_engine_download(client, image, log, target_fs)
         return False
 
-    def _xcopy_image(self, client, image, log, target_fs):
+    def _xcopy_image(self, client, image, log, target_fs, partitions_data=None):
         """Async xcopy: fire, then watch the ENGINE'S OWN LEDGER to a verdict.
 
         LEDGER-PRIMARY (bench 2026-07-29/30, 17.18.03): xcopy operations are
@@ -2726,6 +2727,18 @@ class IOSXEUpgrade(Job):
         transfer-window deadline (a 300s backstop past the RPC's own
         on-device timeout), and LEDGER_BLIP_POLLS consecutive unreadable
         ledger polls.
+
+        Walk-minimization (2026-07-30, both device-published, both with the
+        loud listing fallback): (1) the byte-exact confirm is attempted from
+        the engine's own install-packages INVENTORY first (pkg-size ==
+        recorded size exactly — bench-verified equality — plus verify-ok and
+        a timestamp inside this op; entries vanish with deleted files); (2)
+        the walk-free progress address is CONSTRUCTED from the descriptor's
+        dest-dir/dest-filename plus the partition-stats keys (q-filesystem's
+        own keys — a real 9300 publishes chassis=-1 there vs install-oper's
+        1) and probed once per poll until it answers or the classic
+        learn-from-listing sights the file; a probe miss never touches the
+        keyed-read latches.
         """
         # Destination is the BARE filename (bench-proven): xcopy passes
         # destination-path VERBATIM into the download descriptor's filename
@@ -2777,6 +2790,8 @@ class IOSXEUpgrade(Job):
         error_streak = 0  # consecutive unreadable ledger polls
         stall_warned = False
         polls = 0
+        dp = None  # the engine's download descriptor (dest-dir/dest-filename)
+        address = _partition_address(partitions_data, target_fs)
 
         def _observe():
             """One cycle: (size, observed).
@@ -2884,7 +2899,10 @@ class IOSXEUpgrade(Job):
                 continue
             error_streak = 0
             now = time.monotonic()
-            status, detail = _classify_ops(_find_op_records(ledger, op_uuid))
+            records = _find_op_records(ledger, op_uuid)
+            status, detail = _classify_ops(records)
+            if dp is None:
+                dp = _find_download_param(records)
             if status == "absent":
                 # Clock in READABLE polls, not wall time — interleaved
                 # unreadable blips must be genuinely clock-neutral.
@@ -2949,9 +2967,39 @@ class IOSXEUpgrade(Job):
                 )
             if verdict == "success":
                 # The engine's verdict is authoritative for the TRANSFER;
-                # byte-exact against the authoritative listing remains the
-                # job's own integrity gate (guards Nautobot metadata and the
-                # re-run skip logic, same as every other transfer method).
+                # byte-exact remains the job's own integrity gate. Tier 1:
+                # the engine's package INVENTORY, read from the SAME ledger
+                # document just fetched (zero extra reads, zero walks) —
+                # verify-ok + exact pkg-size + fresh timestamp. Tier 2
+                # (fallback): the authoritative filesystem listing.
+                if dp is not None:
+                    pkg = _find_install_package(ledger, dp["dest-dir"], dp["dest-filename"])
+                    op_started = next(
+                        (
+                            r.get("start-time")
+                            for r in records
+                            if isinstance(r, dict) and r.get("start-time")
+                        ),
+                        None,
+                    )
+                    ok, why = _package_confirms(pkg, expected, op_started)
+                    if ok:
+                        self.logger.info(
+                            "xcopy complete (engine ledger: %s), confirmed "
+                            "from the engine's own package inventory — %s "
+                            "(no filesystem walk; %s).",
+                            detail,
+                            why,
+                            _fmt_duration(time.monotonic() - started),
+                            extra=log,
+                        )
+                        return
+                    self.logger.info(
+                        "Package inventory could not confirm the transfer "
+                        "(%s) — falling back to the authoritative listing.",
+                        why,
+                        extra=log,
+                    )
                 final = self._read_q_filesystem(client)
                 if final is None:
                     self.logger.warning(
@@ -2991,7 +3039,31 @@ class IOSXEUpgrade(Job):
                 )
             # verdict == 'wait': ledger says running (or briefly absent) —
             # file-size reads are PROGRESS DISPLAY plus an advisory stall
-            # warning, never a failure verdict.
+            # warning, never a failure verdict. Before falling back to
+            # sighting walks, probe the CONSTRUCTED walk-free address
+            # (descriptor dest-dir/dest-filename + partition-stats keys —
+            # all device-published). A probe is one quiet keyed GET; a miss
+            # never touches the keyed-read latches, and the classic
+            # learn-from-listing remains the floor.
+            if keyed_url is None and keyed_ok and address is not None and dp is not None:
+                candidate = _keyed_content_url(
+                    address[0],
+                    address[1],
+                    f"{dp['dest-dir']}/{dp['dest-filename']}",
+                )
+                try:
+                    probe_size = _keyed_size_read(client, candidate, image.image_file_name)
+                except RestconfError:
+                    probe_size = None
+                if probe_size is not None:
+                    keyed_url = candidate
+                    self.logger.info(
+                        "Walk-free progress address constructed from "
+                        "device-published state (engine descriptor + "
+                        "partition stats); file at %s bytes.",
+                        probe_size,
+                        extra=log,
+                    )
             size, observed = _observe()
             now = time.monotonic()
             if observed and size is not None:
@@ -4739,6 +4811,142 @@ def _xcopy_ledger_verdict(status, absent_for, stall_secs):
     if status == "absent" and absent_for >= stall_secs:
         return "fire-lost"
     return "wait"
+
+
+def _find_download_param(records):
+    """The engine's download descriptor from a uuid's records — or None.
+
+    Bench-captured (2026-07-29/30, 17.18.03): the xcopy/download op record
+    publishes download-param{src-path, dest-dir, dest-filename, ...} — the
+    engine's own statement of where the file lands. dest-dir + dest-filename
+    are DEVICE-PUBLISHED address components (never a guessed mount root).
+    """
+    for record in records or []:
+        if not isinstance(record, dict):
+            continue
+        param = record.get("download-param")
+        if isinstance(param, dict):
+            dest_dir = str(param.get("dest-dir", "")).strip()
+            dest_file = str(param.get("dest-filename", "")).strip()
+            if dest_dir and dest_file:
+                return {"dest-dir": dest_dir.rstrip("/"), "dest-filename": dest_file}
+    return None
+
+
+def _partition_address(partitions_data, target_fs):
+    """(entry_keys, published_name) for the target filesystem — or None.
+
+    Extracted from the partition-stats document the free-space gate already
+    read (its fields projection includes fru;slot;bay;chassis + partition
+    names). The q-filesystem instance keys MUST come from q-filesystem
+    itself: a real 9300 publishes chassis=-1 here while install-oper says
+    chassis=1 for the same box, so borrowing keys across models would
+    mis-address. An EXACT name match wins over stack-suffixed twins
+    ('flash:' before 'flash-1:' — the transfer destination is the active's
+    flash). None when the projection omitted keys or no name matches.
+    """
+    wanted = str(target_fs).rstrip(":").lower()
+    exact = None
+    suffixed = None
+
+    def _walk(node, keys):
+        nonlocal exact, suffixed
+        if isinstance(node, dict):
+            if all(k in node for k in ("fru", "slot", "bay", "chassis")):
+                keys = tuple(str(node[k]) for k in ("fru", "slot", "bay", "chassis"))
+            parts = node.get("partitions")
+            if isinstance(parts, list) and keys is not None:
+                for part in parts:
+                    if not isinstance(part, dict):
+                        continue
+                    name = str(part.get("name", "")).strip()
+                    if not name:
+                        continue
+                    if name.rstrip(":").lower() == wanted:
+                        exact = exact or (keys, name)
+                    elif _partition_matches(name, wanted):
+                        suffixed = suffixed or (keys, name)
+            for value in node.values():
+                _walk(value, keys)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item, keys)
+
+    _walk(partitions_data or {}, None)
+    return exact or suffixed
+
+
+def _find_install_package(data, dest_dir, dest_filename):
+    """pkg-data for the inventory entry matching dir + name — or None.
+
+    install-location-information[]/install-packages[] publishes per-file
+    pkg-dir/pkg-name plus pkg-data{version, checksum, pkg-size,
+    verify-status, timestamp} (bench-captured 2026-07-30). Entries VANISH
+    when the file is deleted (bench-verified), so presence tracks reality;
+    the timestamp still gates freshness in _package_confirms.
+    """
+    want_dir = str(dest_dir).rstrip("/")
+    if isinstance(data, dict):
+        if (
+            str(data.get("pkg-dir", "")).rstrip("/") == want_dir
+            and str(data.get("pkg-name", "")).strip() == dest_filename
+            and isinstance(data.get("pkg-data"), dict)
+        ):
+            return data["pkg-data"]
+        for value in data.values():
+            found = _find_install_package(value, dest_dir, dest_filename)
+            if found is not None:
+                return found
+    elif isinstance(data, list):
+        for item in data:
+            found = _find_install_package(item, dest_dir, dest_filename)
+            if found is not None:
+                return found
+    return None
+
+
+def _parse_ledger_time(value):
+    """datetime for an ISO-8601 ledger timestamp — or None (never guess)."""
+    text = str(value or "").strip().replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _package_confirms(pkg_data, expected_size, op_started):
+    """(ok, reason): can the package inventory confirm the transfer?
+
+    Confirmation needs ALL THREE device-published facts: verify-status
+    contains 'verify-ok' (the engine's own integrity verdict on the landed
+    file), pkg-size equal to the recorded size EXACTLY, and an entry
+    timestamp no older than this operation's start — the staleness guard
+    that keeps a pre-existing same-named entry from confirming a new
+    transfer. Anything unreadable fails closed: the caller falls back to
+    the authoritative filesystem listing.
+    """
+    if not isinstance(pkg_data, dict):
+        return False, "no inventory entry for this file"
+    verify = str(pkg_data.get("verify-status", "")).strip().lower()
+    if "verify-ok" not in verify:
+        return False, f"verify-status is '{verify or 'absent'}'"
+    try:
+        size = int(str(pkg_data.get("pkg-size", "")).strip())
+    except ValueError:
+        return False, f"unreadable pkg-size '{pkg_data.get('pkg-size')}'"
+    if not expected_size or size != int(expected_size):
+        return False, f"pkg-size {size} != recorded {expected_size}"
+    stamp = _parse_ledger_time(pkg_data.get("timestamp"))
+    started = _parse_ledger_time(op_started)
+    if stamp is None or started is None:
+        return False, "entry/op timestamps unreadable — cannot prove freshness"
+    try:
+        stale = stamp < started
+    except TypeError:
+        return False, "mixed timestamp forms — cannot prove freshness"
+    if stale:
+        return False, f"entry timestamp {stamp.isoformat()} predates this operation"
+    return True, f"verify-ok, {size} bytes, entry fresh ({stamp.isoformat()})"
 
 
 def _find_target_file_entry(data, image_file_name, target_fs):
