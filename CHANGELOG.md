@@ -7,6 +7,35 @@ All notable changes to this project are documented here. The format follows
 Stable trains (`MAJOR.MINOR.x` branches) receive **bug fixes only** — see
 [RELEASING.md](RELEASING.md) for the release model.
 
+## [Unreleased] — on `main` (active churn; pin `1.0.x` for stability)
+
+Transfer-engine rework, headed for the next major train once field-proven:
+
+### Added
+- **Async xcopy transfer** (`Cisco-IOS-XE-xcopy-rpc`), ledger-primary: the
+  install engine runs the transfer as a uuid-keyed operation-ledger record
+  (immune to the platform's ~600s blocking-RPC ceiling that kills classic
+  copy on slow WANs); success is the engine's own verdict confirmed
+  byte-exact (normally from the engine's package inventory — no filesystem
+  walk), failure quotes the engine's failing transaction. Bench-validated
+  end-to-end on 17.18.03 including ~15-minute transfers; WAN field runs
+  pending.
+- **Image transfer method** input: `Async xcopy (default — classic-copy
+  fallback)` / `Classic copy only`. Fallback to classic copy happens up
+  front on wire-proven preconditions (ported image URL, no recorded file
+  size) or after a positively terminal device-reported xcopy failure —
+  never on ambiguous ends.
+- Walk-free, ledger-first pre-check and progress reads (SELinux AVC burst
+  profile drops to typically one filesystem walk per run).
+
+### Changed
+- Classic copy is now the **fallback tier** (still selectable outright).
+
+### Removed
+- The **engine-download** experiment (`install add` from a remote URL) —
+  bench-validated 2026-07-28, then removed: no remaining niche next to
+  xcopy + the classic fallback. Findings retained in the README.
+
 ## [1.0.0] — 2026-07-26
 
 First stable release. The **`1.0.x`** train is cut from this commit and will
