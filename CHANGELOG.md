@@ -12,6 +12,13 @@ Stable trains (`MAJOR.MINOR.x` branches) receive **bug fixes only** — see
 Transfer-engine rework, headed for the next major train once field-proven:
 
 ### Added
+- **Dynamic group selection**: a `Dynamic groups` input alongside the
+  device picker — groups resolve **live at run start** (filter-based via
+  their own query, never cached membership; static via assignments), the
+  final roster is the deduplicated union with explicit picks, every
+  group's resolved roster is logged (Dry-run is the preview), empty groups
+  warn loudly, and an empty total refuses. No count-confirmation gate, by
+  decision.
 - **Async xcopy transfer** (`Cisco-IOS-XE-xcopy-rpc`), ledger-primary: the
   install engine runs the transfer as a uuid-keyed operation-ledger record
   (immune to the platform's ~600s blocking-RPC ceiling that kills classic

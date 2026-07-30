@@ -92,10 +92,18 @@ from nautobot.dcim.models import (
     SoftwareVersion,
 )
 from nautobot.extras.choices import (
+    DynamicGroupTypeChoices,
     SecretsGroupAccessTypeChoices,
     SecretsGroupSecretTypeChoices,
 )
-from nautobot.extras.models import Role, SecretsGroup, SecretsGroupAssociation, Status, Tag
+from nautobot.extras.models import (
+    DynamicGroup,
+    Role,
+    SecretsGroup,
+    SecretsGroupAssociation,
+    Status,
+    Tag,
+)
 
 from . import constants as C
 from .restconf import RestconfClient, RestconfError
@@ -228,7 +236,7 @@ class IOSXEUpgrade(Job):
 
     devices = MultiObjectVar(
         model=Device,
-        required=True,
+        required=False,
         query_params={
             "location": "$location",
             "role": "$role",
@@ -240,7 +248,23 @@ class IOSXEUpgrade(Job):
         },
         description=(
             "Target devices to upgrade. Use the filters above to narrow this list, "
-            "then select the specific devices to act on (or select all)."
+            "then select the specific devices to act on (or select all). Optional "
+            "when Dynamic groups supply the roster; the final roster is the "
+            "UNION of both, deduplicated."
+        ),
+    )
+    dynamic_groups = MultiObjectVar(
+        model=DynamicGroup,
+        required=False,
+        query_params={"content_type": "dcim.device"},
+        label="Dynamic groups",
+        description=(
+            "Device Dynamic Groups to upgrade — resolved LIVE at run start "
+            "(filter-based groups via their own query against the current "
+            "database, never cached membership; static groups via their "
+            "assignments). The run log records each group's resolved roster — "
+            "run Dry-run first to preview it. The final roster is the union "
+            "with any explicitly selected devices; an empty total refuses."
         ),
     )
     target_version = ObjectVar(
@@ -426,6 +450,7 @@ class IOSXEUpgrade(Job):
             "current_version",
             "tags",
             "devices",
+            "dynamic_groups",
             "target_version",
             "run_scope",
             "clean_before",
@@ -444,6 +469,75 @@ class IOSXEUpgrade(Job):
 
     # ------------------------------------------------------------------ run --
 
+    def _resolve_roster(self, devices, dynamic_groups):
+        """Final device roster: explicit picks ∪ live-resolved group members.
+
+        Dynamic Groups resolve at RUN START against the live database:
+        filter-based ('dynamic-filter') and set-based ('dynamic-set') groups
+        through their own generate_query() — Nautobot 2.4's .members
+        property serves CACHED membership ('If up-to-the-minute accuracy is
+        needed…' per its own docstring), and a stale cache selecting the
+        wrong fleet is exactly the failure this refuses — while static
+        groups use their assignments, which ARE their source of truth.
+        Every group's resolved roster is logged (Dry-run is the preview); a
+        stored ScheduledJob re-resolves at each fire, so membership drift
+        between save and fire is deliberate, auditable behavior. An empty
+        group warns loudly (usually a drifted filter); a non-device group
+        refuses; an empty TOTAL refuses before anything is touched. There
+        is deliberately NO count-confirmation gate: selecting a named group
+        is the expressed intention, and the per-device gates plus the
+        dry-run-first culture remain the safety net.
+        """
+        roster = list(devices or [])
+        for group in dynamic_groups or []:
+            model = group.content_type.model_class() if group.content_type_id else None
+            if model is not Device:
+                raise RuntimeError(
+                    f"Dynamic group '{group.name}' is not a Device group "
+                    f"(content type: {group.content_type}) — refusing the run."
+                )
+            if getattr(group, "group_type", "") == DynamicGroupTypeChoices.TYPE_STATIC:
+                members = list(group.members)
+                how = "static assignments"
+            else:
+                members = list(Device.objects.filter(group.generate_query()).distinct())
+                how = "live filter query"
+            if not members:
+                self.logger.warning(
+                    "Dynamic group '%s' resolved to ZERO devices (%s) — check "
+                    "the group's filter/assignments; it contributes nothing "
+                    "to this run.",
+                    group.name,
+                    how,
+                )
+                continue
+            names = sorted(str(d) for d in members)
+            shown = ", ".join(names[:20]) + (
+                f", … +{len(names) - 20} more" if len(names) > 20 else ""
+            )
+            self.logger.info(
+                "Dynamic group '%s' resolved to %d device(s) (%s): %s",
+                group.name,
+                len(members),
+                how,
+                shown,
+            )
+            roster.extend(members)
+        merged = _merge_roster(roster)
+        duplicates = len(roster) - len(merged)
+        if duplicates:
+            self.logger.info(
+                "Roster deduplicated: %d selection overlap(s) — each device runs exactly once.",
+                duplicates,
+            )
+        if not merged:
+            raise RuntimeError(
+                "No devices to upgrade: nothing selected explicitly and the "
+                "selected dynamic group(s) resolved to zero devices. "
+                "Refusing the run."
+            )
+        return merged
+
     def run(
         self,
         *,
@@ -455,6 +549,7 @@ class IOSXEUpgrade(Job):
         current_version,
         tags,
         devices,
+        dynamic_groups,
         target_version,
         run_scope,
         clean_before,
@@ -500,11 +595,14 @@ class IOSXEUpgrade(Job):
             except Exception:  # noqa: BLE001 - no task context (tests, shell)
                 celery_task = None
                 celery_request = None
+        # Resolve the roster FIRST (dynamic groups resolve live, with their
+        # rosters logged) so the start line reports the true total.
+        device_list = self._resolve_roster(devices, dynamic_groups)
         self.logger.info(
             "Starting IOS-XE upgrade to **%s** for %d selected device(s)%s "
             "— nautobot-upgrades v%s.",
             target_version,
-            len(devices),
+            len(device_list),
             " (DRY-RUN)" if dryrun else "",
             C.JOB_VERSION,
         )
@@ -523,8 +621,10 @@ class IOSXEUpgrade(Job):
             f"{key}={[str(v) for v in value]}" for key, value in applied.items() if value
         )
         if filter_summary:
-            self.logger.info("Filters applied: %s.", filter_summary)
-        device_list = list(devices)
+            self.logger.info(
+                "Filters applied (they scope the device PICKER only — never group membership): %s.",
+                filter_summary,
+            )
 
         def _one_device(device):
             """Full per-device upgrade in a worker thread.
@@ -5157,6 +5257,25 @@ def _find_inventory_by_name(data, filename, target_fs):
         for item in data:
             found.extend(_find_inventory_by_name(item, filename, target_fs))
     return found
+
+
+def _merge_roster(items):
+    """Ordered dedupe by pk — a device selected more than once runs ONCE.
+
+    First occurrence wins, so explicit picks stay ahead of group members in
+    batch order, and a device in several groups keeps its earliest slot.
+    """
+    seen = set()
+    merged = []
+    for item in items:
+        key = getattr(item, "pk", None)
+        if key is None:
+            key = id(item)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(item)
+    return merged
 
 
 def _known_flash_dirs(data, target_fs):

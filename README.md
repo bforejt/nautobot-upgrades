@@ -391,6 +391,42 @@ pre-check, progress polls, transfer verify — see
 for the cause and the workaround). The repeated `%DMI-5-AUTH_PASSED`
 entries are this job's own RESTCONF polling.
 
+### Selecting devices at scale
+
+Two roster sources, one merged run: pick **Devices** explicitly (the
+filters above the picker narrow its list — they scope the *picker only*,
+never group membership), and/or select **Dynamic groups**. The final
+roster is the union of both, deduplicated — a device selected twice runs
+once.
+
+The three scenarios this is built for:
+
+- **Lab / one-off test** — pick the device(s) explicitly. Unchanged.
+- **Deployment rings** — one Dynamic Group per ring, one run per ring.
+  Ring membership is managed centrally in Nautobot, and the job takes the
+  ring's **current** truth at each run.
+- **Fleet sweeps / stragglers** — a Dynamic Group whose filter encodes the
+  predicate (e.g. *software version = the one being retired*) selects
+  exactly the devices still needing the move, every time it runs.
+
+**Live resolution, deliberately.** Filter-based groups are resolved
+through their own query against the live database at run start — never
+from Nautobot's cached membership (the platform's own API notes the cache
+is not up-to-the-minute). Static-assignment groups use their assignments,
+which are their source of truth. A stored ScheduledJob therefore
+re-resolves at **each** fire — membership drift between save and fire is
+intentional (that is what makes rings work), and the run log is the audit
+record: every group's resolved roster is logged at start, which also makes
+**Dry-run the roster preview**.
+
+**No count-confirmation gate, deliberately.** Selecting a named group is
+the expressed intention; a type-the-number ritual adds friction, not
+safety. The safety net is unchanged and per-device: Dry-run first, then
+the install-mode gate, version floor, staged-conflict stop, and free-space
+gate on every member of the roster. Loud edges: a group resolving to zero
+devices warns by name (usually a drifted filter), and an empty total
+roster refuses the run before anything is touched.
+
 ### Parallel batches
 
 Batch runs upgrade up to **Parallelism** devices concurrently (default **4**,
@@ -920,7 +956,8 @@ mode.
 | Input | Required | Purpose |
 | --- | --- | --- |
 | Location / Role / Status / Platform / Device type / Current version / Tags | no | Optional filters that narrow the **Devices** picker for field operations. |
-| Devices | yes | Target devices to upgrade (narrowed by the filters above). |
+| Devices | no* | Target devices to upgrade (narrowed by the filters above). Optional when Dynamic groups supply the roster; *at least one of Devices / Dynamic groups must yield a device or the run refuses. |
+| Dynamic groups | no* | Device Dynamic Groups, resolved **live at run start** (filter-based groups via their own query against the current database — never cached membership; static groups via their assignments). The final roster is the **union** of both selectors, deduplicated; each group's resolved roster is logged, so **Dry-run is the preview**. See [Selecting devices at scale](#selecting-devices-at-scale). |
 | Target version | yes | Core `SoftwareVersion` to upgrade to. |
 | Clean device first | no | ⚠️ **Default off.** Before upgrading, remove ALL software the device is not running — including **any version another engineer staged** (overrides the staged-conflict stop). See [Cleaning a device first](#cleaning-a-device-first). |
 | Run scope | no | Order of operations, safest first: **Step 1 - Copy image** (**default** — a forgotten dropdown can never reload a device), **Steps 1 & 2 - Copy image and prep** (`install add`, no reload), **Full - Copy, Activate, Reload** (the only choice that reloads; a real upgrade requires selecting it deliberately). See [Pre-staging](#pre-staging-stage-now-activate-in-the-window). |
