@@ -380,7 +380,7 @@ class RegisterImage(Job):
         env_var = C.FIRMWARE_BASE_URL_HTTPS_ENV if use_https else C.FIRMWARE_BASE_URL_ENV
         base = (base_override or "").strip() or (os.getenv(env_var) or "").strip()
         if not base:
-            example = "https://<host>:9443/images/" if use_https else "http://<host>:9080/images/"
+            example = "https://<host>:9443/images/" if use_https else "http://<host>/images/"
             raise RegisterAbort(
                 f"No firmware base URL configured. Set the {env_var} environment "
                 f"variable on the Nautobot worker (e.g. {example}), fill the "

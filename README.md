@@ -236,7 +236,7 @@ may simply not be necessary.
 **A convenient reference host: [nautobot-composer](https://github.com/bforejt/nautobot-composer).**
 Its opt-in `firmware` profile is where all the testing ran, and it worked out
 nicely: a **Filebrowser** UI (`:8088`, authenticated) for engineers to upload,
-plus a read-only **nginx** service (`:9080` HTTP / `:9443` HTTPS,
+plus a read-only **nginx** service (HTTP on `:80`, port-less URLs / `:9443` HTTPS,
 network/ACL-restricted) that devices pull from. The Filebrowser-for-upload +
 static-server-for-download split is a good pattern — but it is only one option;
 any equivalent web server will do.
