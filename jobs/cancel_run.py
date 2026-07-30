@@ -19,7 +19,10 @@ COOPERATIVELY: every in-flight device stops at its next safe step boundary
 (never mid-decision), queued devices are cancelled, every device's outcome is
 drained into the log, and the run fails honestly with a
 completed/stopped/never-started post-mortem. Devices are left in states the
-idempotent gates recover on re-run.
+idempotent gates recover on re-run. One exception the stop message calls out:
+an async WAN transfer in flight (xcopy / engine download) keeps running ON THE
+DEVICE until it completes or its own timeout fails it — the upgrade job's
+engine-idle gate makes the eventual re-run wait it out safely.
 """
 
 from __future__ import annotations

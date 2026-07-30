@@ -312,6 +312,26 @@ class IOSXEUpgrade(Job):
             "See 'SELinux AVC log events' in the project README."
         ),
     )
+    transfer_method = ChoiceVar(
+        choices=(
+            ("copy", "Classic copy (default)"),
+            ("xcopy", "Async copy - xcopy (WAN)"),
+            ("install", "Engine download - install add (WAN)"),
+        ),
+        default="copy",
+        required=False,
+        label="Image transfer method",
+        description=(
+            "How the image reaches the device. Classic copy is the default. "
+            "The two WAN methods avoid the device's ~10-minute internal limit "
+            "on the blocking copy RPC; both are tracked via the install "
+            "engine's own ledger: Async xcopy keeps Step 1-only staging but "
+            "REQUIRES the image's recorded file size and a port-less image "
+            "URL; Engine download refuses Step 1-only runs unless the image "
+            "is already on flash. Both are bench-validated; WAN field runs "
+            "pending. See 'Image transfer methods' in the project README."
+        ),
+    )
     secrets_group_override = ObjectVar(
         model=SecretsGroup,
         required=False,
@@ -369,7 +389,11 @@ class IOSXEUpgrade(Job):
         # plus up to 2x GC_BACKUP_TIMEOUT (900s each) of serial Golden Config
         # backup waits and up to ~HEALTH_CONVERGENCE_TIMEOUT + one capture
         # (~13 min worst case) of post-upgrade health polling, when those
-        # options are on;
+        # options are on; the opt-in WAN transfer methods can hold the copy
+        # watch (xcopy) or the add wait (engine download) for up to
+        # WAN_TRANSFER_TIMEOUT_MIN (90 min default) and must fit these limits
+        # too — raise the constant and these limits TOGETHER for very slow
+        # WANs.
         # size batches so that fits inside the soft limit. SoftTimeLimitExceeded
         # is re-raised (never swallowed); queued devices are cancelled and named,
         # in-flight devices are recovered by an idempotent re-run.
@@ -387,6 +411,7 @@ class IOSXEUpgrade(Job):
             "target_version",
             "run_scope",
             "clean_before",
+            "transfer_method",
             "save_config",
             "save_config_after",
             "gc_backup",
@@ -420,6 +445,7 @@ class IOSXEUpgrade(Job):
         gc_backup,
         health_checks,
         suppress_avc_noise,
+        transfer_method,
         secrets_group_override,
         remove_inactive,
         parallelism,
@@ -513,6 +539,7 @@ class IOSXEUpgrade(Job):
                     save_config_after,
                     suppress_avc_noise,
                     health_checks,
+                    transfer_method,
                 )
                 # Total wall-clock per device — the number change windows are
                 # planned around.
@@ -671,6 +698,7 @@ class IOSXEUpgrade(Job):
         save_config_after=False,
         suppress_avc_noise=False,
         health_checks=False,
+        transfer_method="copy",
     ):
         log = {"object": device}
 
@@ -716,6 +744,26 @@ class IOSXEUpgrade(Job):
         self._gate_install_mode(client, log)
 
         image = self._resolve_image(device, target_version, log)
+        if transfer_method == "xcopy" and not image.image_file_size:
+            raise UpgradeAbort(
+                "Async xcopy needs the image's recorded file size — the "
+                "engine's ledger verdict is confirmed byte-exact against it "
+                "(the same integrity gate every transfer faces). Record the "
+                "file size on the SoftwareImageFile, or pick another "
+                "transfer method."
+            )
+        if transfer_method == "xcopy":
+            url_problem = _xcopy_url_unsupported(image.download_url)
+            if url_problem:
+                raise UpgradeAbort(
+                    f"Async xcopy cannot use this image URL: it carries "
+                    f"{url_problem}. Bench-proven (17.18.03): the device's "
+                    "express-copy parser fails connect() locally on any "
+                    "explicit port — no packet is even sent. Serve the image "
+                    "on a standard port with no port in the URL (one extra "
+                    "'listen' line on the firmware server), or pick another "
+                    "transfer method."
+                )
         # Operator-requested pre-upgrade clean (deliberate override of the
         # staged-conflict stop) — never in dry-run (it writes). Runs BEFORE the
         # free-space gate so the gate evaluates the CLEANED flash.
@@ -825,11 +873,92 @@ class IOSXEUpgrade(Job):
                         " Would snapshot health (ports/CDP/LLDP/environment) "
                         "before activation and compare after commit."
                     )
+            if transfer_method == "install":
+                cfg_note += (
+                    " Engine download: the install engine would fetch the "
+                    "image itself during install add (no separate copy step)."
+                )
+                if run_scope == "stage-copy":
+                    cfg_note += (
+                        " NOTE: a live 'Step 1 - Copy image' run is REFUSED "
+                        "with Engine download unless the image is already on "
+                        "flash byte-exact — use 'Steps 1 & 2' to pre-stage "
+                        "over the WAN, or Async xcopy for copy-only staging."
+                    )
+            elif transfer_method == "xcopy":
+                cfg_note += (
+                    " Async xcopy: the device would fetch the image in the "
+                    "background; the job watches flash to the recorded "
+                    "byte-exact size (all run scopes, including Step 1)."
+                )
             return f"DRY-RUN ok:{clean_note}{cfg_note} {planned}. All pre-flight gates passed."
 
-        # -- 3. Transfer + integrity (classic copy in a worker thread, watched
-        # to a size-verified completion inside _copy_image) --------------------
-        self._copy_image(client, image, log, target_fs)
+        # -- 3. Transfer + integrity ------------------------------------------
+        # Three methods (the blocking copy RPC is killed by the device's
+        # DMI/ConfD ~600s ceiling on slow WANs — field report 2026-07):
+        #   copy (default): classic blocking copy in a worker thread, watched
+        #     to a size-verified completion inside _copy_image;
+        #   xcopy: async fire-and-watch — _xcopy_image tracks the engine's
+        #     uuid-keyed ledger record to its own success/failure verdict,
+        #     then byte-exact confirms (works for every run scope);
+        #   install: defer the transfer to 'install add' itself (the engine
+        #     downloads the URL in the background, ledger-tracked; Step 1-only
+        #     runs are refused since the copy happens inside the add).
+        engine_fetch = False
+        if transfer_method in ("xcopy", "install"):
+            listing = self._read_q_filesystem(client)
+            if listing is None:
+                self.logger.warning(
+                    "Could not read the filesystem listing for the WAN-method "
+                    "pre-check (transient RESTCONF errors) — assuming the image "
+                    "must be fetched.",
+                    extra=log,
+                )
+            found, pre_size = _find_target_file(listing or {}, image.image_file_name, target_fs)
+            fetch_needed = _engine_fetch_needed(found, pre_size, image.image_file_size)
+            engine_fetch = fetch_needed and transfer_method == "install"
+            if not fetch_needed:
+                self.logger.info(
+                    "Image already present at %s with the expected size "
+                    "(%s bytes) — nothing to fetch for this transfer method.",
+                    target_fs,
+                    pre_size,
+                    extra=log,
+                )
+            elif transfer_method == "xcopy":
+                self._xcopy_image(client, image, log, target_fs)
+            elif run_scope == "stage-copy":
+                raise UpgradeAbort(
+                    "Engine download performs the copy INSIDE 'install add' "
+                    "(Step 2), so run scope 'Step 1 - Copy image' has nothing "
+                    "to run with it. Choose 'Steps 1 & 2' or 'Full', or use "
+                    "'Async copy - xcopy' for copy-only WAN staging."
+                )
+            else:
+                self.logger.info(
+                    "Copy step deferred to the install engine: install add will "
+                    "download '%s' itself, tracked in the device's operation "
+                    "ledger (job-side wait budget %d min; the device applies "
+                    "its own default download bound).",
+                    _redact_url(image.download_url),
+                    C.WAN_TRANSFER_TIMEOUT_MIN,
+                    extra=log,
+                )
+                if found:
+                    self.logger.warning(
+                        "A same-named file already exists on %s with the WRONG "
+                        "size (%s bytes, expected %s) — the install engine may "
+                        "reuse it and fail package verification (bench-observed). "
+                        "If the add fails verify, remove the stale file "
+                        "('install remove inactive' clears unreferenced images) "
+                        "and re-run.",
+                        target_fs,
+                        pre_size if pre_size is not None else "unreadable",
+                        image.image_file_size or "unrecorded",
+                        extra=log,
+                    )
+        else:
+            self._copy_image(client, image, log, target_fs)
 
         if run_scope == "stage-copy":
             # Pre-staging stops HERE, structurally before any code path that
@@ -858,7 +987,12 @@ class IOSXEUpgrade(Job):
         # ledger is keyed by it, so per-operation uuids keep the tracking exact
         # (one shared uuid would make add records vouch for the commit).
         ledger_confirmed_add = self._install_add(
-            client, image, str(uuid_lib.uuid4()), log, target_fs
+            client,
+            image,
+            str(uuid_lib.uuid4()),
+            log,
+            target_fs,
+            source_url=image.download_url if engine_fetch else None,
         )
         if run_scope == "stage-add":
             # Pre-staging stops HERE — the image is extracted, distributed to
@@ -2202,7 +2336,9 @@ class IOSXEUpgrade(Job):
 
         The classic Cisco-IOS-XE-rpc:copy BLOCKS for the whole transfer (chosen
         deliberately: a real 17.15.05 silently broke the fancier async xcopy
-        while this path kept working). Running it in a thread frees the job to
+        while this path kept working; xcopy has since returned only as an
+        opt-in, unvalidated WAN method with its own watch — see
+        _xcopy_image). Running it in a thread frees the job to
         poll the growing on-device file for progress lines; the final exact size
         match is the transfer-integrity gate, and 'install add' image-signature
         validation remains the cryptographic backstop.
@@ -2476,8 +2612,8 @@ class IOSXEUpgrade(Job):
                 extra=log,
             )
 
-    def _install_add(self, client, image, op_uuid, log, target_fs):
-        path = f"{target_fs}{image.image_file_name}"
+    def _install_add(self, client, image, op_uuid, log, target_fs, source_url=None):
+        path = source_url or f"{target_fs}{image.image_file_name}"
         version_str = image.software_version.version
         # NOTE (verified on a real 17.15.4): install-version-state-in-progress
         # ("marked for activation") is the NORMAL resting state of an added,
@@ -2501,11 +2637,19 @@ class IOSXEUpgrade(Job):
             # armed for releases without sys-activity.
             return False
         self._wait_for_engine_idle(client, log, "install add")
-        self.logger.info("install add %s ...", path, extra=log)
+        if source_url:
+            self.logger.info(
+                "install add will DOWNLOAD the image itself; transfer and add "
+                "both complete in the operation ledger before this job "
+                "proceeds (job-side wait budget %d min).",
+                C.WAN_TRANSFER_TIMEOUT_MIN,
+                extra=log,
+            )
+        self.logger.info("install add %s ...", _redact_url(path) if source_url else path, extra=log)
         # INVARIANT (26.1.1+): 'path' sits inside the now-mandatory choice
         # install-type-by-choice (path | name) — an install without one of them
         # is rejected. Never send a uuid-only install.
-        payload = {"Cisco-IOS-XE-install-rpc:input": {"uuid": op_uuid, "path": path}}
+        payload = _engine_add_payload(op_uuid, path, remote=source_url is not None)
         response = client.post_rpc(C.OP_INSTALL, payload, timeout=C.RPC_TIMEOUT)
         if response:
             self.logger.info("install add RPC response: %s", response, extra=log)
@@ -2525,8 +2669,9 @@ class IOSXEUpgrade(Job):
         # for our uuid completes (the version-state row appears at extract-done,
         # ~60-70s BEFORE the add's post-check phase finishes — gating on it
         # fired activates into a still-running add, which the engine drops).
+        add_budget = C.ADD_TIMEOUT + (C.WAN_TRANSFER_TIMEOUT_MIN * 60 if source_url else 0)
         try:
-            outcome = self._await_op(client, op_uuid, C.ADD_TIMEOUT, log, "install add")
+            outcome = self._await_op(client, op_uuid, add_budget, log, "install add")
         except LedgerOpFailure as exc:
             # The engine recorded WHY it failed; add WHAT it says is staged —
             # the "different version already staged" case in operator terms.
@@ -2535,6 +2680,8 @@ class IOSXEUpgrade(Job):
                 raise LedgerOpFailure(f"{exc} {hint}") from exc
             raise
         if outcome == "success":
+            if source_url:
+                self._verify_engine_download(client, image, log, target_fs)
             return True
         if outcome == "absent":
             self.logger.warning(
@@ -2551,11 +2698,403 @@ class IOSXEUpgrade(Job):
                 "verified independently).",
                 extra=log,
             )
-        self._wait_for_added(client, version_str, log)
+        self._wait_for_added(client, version_str, log, deadline_secs=add_budget)
+        if source_url:
+            self._verify_engine_download(client, image, log, target_fs)
         return False
 
-    def _wait_for_added(self, client, version_str, log):
-        deadline = time.monotonic() + C.ADD_TIMEOUT
+    def _xcopy_image(self, client, image, log, target_fs):
+        """Async xcopy: fire, then watch the ENGINE'S OWN LEDGER to a verdict.
+
+        LEDGER-PRIMARY (bench 2026-07-29/30, 17.18.03): xcopy operations are
+        uuid-keyed install-oper records. In flight the record sits under
+        install-oper (txn install-txn-download 'in-progress', epoch-zero
+        end-time = unset); on completion it MIGRATES to install-oper-hist
+        with op-status install-op-succ/-fail + op-done op-complete. SUCCESS
+        is therefore the engine's own published verdict, confirmed byte-exact
+        against the authoritative listing (the gate every transfer faces).
+        FAILURE quotes the engine's failing transaction — the device reason
+        the old file-only watch could never read (a captured bench failure
+        published install-txn-download -> fail with sub-state
+        install-download-fail). File-size polls remain for PROGRESS DISPLAY
+        only (learn-then-keyed, the zero-AVC pattern); a growth stall warns
+        but never declares failure while the ledger says running — the
+        RPC's own timeout leaf turns a dead transfer into a ledger failure
+        well before the job deadline. Job-side failure declarations are
+        fallback tiers only: the fire-lost bound (readable ledger polls —
+        counted, never wall time — that never show our uuid), the
+        transfer-window deadline (a 300s backstop past the RPC's own
+        on-device timeout), and LEDGER_BLIP_POLLS consecutive unreadable
+        ledger polls.
+        """
+        # Destination is the BARE filename (bench-proven): xcopy passes
+        # destination-path VERBATIM into the download descriptor's filename
+        # field — an IOS-style 'flash:' prefix poisons it, while the device
+        # supplies the flash mount as dest-dir itself.
+        dest = image.image_file_name
+        expected = image.image_file_size  # presence is gated before dispatch
+        op_uuid = str(uuid_lib.uuid4())
+        self.logger.info(
+            "xcopy (async) '%s' -> %s (uuid %s; device-side timeout %d min; "
+            "success = engine ledger verdict + byte-exact %s bytes on flash)...",
+            _redact_url(image.download_url),
+            dest,
+            op_uuid,
+            C.WAN_TRANSFER_TIMEOUT_MIN,
+            expected,
+            extra=log,
+        )
+        # xcopy is an install-engine operation (uuid-keyed ledger record), so
+        # it takes the same engine-idle gate as every other engine write — a
+        # prior run's still-running transfer surfaces here as a wait/refusal
+        # instead of a mid-fire collision.
+        self._wait_for_engine_idle(client, log, "xcopy fire")
+        response = client.post_rpc(
+            C.OP_XCOPY,
+            _xcopy_payload(op_uuid, image.download_url, dest, C.WAN_TRANSFER_TIMEOUT_MIN * 60),
+            timeout=C.RPC_TIMEOUT,
+        )
+        error_text = _rpc_error_text(response)
+        if error_text:
+            raise UpgradeAbort(
+                f"xcopy was rejected by the device: {error_text}. "
+                + _fetch_hints(image.download_url)
+            )
+        if response:
+            self.logger.info("xcopy accepted (response: %s).", response, extra=log)
+
+        started = time.monotonic()
+        deadline = started + C.WAN_TRANSFER_TIMEOUT_MIN * 60 + 300
+
+        keyed_url = None
+        keyed_ok = True
+        keyed_misses = 0
+        last_size = None  # last SUCCESSFULLY observed size (progress display)
+        last_growth = started  # when an observation last showed the size move
+        readable_absent_polls = 0  # READABLE ledger polls lacking our uuid;
+        # unreadable polls never increment, so blips are genuinely clock-neutral
+        ledger_ever_seen = False  # the uuid was observed in the ledger at least once
+        error_streak = 0  # consecutive unreadable ledger polls
+        stall_warned = False
+        polls = 0
+
+        def _observe():
+            """One cycle: (size, observed).
+
+            observed=False means the read itself failed — an unreadable poll
+            NEVER ages any failure clock (the overall deadline bounds
+            unobservable stretches). Keyed reads keep the classic watch's
+            latches: a 4xx rejection or two consecutive misses drops to the
+            full-listing floor with a breadcrumb.
+            """
+            nonlocal keyed_url, keyed_ok, keyed_misses
+            if keyed_ok and keyed_url is not None:
+                try:
+                    size = _keyed_size_read(client, keyed_url, image.image_file_name)
+                except RestconfError as exc:
+                    status = getattr(exc, "status_code", None)
+                    if status is not None and 400 <= status < 500:
+                        keyed_ok = False
+                        self.logger.info(
+                            "Keyed progress read rejected by this release (%s) "
+                            "— full-listing polls for the rest of this transfer.",
+                            exc,
+                            extra=log,
+                        )
+                    size = None
+                if size is not None:
+                    keyed_misses = 0
+                    return size, True
+                keyed_url = None
+                keyed_misses += 1
+                if keyed_ok and keyed_misses >= 2:
+                    keyed_ok = False
+                    self.logger.info(
+                        "Keyed progress reads missed twice — staying on full "
+                        "listings for the rest of this transfer.",
+                        extra=log,
+                    )
+            listing = self._read_q_filesystem(client, retries=1)
+            if listing is None:
+                return None, False
+            ctx = _find_target_file_entry(listing, image.image_file_name, target_fs)
+            if ctx is None:
+                return None, True  # a real listing that lacks the file
+            keys, pname, path, size = ctx
+            if keyed_ok and keys is not None and path:
+                keyed_url = _keyed_content_url(keys, pname, path)
+            return size, True
+
+        while True:
+            try:
+                self._check_stop()
+            except JobStopped as exc:
+                # Be honest about what a stop CANNOT stop: the engine keeps
+                # the async transfer running on-device until it finishes or
+                # its own timeout fails it. The engine-idle gate before the
+                # fire makes a later re-run collision-safe regardless.
+                raise JobStopped(
+                    f"{exc} NOTE: the async xcopy transfer (uuid {op_uuid}) "
+                    f"continues on-device until it completes or its own "
+                    f"{C.WAN_TRANSFER_TIMEOUT_MIN}-minute timeout fails it; "
+                    "before re-running, check install-oper-hist for the uuid "
+                    "or simply re-run — the engine-idle gate waits out any "
+                    "still-running transfer."
+                ) from exc
+            if time.monotonic() > deadline:
+                raise UpgradeAbort(
+                    f"xcopy passed the job's transfer window "
+                    f"({C.WAN_TRANSFER_TIMEOUT_MIN} min + slack) without a "
+                    f"confirmed terminal ledger verdict (last observed: "
+                    f"{last_size if last_size is not None else 'no file'} of "
+                    f"{expected} bytes). The RPC's own timeout should have "
+                    "failed the operation on-device before this — check "
+                    "install-oper-hist for the uuid above; re-run to retry, or "
+                    "raise WAN_TRANSFER_TIMEOUT_MIN AND the job time limits "
+                    "together."
+                )
+            time.sleep(C.POLL_INTERVAL)
+            polls += 1
+            # PRIMARY: the engine's own ledger record for our uuid.
+            try:
+                ledger = client.get(C.DATA_INSTALL_OPER, ok_404=True) or {}
+            except RestconfError as exc:
+                error_streak += 1
+                if error_streak >= C.LEDGER_BLIP_POLLS:
+                    raise UpgradeAbort(
+                        f"xcopy ledger unreadable for {error_streak} "
+                        f"consecutive polls ({exc}"
+                        f"{_auth_hint(getattr(exc, 'status_code', None))}) — "
+                        f"uuid {op_uuid}, last observed size "
+                        f"{last_size if last_size is not None else 'no file sighted'} "
+                        f"of {expected} bytes. If the device is reloading or "
+                        "unreachable the transfer died with it; otherwise it "
+                        "may still be running on-device — check "
+                        "install-oper-hist for the uuid and the file on flash "
+                        "before re-running (a re-run overwrites any partial)."
+                    ) from exc
+                self.logger.info(
+                    "xcopy ledger read failed (%s) — transient blip %d/%d, "
+                    "retrying (unreadable polls never age failure clocks).",
+                    exc,
+                    error_streak,
+                    C.LEDGER_BLIP_POLLS,
+                    extra=log,
+                )
+                continue
+            error_streak = 0
+            now = time.monotonic()
+            status, detail = _classify_ops(_find_op_records(ledger, op_uuid))
+            if status == "absent":
+                # Clock in READABLE polls, not wall time — interleaved
+                # unreadable blips must be genuinely clock-neutral.
+                readable_absent_polls += 1
+                absent_for = readable_absent_polls * C.POLL_INTERVAL
+            else:
+                ledger_ever_seen = True
+                readable_absent_polls = 0
+                absent_for = 0.0
+            verdict = _xcopy_ledger_verdict(status, absent_for, C.XCOPY_STALL_SECS)
+            if verdict == "failure":
+                last_note = last_size if last_size is not None else "no file sighted"
+                raise UpgradeAbort(
+                    f"xcopy FAILED — the install engine's ledger reports: "
+                    f"{detail}. Last observed file size: {last_note} "
+                    f"(expected {expected} bytes). A re-run overwrites any "
+                    "partial file. " + _fetch_hints(image.download_url)
+                )
+            if verdict == "fire-lost" and ledger_ever_seen:
+                # The record was OBSERVED and then vanished from both ledger
+                # sections — not a lost fire. Try the byte-exact rescue before
+                # declaring anything: a completed transfer whose record was
+                # wiped (engine restart, 'clear install state') leaves the
+                # full file on flash.
+                final = self._read_q_filesystem(client)
+                rfound, rsize = _find_target_file(final or {}, image.image_file_name, target_fs)
+                if (
+                    rfound
+                    and rsize is not None
+                    and abs(rsize - expected) <= C.SIZE_MATCH_TOLERANCE_BYTES
+                ):
+                    self.logger.warning(
+                        "xcopy ledger record for uuid %s vanished after being "
+                        "observed, but the file is byte-exact on %s (%s bytes) "
+                        "— accepting the transfer on the authoritative "
+                        "listing.",
+                        op_uuid,
+                        target_fs,
+                        rsize,
+                        extra=log,
+                    )
+                    return
+                raise UpgradeAbort(
+                    f"xcopy ledger record for uuid {op_uuid} VANISHED after "
+                    f"being observed running (absent from install-oper and "
+                    f"install-oper-hist for {C.XCOPY_STALL_SECS}s of readable "
+                    "polls) and the file is not byte-exact on flash — "
+                    "terminal state unknown (engine restart or 'clear install "
+                    "state'?). Check 'show install log' and install-oper-hist "
+                    "before re-running; a re-run overwrites any partial file."
+                )
+            if verdict == "fire-lost":
+                raise UpgradeAbort(
+                    f"xcopy: no install-oper ledger record for uuid {op_uuid} "
+                    f"appeared within {C.XCOPY_STALL_SECS}s of readable ledger "
+                    "polls — declaring the fire LOST (bounded-wait fallback, "
+                    "not a device-published verdict). Most likely the accepted "
+                    "fire never became an engine operation, but a release that "
+                    "does not publish xcopy ledger records looks identical — "
+                    "check 'show install log' and the file on flash before "
+                    "re-firing. " + _fetch_hints(image.download_url)
+                )
+            if verdict == "success":
+                # The engine's verdict is authoritative for the TRANSFER;
+                # byte-exact against the authoritative listing remains the
+                # job's own integrity gate (guards Nautobot metadata and the
+                # re-run skip logic, same as every other transfer method).
+                final = self._read_q_filesystem(client)
+                if final is None:
+                    self.logger.warning(
+                        "xcopy succeeded per the engine ledger but the "
+                        "authoritative final listing could not be read — "
+                        "retrying the byte-exact confirm next poll (the "
+                        "terminal ledger verdict is durable; the job deadline "
+                        "bounds the wait).",
+                        extra=log,
+                    )
+                    continue
+                cfound, csize = _find_target_file(final, image.image_file_name, target_fs)
+                if (
+                    cfound
+                    and csize is not None
+                    and abs(csize - expected) <= C.SIZE_MATCH_TOLERANCE_BYTES
+                ):
+                    self.logger.info(
+                        "xcopy complete (engine ledger: %s) and size-verified: "
+                        "%s bytes on %s (%s).",
+                        detail,
+                        csize,
+                        target_fs,
+                        _fmt_duration(time.monotonic() - started),
+                        extra=log,
+                    )
+                    return
+                shown = (
+                    csize if csize is not None else ("an unreadable size" if cfound else "no file")
+                )
+                raise UpgradeAbort(
+                    f"xcopy succeeded per the engine ledger but the "
+                    f"authoritative listing shows {shown} (expected "
+                    f"{expected} bytes) — byte-exact verification failed. "
+                    "Check that the server-hosted file matches the size "
+                    "recorded in Nautobot, then re-run."
+                )
+            # verdict == 'wait': ledger says running (or briefly absent) —
+            # file-size reads are PROGRESS DISPLAY plus an advisory stall
+            # warning, never a failure verdict.
+            size, observed = _observe()
+            now = time.monotonic()
+            if observed and size is not None:
+                if last_size is None or size != last_size:
+                    last_size = size
+                    last_growth = now
+                    stall_warned = False
+                if polls % 4 == 0:
+                    self.logger.info(
+                        "xcopy progress: %d%% (%s of %s bytes, %s elapsed; engine phase: %s).",
+                        min(int(size * 100 / expected), 100),
+                        size,
+                        expected,
+                        _fmt_duration(now - started),
+                        detail,
+                        extra=log,
+                    )
+                if not stall_warned and now - last_growth >= C.XCOPY_STALL_SECS:
+                    stall_warned = True
+                    self.logger.warning(
+                        "xcopy file growth stalled at %s bytes for %ds while "
+                        "the engine still reports the operation running — "
+                        "waiting for the engine's own verdict (its timeout "
+                        "fails a dead transfer on-device).",
+                        size,
+                        C.XCOPY_STALL_SECS,
+                        extra=log,
+                    )
+            elif polls % 4 == 0:
+                if observed:
+                    note = f"file not sighted on {target_fs} yet"
+                elif last_size is not None:
+                    note = f"filesystem read failed this poll; last sighted {last_size} bytes"
+                else:
+                    note = "filesystem read failed this poll"
+                self.logger.info(
+                    "xcopy running (engine phase: %s; %s elapsed; %s)...",
+                    detail,
+                    _fmt_duration(now - started),
+                    note,
+                    extra=log,
+                )
+
+    def _verify_engine_download(self, client, image, log, target_fs):
+        """Byte-exact check of the engine-downloaded .bin (fail-closed).
+
+        The add already ran Cisco's mandatory signature validation, so this
+        guards Nautobot's METADATA and future re-run skip logic: the file the
+        engine fetched must match the recorded size. Absent-after-success is
+        unexpected — abort before activation (aborting here is free) until
+        bench results teach us this release stores downloads elsewhere.
+        """
+        listing = self._read_q_filesystem(client)
+        if listing is None:
+            self.logger.warning(
+                "Could not read the filesystem listing to verify the engine "
+                "download (transient RESTCONF errors) — relying on install "
+                "add's mandatory signature validation.",
+                extra=log,
+            )
+            return
+        found, size = _find_target_file(listing, image.image_file_name, target_fs)
+        expected = image.image_file_size
+        if not found:
+            raise UpgradeAbort(
+                f"Engine download finished but '{image.image_file_name}' is not "
+                f"visible on {target_fs} — refusing to continue to activation. "
+                "Check 'dir' and 'show install log' on the device and report "
+                "this (the engine may store downloads elsewhere on this "
+                "release)."
+            )
+        if expected and size is None:
+            self.logger.warning(
+                "Engine download present on %s but its size could not be read "
+                "— relying on install add's mandatory signature validation.",
+                target_fs,
+                extra=log,
+            )
+            return
+        if expected and abs(size - expected) > C.SIZE_MATCH_TOLERANCE_BYTES:
+            raise UpgradeAbort(
+                f"Engine-downloaded file is {size} bytes but Nautobot records "
+                f"{expected} — wrong file on the server or stale image "
+                "metadata. Aborting before activation."
+            )
+        if expected:
+            self.logger.info(
+                "Engine download verified: %s bytes on %s (matches the recorded size).",
+                size,
+                target_fs,
+                extra=log,
+            )
+        else:
+            self.logger.info(
+                "Engine download present on %s (%s bytes); no recorded size to verify against.",
+                target_fs,
+                size,
+                extra=log,
+            )
+
+    def _wait_for_added(self, client, version_str, log, deadline_secs=None):
+        budget = int(deadline_secs or C.ADD_TIMEOUT)
+        deadline = time.monotonic() + budget
         started = time.monotonic()
         polls = 0
         error_streak = 0
@@ -2595,7 +3134,7 @@ class IOSXEUpgrade(Job):
                     "install add still running (state: %s, elapsed %ds of up to %ds)...",
                     sorted(tokens) or "not visible yet",
                     int(time.monotonic() - started),
-                    C.ADD_TIMEOUT,
+                    budget,
                     extra=log,
                 )
             time.sleep(C.POLL_INTERVAL)
@@ -2608,7 +3147,7 @@ class IOSXEUpgrade(Job):
             "flash:.installer logs if activation does not start. Proceeding to "
             "activate (activation start is verified).",
             version_str,
-            C.ADD_TIMEOUT,
+            budget,
             sorted(final_tokens) or "none",
             extra=log,
         )
@@ -4112,6 +4651,94 @@ def _entry_size(entry):
             except (TypeError, ValueError):
                 return None
     return None
+
+
+def _engine_add_payload(op_uuid, path, remote):
+    """install RPC input for a local add or an engine-managed remote download.
+
+    The model's download-timeout leaf is DELIBERATELY NOT SENT (bench,
+    2026-07-28, 17.18.03): the device interprets the value roughly as
+    SECONDS despite the model saying minutes (1-1440) — sending 10 strangled
+    a healthy LAN download mid-transfer, while omitting the leaf let the
+    device default (~2000, observed) carry a full image. Seconds cannot be
+    sent instead: confd enforces the modeled 1-1440 range. Device-side
+    bounding rides the default; job-side bounding is the extended ledger
+    wait budget (WAN_TRANSFER_TIMEOUT_MIN). `remote` is kept for future
+    remote-only leaves.
+    """
+    del remote  # no remote-only leaves today; see docstring
+    return {"Cisco-IOS-XE-install-rpc:input": {"uuid": op_uuid, "path": path}}
+
+
+def _engine_fetch_needed(found, size, expected):
+    """True when the engine must download: absent, or not the expected bytes.
+
+    Mirrors the classic copy pre-check exactly: only a present file whose size
+    EQUALS the recorded expected size counts as already staged.
+    """
+    return not (found and expected and size == expected)
+
+
+def _xcopy_payload(op_uuid, source_url, dest, timeout_value):
+    """xcopy RPC input — every field shape here is bench-earned (17.18.03):
+
+    * timeout MUST be sent: omitting it lands 0 in the download descriptor
+      (instant kill), unlike install's leaf which defaults sanely to 2000.
+      The value sent is seconds-scale (WAN_TRANSFER_TIMEOUT_MIN * 60): safe
+      whether the device reads seconds (=the intended window) or the modeled
+      minutes (=merely over-generous; the job's own watch budget governs).
+    * dest is a BARE filename — destination-path is passed verbatim into the
+      descriptor's dest-filename; prefixes poison it.
+    * source_url must be PORT-LESS — guarded upstream (_xcopy_url_unsupported).
+    """
+    return {
+        "Cisco-IOS-XE-xcopy-rpc:input": {
+            "uuid": op_uuid,
+            "source-path": source_url,
+            "destination-path": dest,
+            "timeout": timeout_value,
+        }
+    }
+
+
+def _xcopy_url_unsupported(url):
+    """Reason-string when xcopy's parser cannot handle this URL, else None.
+
+    Bench-proven (17.18.03, 2026-07-28, wire-confirmed): an explicit port in
+    source-path makes the express-copy utility fail connect() locally — zero
+    packets emitted — while the same URL works via classic copy and install
+    add. Its documented URL grammar has no port form; require port-less URLs.
+    """
+    try:
+        port = urllib_parse.urlsplit(url).port
+    except ValueError:
+        return "a port/host form the parser rejects"
+    if port is not None:
+        return f"an explicit port (:{port})"
+    return None
+
+
+def _xcopy_ledger_verdict(status, absent_for, stall_secs):
+    """'success' | 'failure' | 'fire-lost' | 'wait' from a uuid's ledger state.
+
+    status is _classify_ops() output — the engine's own account, so
+    'success'/'failure' pass straight through (device-published verdicts).
+    The ONLY timer here is the fire-lost bound: 'absent' is tolerated for
+    stall_secs before the fire is declared lost, where absent_for is
+    COUNTED from readable-absent polls (readable_absent_polls *
+    POLL_INTERVAL — never a wall-clock anchor), so interleaved unreadable
+    polls are genuinely clock-neutral. 'running' always waits — a dead
+    transfer becomes a ledger FAILURE via the RPC's own device-side
+    timeout, not a job timer. The caller distinguishes a never-seen
+    fire-lost from a seen-then-vanished record (byte-exact rescue).
+    """
+    if status == "failure":
+        return "failure"
+    if status == "success":
+        return "success"
+    if status == "absent" and absent_for >= stall_secs:
+        return "fire-lost"
+    return "wait"
 
 
 def _find_target_file_entry(data, image_file_name, target_fs):
