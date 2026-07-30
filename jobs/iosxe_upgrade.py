@@ -2973,7 +2973,6 @@ class IOSXEUpgrade(Job):
                 # verify-ok + exact pkg-size + fresh timestamp. Tier 2
                 # (fallback): the authoritative filesystem listing.
                 if dp is not None:
-                    pkg = _find_install_package(ledger, dp["dest-dir"], dp["dest-filename"])
                     op_started = next(
                         (
                             r.get("start-time")
@@ -2982,7 +2981,17 @@ class IOSXEUpgrade(Job):
                         ),
                         None,
                     )
-                    ok, why = _package_confirms(pkg, expected, op_started)
+                    # ANY candidate passing the gate confirms — on a stack a
+                    # stale same-named twin from another member must never
+                    # shadow the fresh entry (collect-all, gate per entry).
+                    candidates = _find_install_packages(
+                        ledger, dp["dest-dir"], dp["dest-filename"]
+                    ) or [None]
+                    ok, why = False, "no inventory entry for this file"
+                    for pkg in candidates:
+                        ok, why = _package_confirms(pkg, expected, op_started)
+                        if ok:
+                            break
                     if ok:
                         self.logger.info(
                             "xcopy complete (engine ledger: %s), confirmed "
@@ -2998,6 +3007,15 @@ class IOSXEUpgrade(Job):
                         "Package inventory could not confirm the transfer "
                         "(%s) — falling back to the authoritative listing.",
                         why,
+                        extra=log,
+                    )
+                else:
+                    self.logger.info(
+                        "Ledger never published a download descriptor "
+                        "(download-param) for uuid %s — the package-inventory "
+                        "confirm is unavailable here; using the authoritative "
+                        "listing.",
+                        op_uuid,
                         extra=log,
                     )
                 final = self._read_q_filesystem(client)
@@ -3045,6 +3063,7 @@ class IOSXEUpgrade(Job):
             # all device-published). A probe is one quiet keyed GET; a miss
             # never touches the keyed-read latches, and the classic
             # learn-from-listing remains the floor.
+            probe_size = None
             if keyed_url is None and keyed_ok and address is not None and dp is not None:
                 candidate = _keyed_content_url(
                     address[0],
@@ -3053,10 +3072,26 @@ class IOSXEUpgrade(Job):
                 )
                 try:
                     probe_size = _keyed_size_read(client, candidate, image.image_file_name)
-                except RestconfError:
+                except RestconfError as exc:
                     probe_size = None
+                    probe_status = getattr(exc, "status_code", None)
+                    if probe_status is not None and 400 <= probe_status < 500:
+                        # Structural rejection of the CONSTRUCTED form (a 404
+                        # never raises here — ok_404). Stop probing, but do
+                        # NOT touch keyed_ok/keyed_misses: the learned-from-
+                        # listing keyed path may still work, and ITS OWN 4xx
+                        # is the signal that latches keyed reads off.
+                        address = None
+                        self.logger.info(
+                            "Constructed progress-address probe rejected by "
+                            "this release (%s) — reverting to the classic "
+                            "learn-from-listing for this transfer.",
+                            exc,
+                            extra=log,
+                        )
                 if probe_size is not None:
                     keyed_url = candidate
+                    keyed_misses = 0  # a probe hit IS a successful keyed read
                     self.logger.info(
                         "Walk-free progress address constructed from "
                         "device-published state (engine descriptor + "
@@ -3064,7 +3099,9 @@ class IOSXEUpgrade(Job):
                         probe_size,
                         extra=log,
                     )
-            size, observed = _observe()
+            # A probe hit doubles as this poll's observation — never re-read
+            # the same entry twice in one cycle.
+            size, observed = (probe_size, True) if probe_size is not None else _observe()
             now = time.monotonic()
             if observed and size is not None:
                 if last_size is None or size != last_size:
@@ -4841,16 +4878,19 @@ def _partition_address(partitions_data, target_fs):
     names). The q-filesystem instance keys MUST come from q-filesystem
     itself: a real 9300 publishes chassis=-1 here while install-oper says
     chassis=1 for the same box, so borrowing keys across models would
-    mis-address. An EXACT name match wins over stack-suffixed twins
-    ('flash:' before 'flash-1:' — the transfer destination is the active's
-    flash). None when the projection omitted keys or no name matches.
+    mis-address. An EXACT name match is preferred over stack-suffixed twins
+    ('flash:' before 'flash-1:'), and the exact name is used ONLY when the
+    document publishes it under exactly one keys tuple — the q-filesystem
+    document cannot attribute a bare 'flash:' to a member (same residual
+    _find_target_file_entry documents), so ambiguity returns None and the
+    classic learn-from-listing floor decides. Also None when the projection
+    omitted keys or no name matches.
     """
     wanted = str(target_fs).rstrip(":").lower()
-    exact = None
-    suffixed = None
+    exacts = []
+    suffixeds = []
 
     def _walk(node, keys):
-        nonlocal exact, suffixed
         if isinstance(node, dict):
             if all(k in node for k in ("fru", "slot", "bay", "chassis")):
                 keys = tuple(str(node[k]) for k in ("fru", "slot", "bay", "chassis"))
@@ -4863,9 +4903,9 @@ def _partition_address(partitions_data, target_fs):
                     if not name:
                         continue
                     if name.rstrip(":").lower() == wanted:
-                        exact = exact or (keys, name)
+                        exacts.append((keys, name))
                     elif _partition_matches(name, wanted):
-                        suffixed = suffixed or (keys, name)
+                        suffixeds.append((keys, name))
             for value in node.values():
                 _walk(value, keys)
         elif isinstance(node, list):
@@ -4873,41 +4913,58 @@ def _partition_address(partitions_data, target_fs):
                 _walk(item, keys)
 
     _walk(partitions_data or {}, None)
-    return exact or suffixed
+    picked = exacts or suffixeds
+    if not picked:
+        return None
+    if len({keys for keys, _ in picked}) > 1:
+        return None  # ambiguous across instances — fail closed to the floor
+    return picked[0]
 
 
-def _find_install_package(data, dest_dir, dest_filename):
-    """pkg-data for the inventory entry matching dir + name — or None.
+def _find_install_packages(data, dest_dir, dest_filename):
+    """EVERY pkg-data whose entry matches dir + name (list, maybe empty).
 
     install-location-information[]/install-packages[] publishes per-file
     pkg-dir/pkg-name plus pkg-data{version, checksum, pkg-size,
     verify-status, timestamp} (bench-captured 2026-07-30). Entries VANISH
     when the file is deleted (bench-verified), so presence tracks reality;
-    the timestamp still gates freshness in _package_confirms.
+    _package_confirms remains the acceptance gate for every candidate.
+    Collect-ALL matters on stacks: install-location-information is
+    per-location and pkg-dir is a location-local mount path, so a stale
+    same-named twin on another member must never shadow the fresh entry
+    (the caller accepts if ANY candidate passes the gate). The pkg-dir key
+    must be PRESENT — an absent leaf must not satisfy the dir clause.
     """
     want_dir = str(dest_dir).rstrip("/")
+    found = []
     if isinstance(data, dict):
         if (
-            str(data.get("pkg-dir", "")).rstrip("/") == want_dir
+            "pkg-dir" in data
+            and str(data.get("pkg-dir", "")).rstrip("/") == want_dir
             and str(data.get("pkg-name", "")).strip() == dest_filename
             and isinstance(data.get("pkg-data"), dict)
         ):
-            return data["pkg-data"]
-        for value in data.values():
-            found = _find_install_package(value, dest_dir, dest_filename)
-            if found is not None:
-                return found
+            found.append(data["pkg-data"])
+        else:
+            for value in data.values():
+                found.extend(_find_install_packages(value, dest_dir, dest_filename))
     elif isinstance(data, list):
         for item in data:
-            found = _find_install_package(item, dest_dir, dest_filename)
-            if found is not None:
-                return found
-    return None
+            found.extend(_find_install_packages(item, dest_dir, dest_filename))
+    return found
 
 
 def _parse_ledger_time(value):
-    """datetime for an ISO-8601 ledger timestamp — or None (never guess)."""
+    """datetime for an ISO-8601 ledger timestamp — or None (never guess).
+
+    yang:date-and-time permits ANY number of fractional-second digits;
+    fromisoformat before Python 3.11 accepts only exactly 3 or 6, so the
+    fraction is trimmed/padded to 6 (floor-directed, applied identically to
+    both sides of every comparison — sub-microsecond truncation cannot flip
+    the freshness gate's direction).
+    """
     text = str(value or "").strip().replace("Z", "+00:00")
+    text = re.sub(r"\.(\d+)", lambda m: "." + m.group(1)[:6].ljust(6, "0"), text, count=1)
     try:
         return datetime.fromisoformat(text)
     except ValueError:
@@ -4932,14 +4989,24 @@ def _package_confirms(pkg_data, expected_size, op_started):
         return False, f"verify-status is '{verify or 'absent'}'"
     try:
         size = int(str(pkg_data.get("pkg-size", "")).strip())
-    except ValueError:
-        return False, f"unreadable pkg-size '{pkg_data.get('pkg-size')}'"
-    if not expected_size or size != int(expected_size):
+        want = int(expected_size) if expected_size else 0
+    except (ValueError, TypeError):
+        return False, (
+            f"unreadable size (pkg-size {pkg_data.get('pkg-size')!r}, recorded {expected_size!r})"
+        )
+    if not want or size != want:
         return False, f"pkg-size {size} != recorded {expected_size}"
     stamp = _parse_ledger_time(pkg_data.get("timestamp"))
     started = _parse_ledger_time(op_started)
     if stamp is None or started is None:
         return False, "entry/op timestamps unreadable — cannot prove freshness"
+    if started.year < 1971:
+        # Epoch-zero is this model's unset-time marker (same convention as
+        # the in-flight end-time) — an unset op start can gate nothing.
+        return False, (
+            f"op start-time {started.isoformat()} is the model's epoch-zero "
+            "unset marker — cannot prove freshness"
+        )
     try:
         stale = stamp < started
     except TypeError:

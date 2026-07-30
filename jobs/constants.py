@@ -105,9 +105,12 @@ OP_COPY = "operations/Cisco-IOS-XE-rpc:copy"
 #: timestamp; entries vanish when the file is deleted. The job uses it for
 #: a walk-free byte-exact confirm (listing fallback), timestamp-gated
 #: against this op. NOTE the op-level ledger `timeout` echoed 2070 on both
-#: runs regardless of the leaf we send (2000 and 5400) — if a long WAN
-#: transfer dies at ~34-35 min with a ledger timeout record, the op-level
-#: value binds and the leaf is decorative; watch for this in the field.
+#: observed runs despite two DIFFERENT sent leaf values — 2000 (the
+#: Postman-fired bench run, 2026-07-29) and 5400 (the live job run,
+#: 2026-07-30) — so the op-level value appears not to track the leaf. If a
+#: long WAN transfer dies at ~34-35 min (2070s) with a ledger timeout
+#: record, the op-level value binds and the leaf may be decorative; watch
+#: for this on the first >34-minute field transfer.
 OP_XCOPY = "operations/Cisco-IOS-XE-xcopy-rpc:xcopy"
 
 #: Write running-config to startup-config (cisco-ia, no input; output is a
