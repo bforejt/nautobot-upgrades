@@ -82,7 +82,7 @@
 <text x="740.0" y="2256" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="740.0" dy="0">Post-test (8b): compare vs the baseline</tspan><tspan x="740.0" dy="14">(everything up/present before must return;</tspan><tspan x="740.0" dy="14">convergence-aware ~10 min; report-only)</tspan></text>
 <path d="M 740 2302 L 740 2371 L 340 2371" fill="none" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
 <rect x="160" y="52" width="360" height="52" rx="24" ry="24" fill="#DAE8FC" stroke="#6C8EBF" stroke-width="1.5"/>
-<text x="340" y="70" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#1b3a6b"><tspan x="340" dy="0">Select devices + target version</tspan><tspan x="340" dy="15">(Nautobot → Jobs)</tspan></text>
+<text x="340" y="70" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#1b3a6b"><tspan x="340" dy="0">Select devices and/or dynamic groups</tspan><tspan x="340" dy="15">+ target version (Nautobot → Jobs)</tspan></text>
 <rect x="140" y="150" width="400" height="72" rx="10" ry="10" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5" stroke-dasharray="7 5"/>
 <text x="340" y="165" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="340" dy="0">Opt-in, once per RUN: Golden Config backup of</tspan><tspan x="340" dy="14">every target device BEFORE any upgrade starts</tspan><tspan x="340" dy="14">(fail-closed: can&#x27;t back up → nothing is touched;</tspan><tspan x="340" dy="14">a dry run only reports it)</tspan></text>
 <rect x="150" y="263" width="380" height="62" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
@@ -96,7 +96,7 @@
 <polygon points="340,712.0 465.0,754 340,796.0 215.0,754" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
 <text x="340" y="754" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="340" dy="0">Dry-run?</tspan></text>
 <rect x="150" y="831" width="380" height="62" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
-<text x="340" y="855" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="340" dy="0">Copy image + verify exact size</tspan><tspan x="340" dy="14">(skipped if the file is already on flash)</tspan></text>
+<text x="340" y="848" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" fill="#1a1a1a"><tspan x="340" dy="0">Transfer image + verify exact size</tspan><tspan x="340" dy="14">(async xcopy by default, ledger-tracked;</tspan><tspan x="340" dy="14">classic copy = fallback tier; skipped if already on flash)</tspan></text>
 <polygon points="340,928.0 465.0,970 340,1012.0 215.0,970" fill="#E8EEF6" stroke="#3C6CA8" stroke-width="1.5"/>
 <text x="340" y="963" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold" fill="#13335c"><tspan x="340" dy="0">Run scope =</tspan><tspan x="340" dy="14">Step 1 (copy) only?</tspan></text>
 <rect x="150" y="1047" width="380" height="62" rx="6" ry="6" fill="#FFFFFF" stroke="#5B6B7B" stroke-width="1.5"/>
