@@ -3111,6 +3111,7 @@ class IOSXEUpgrade(Job):
         ledger_ever_seen = False  # the uuid was observed in the ledger at least once
         error_streak = 0  # consecutive unreadable ledger polls
         stall_warned = False
+        verify_settle_polls = 0  # bounded wait for a DEFERRED engine verify
         polls = 0
         dp = None  # the engine's download descriptor (dest-dir/dest-filename)
         address = _partition_address(partitions_data, target_fs)
@@ -3356,8 +3357,13 @@ class IOSXEUpgrade(Job):
                 # byte-exact remains the job's own integrity gate. Tier 1:
                 # the engine's package INVENTORY, read from the SAME ledger
                 # document just fetched (zero extra reads, zero walks) —
-                # verify-ok + exact pkg-size + fresh timestamp. Tier 2
-                # (fallback): the authoritative filesystem listing.
+                # verify-ok + exact pkg-size + fresh timestamp, with a
+                # BOUNDED settle wait when the engine reports verification
+                # still DEFERRED (field 2026-07-31, 9500 SVL: this train
+                # verifies lazily after the transfer; bench 17.18.03 stamps
+                # verify-ok immediately). Tier 1.5: a keyed byte-exact read
+                # of the destination (positive-accept only — zero AVC,
+                # field-proven). Tier 2 (floor): the authoritative listing.
                 if dp is not None:
                     op_started = next(
                         (
@@ -3374,10 +3380,12 @@ class IOSXEUpgrade(Job):
                         ledger, dp["dest-dir"], dp["dest-filename"]
                     ) or [None]
                     ok, why = False, "no inventory entry for this file"
+                    settling_any = False
                     for pkg in candidates:
-                        ok, why = _package_confirms(pkg, expected, op_started)
+                        ok, why, settling = _package_confirms(pkg, expected, op_started)
                         if ok:
                             break
+                        settling_any = settling_any or settling
                     if ok:
                         self.logger.info(
                             "xcopy complete (engine ledger: %s), confirmed "
@@ -3389,9 +3397,22 @@ class IOSXEUpgrade(Job):
                             extra=log,
                         )
                         return
+                    if settling_any and verify_settle_polls < C.XCOPY_VERIFY_SETTLE_POLLS:
+                        verify_settle_polls += 1
+                        self.logger.info(
+                            "Engine package verification still settling (%s) "
+                            "— waiting one poll for the engine's own verdict "
+                            "(%d/%d; zero-AVC ledger re-poll; the terminal "
+                            "transfer verdict is durable).",
+                            why,
+                            verify_settle_polls,
+                            C.XCOPY_VERIFY_SETTLE_POLLS,
+                            extra=log,
+                        )
+                        continue
                     self.logger.info(
                         "Package inventory could not confirm the transfer "
-                        "(%s) — falling back to the authoritative listing.",
+                        "(%s) — trying a keyed read of the destination.",
                         why,
                         extra=log,
                     )
@@ -3399,11 +3420,40 @@ class IOSXEUpgrade(Job):
                     self.logger.info(
                         "Ledger never published a download descriptor "
                         "(download-param) for uuid %s — the package-inventory "
-                        "confirm is unavailable here; using the authoritative "
-                        "listing.",
+                        "confirm is unavailable here; trying a keyed read of "
+                        "the destination.",
                         op_uuid,
                         extra=log,
                     )
+                # Tier 1.5: keyed byte-exact confirm — measures the
+                # destination file itself (same filesystem fact the listing
+                # publishes, scoped to our one entry, zero AVC). POSITIVE
+                # ACCEPT ONLY: a miss, error, or mismatch never judges —
+                # the authoritative listing keeps negative-verdict authority.
+                confirm_url = keyed_url
+                if confirm_url is None and address is not None and dp is not None:
+                    confirm_url = _keyed_content_url(
+                        address[0],
+                        address[1],
+                        f"{dp['dest-dir']}/{dp['dest-filename']}",
+                    )
+                if confirm_url is not None:
+                    try:
+                        ksize = _keyed_size_read(client, confirm_url, image.image_file_name)
+                    except RestconfError:
+                        ksize = None
+                    if ksize is not None and abs(ksize - expected) <= C.SIZE_MATCH_TOLERANCE_BYTES:
+                        self.logger.info(
+                            "xcopy complete (engine ledger: %s), confirmed "
+                            "byte-exact by a keyed read of the destination — "
+                            "%s bytes on %s (no filesystem walk; %s).",
+                            detail,
+                            ksize,
+                            target_fs,
+                            _fmt_duration(time.monotonic() - started),
+                            extra=log,
+                        )
+                        return
                 final = self._read_q_filesystem(client)
                 if final is None:
                     self.logger.warning(
@@ -5395,48 +5445,61 @@ def _parse_ledger_time(value):
 
 
 def _package_confirms(pkg_data, expected_size, op_started):
-    """(ok, reason): can the package inventory confirm the transfer?
+    """(ok, reason, settling): can the package inventory confirm the transfer?
 
     Confirmation needs ALL THREE device-published facts: verify-status
     contains 'verify-ok' (the engine's own integrity verdict on the landed
     file), pkg-size equal to the recorded size EXACTLY, and an entry
     timestamp no older than this operation's start — the staleness guard
     that keeps a pre-existing same-named entry from confirming a new
-    transfer. Anything unreadable fails closed: the caller falls back to
-    the authoritative filesystem listing.
+    transfer. Anything unreadable fails closed: the caller falls to the
+    next confirm tier. `settling` is True ONLY when the blocker is a
+    verify-status the engine reports as still DEFERRED (field fact
+    2026-07-31, 9500 SVL train: verification runs lazily after the
+    transfer; the 17.18.03 bench stamps verify-ok immediately) — the
+    caller may wait a bounded number of zero-AVC ledger polls for the
+    engine's verdict. The deferred-state pkg-size is deliberately NEVER
+    accepted on its own: its provenance (measured vs echoed metadata) is
+    unproven, and a self-confirming size would break fail-closed.
     """
     if not isinstance(pkg_data, dict):
-        return False, "no inventory entry for this file"
+        return False, "no inventory entry for this file", False
     verify = str(pkg_data.get("verify-status", "")).strip().lower()
     if "verify-ok" not in verify:
-        return False, f"verify-status is '{verify or 'absent'}'"
+        return False, f"verify-status is '{verify or 'absent'}'", "deferred" in verify
     try:
         size = int(str(pkg_data.get("pkg-size", "")).strip())
         want = int(expected_size) if expected_size else 0
     except (ValueError, TypeError):
-        return False, (
-            f"unreadable size (pkg-size {pkg_data.get('pkg-size')!r}, recorded {expected_size!r})"
+        return (
+            False,
+            f"unreadable size (pkg-size {pkg_data.get('pkg-size')!r}, recorded {expected_size!r})",
+            False,
         )
     if not want or size != want:
-        return False, f"pkg-size {size} != recorded {expected_size}"
+        return False, f"pkg-size {size} != recorded {expected_size}", False
     stamp = _parse_ledger_time(pkg_data.get("timestamp"))
     started = _parse_ledger_time(op_started)
     if stamp is None or started is None:
-        return False, "entry/op timestamps unreadable — cannot prove freshness"
+        return False, "entry/op timestamps unreadable — cannot prove freshness", False
     if started.year < 1971:
         # Epoch-zero is this model's unset-time marker (same convention as
         # the in-flight end-time) — an unset op start can gate nothing.
-        return False, (
-            f"op start-time {started.isoformat()} is the model's epoch-zero "
-            "unset marker — cannot prove freshness"
+        return (
+            False,
+            (
+                f"op start-time {started.isoformat()} is the model's epoch-zero "
+                "unset marker — cannot prove freshness"
+            ),
+            False,
         )
     try:
         stale = stamp < started
     except TypeError:
-        return False, "mixed timestamp forms — cannot prove freshness"
+        return False, "mixed timestamp forms — cannot prove freshness", False
     if stale:
-        return False, f"entry timestamp {stamp.isoformat()} predates this operation"
-    return True, f"verify-ok, {size} bytes, entry fresh ({stamp.isoformat()})"
+        return False, f"entry timestamp {stamp.isoformat()} predates this operation", False
+    return True, f"verify-ok, {size} bytes, entry fresh ({stamp.isoformat()})", False
 
 
 def _find_target_file_entry(data, image_file_name, target_fs):

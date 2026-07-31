@@ -677,8 +677,13 @@ the engine's own **package inventory**
 (`install-location-information/install-packages`, captured live
 2026-07-30), which publishes the landed file's exact byte size, its
 `verify-ok` status, and a timestamp the job gates against this operation;
-entries vanish when files are deleted, and the authoritative listing
-remains the fallback whenever the inventory cannot confirm. **Failure is
+entries vanish when files are deleted. Some trains run that verification
+**lazily** (field-observed on a 9500 SVL: `install-package-verify-deferred`
+right after the transfer), so the confirm waits a bounded beat of zero-AVC
+ledger re-polls for the engine's verdict, then tries a **keyed byte-exact
+read of the destination** (positive-accept only, no walk), with the
+authoritative listing remaining the floor whenever none of that can
+confirm. **Failure is
 the engine's published failing transaction** (e.g. `install-txn-download →
 fail`, sub-state `install-download-fail`) — a device reason, not an
 inference. File-size polls remain for progress display via a walk-free
