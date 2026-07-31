@@ -23,7 +23,9 @@ company took it across a production site of **three switch stacks (6–7 members
 each)** through the full **stage-1 → stage-2 → full-upgrade** cycle.
 **Auto-rollback has also been observed in the field** — an upgrade that couldn't
 be confirmed after the reload was never committed, and the device rolled back to
-its prior image on its own.
+its prior image on its own. **The post-upgrade health checks have their first
+field true positive** as well: a trunk port facing a WAP that did not return
+after an upgrade was caught and reported by the post-check.
 
 Development stays active on **`main`** — production should track the
 **`1.0.x` stable train**, which changes **only for bug fixes** (see
@@ -819,8 +821,11 @@ the reload, or a boot the device itself classifies as a crash. On the
 **8b** (post-test) decision branches.
 
 > **Maturity:** newer than the core flow — exercised in lab runs on the 9300
-> and report-only by design, but with **less field time** than the
-> copy/install path. Treat findings as a signal to verify, not a verdict, and
+> and report-only by design, with **less field time** than the copy/install
+> path. **First field true positive (2026-07):** after a production upgrade,
+> a trunk port facing a WAP did not come back, and the post-check caught and
+> reported exactly that — a real detection of the failure class these checks
+> exist for. Still: treat findings as a signal to verify, not a verdict, and
 > send field reports either way ([Contributing](#contributing)).
 
 **Pre-test (8a)** — the baseline, captured immediately before activation
@@ -1210,13 +1215,14 @@ validate it on hardware we can reach.
   available at our floor), AP-fleet completion polling, and SSO awareness.
   Gated on having a 9800 + APs to validate against; until then this job warns
   and leaves 9800s to deliberate full-outage use.
-- **Bulk device selection** — select targets by location, tag, or group in one
-  step instead of picking each device (today the filters assist, but the final
-  selection is still per-device).
-- **Pre/post health-check hardening** — the checks are newer than the core
-  flow and carry a maturity note; more field validation first, then the v2
-  checks queued in
-  [Pre/post health checks](#prepost-health-checks-report-only).
+- ~~**Bulk device selection**~~ — **shipped on `main`** (2026-07): Dynamic
+  Groups as a roster source, resolved live at run start — see
+  [Selecting devices at scale](#selecting-devices-at-scale). Ships with the
+  next train.
+- **Pre/post health-check hardening** — the checks now carry their **first
+  field true positive** (a missing WAP-facing trunk port detected and
+  reported post-upgrade); more field validation, then the v2 checks queued
+  in [Pre/post health checks](#prepost-health-checks-report-only).
 
 **Under consideration** (real value, unresolved design questions):
 
