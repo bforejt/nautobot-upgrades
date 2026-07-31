@@ -202,6 +202,14 @@ WAN_TRANSFER_TIMEOUT_MIN = 90
 #: transfer on-device). A record seen and then VANISHED from both ledger
 #: sections is a distinct case: the job attempts a byte-exact rescue first.
 XCOPY_STALL_SECS = 300
+#: How many extra ledger polls to tolerate a package-inventory verify-status
+#: of install-package-verify-DEFERRED after a successful transfer before
+#: falling to the next confirm tier. Field fact (2026-07-31, 9500 SVL):
+#: some trains run the verification pass lazily after the transfer, so the
+#: verdict lands moments after our first success poll — waiting is a
+#: zero-AVC ledger re-read (the terminal transfer verdict is durable), and
+#: the keyed-read + listing tiers remain beneath it either way.
+XCOPY_VERIFY_SETTLE_POLLS = 3
 
 POLL_INTERVAL = 30
 

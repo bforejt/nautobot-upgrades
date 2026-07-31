@@ -677,8 +677,13 @@ the engine's own **package inventory**
 (`install-location-information/install-packages`, captured live
 2026-07-30), which publishes the landed file's exact byte size, its
 `verify-ok` status, and a timestamp the job gates against this operation;
-entries vanish when files are deleted, and the authoritative listing
-remains the fallback whenever the inventory cannot confirm. **Failure is
+entries vanish when files are deleted. Some trains run that verification
+**lazily** (field-observed on a 9500 SVL: `install-package-verify-deferred`
+right after the transfer), so the confirm waits a bounded beat of zero-AVC
+ledger re-polls for the engine's verdict, then tries a **keyed byte-exact
+read of the destination** (positive-accept only, no walk), with the
+authoritative listing remaining the floor whenever none of that can
+confirm. **Failure is
 the engine's published failing transaction** (e.g. `install-txn-download →
 fail`, sub-state `install-download-fail`) — a device reason, not an
 inference. File-size polls remain for progress display via a walk-free
@@ -1148,8 +1153,10 @@ performs anywhere: the pre-check decides **both** skip and absence
 walk-free (the engine's package inventory plus keyed reads — bench-proven
 AVC-silent for **hits and misses alike**), the transfer watch rides the
 install-oper ledger plus a constructed keyed address, and the final
-byte-exact confirm comes from the package inventory. The full listing
-survives only as the loud fallback tier for every gap. Two device-tested
+byte-exact confirm comes from the package inventory (waiting a bounded
+beat when the engine's verification is still deferred) or a keyed read of
+the destination. The full listing survives only as the loud fallback
+floor for every gap. Two device-tested
 dead ends worth recording: RFC 8040 `depth` is a **post-filter** on this
 backend (returns pruned output, still collects and denies — not an
 alternative), and trimming the partition-stats projection to names-only

@@ -27,9 +27,12 @@ the next major train once the transfer path is field-proven:
   (immune to the platform's ~600s blocking-RPC ceiling that kills classic
   copy on slow WANs); success is the engine's own verdict confirmed
   byte-exact (normally from the engine's package inventory — no filesystem
-  walk), failure quotes the engine's failing transaction. Bench-validated
-  end-to-end on 17.18.03 including ~15-minute transfers; WAN field runs
-  pending.
+  walk — waiting a bounded beat when the engine reports verification still
+  deferred, field-observed on a 9500 SVL, then a keyed read of the
+  destination, positive-accept only), failure quotes the engine's failing
+  transaction. Bench-validated end-to-end on 17.18.03 including
+  ~15-minute transfers, plus a first field run on a 9500 SVL (Nautobot
+  3.1.8); WAN field runs pending.
 - **Image transfer method** input: `Async xcopy (default — classic-copy
   fallback)` / `Classic copy only`. Fallback to classic copy happens up
   front on wire-proven preconditions (ported image URL, no recorded file
