@@ -16,7 +16,7 @@ devices — **Catalyst 9300** primarily — driven entirely over **RESTCONF**.
 
 **A work in progress — and going well.** Thoroughly exercised on real Catalyst
 hardware over RESTCONF: **30+ upgrade and downgrade runs across the 9300, 9300L,
-and Catalyst 8000V** — single switches, a 2-member stack, and serial and
+and **C8000V** — single switches, a 2-member stack, and serial and
 parallel batches — on Nautobot **2.4 and 3.1**, with the same results on either. It's now run in **early production at more than one organization**: it
 upgraded our lab's Catalyst **9500** StackWise Virtual core, and a separate
 company took it across a production site of **three switch stacks (6–7 members
@@ -31,8 +31,10 @@ Development stays active on **`main`** — production should track the
 **`1.0.x` stable train**, which changes **only for bug fixes** (see
 [Releases & pinning](#releases--pinning)). Read the Job Result logs and
 **always run Dry-run first**. Not yet proven: parallelism above 2, sustained
-fleet-wide production use, and a couple of failure paths (a corrupt image, a
-member failing to rejoin). Platform, per-train, and compatibility detail is in
+fleet-wide production use, and a couple of failure paths we have not been
+able to stage (a corrupt image — Cisco's signature validation is the
+documented mechanism, but we have never watched the job handle a rejection —
+and a member failing to rejoin). Platform, per-train, and compatibility detail is in
 [Versions & support](#versions--support).
 
 ---
@@ -110,10 +112,13 @@ production hardening, so every run should still start with **Dry-run**.
 
 ## What it does
 
-From the Nautobot **Jobs** page you scope target devices — filtering by
-**location, role, status, platform, device type, current version, and tags** —
-pick a target version, and the job runs an **install-mode** upgrade as a series
-of PASS/FAIL gates, stopping at the first failure for a device. In one picture:
+From the Nautobot **Jobs** page you scope target devices — by picking them
+explicitly (the **location, role, status, platform, device type, current
+version, and tag** filters narrow the picker) and/or by selecting **Dynamic
+Groups**, resolved live at run start; the roster is the deduplicated union of
+both. You pick a target version, and the job runs an **install-mode** upgrade
+as a series of PASS/FAIL gates, stopping at the first failure for a device.
+In one picture:
 
 [![IOS-XE upgrade — high-level overview](docs/overview-flow.svg)](docs/overview-flow.md)
 
@@ -177,7 +182,7 @@ gate and abort.
 | --- | --- | --- |
 | **Nautobot** | **2.4 LTM** and **3.1+** | Job execution verified on **both 2.4 LTM and 3.1, with the same behavior on either**; the current test bed is a stock **2.4.36**, with earlier volume on 3.1. **3.0 is untested by choice** — unmaintained since 3.1 shipped. Earlier 2.x (≥ 2.2) *may* work but is untested (dynamic-group resolution uses the platform's fresh-membership API, 2.3+; earlier 2.x falls back to the group's query). |
 | **Device OS** | Cisco IOS-XE **≥ 17.9.1** (incl. 26.x) | Hardware-validated across **17.12–26.1**; every YANG model the job touches verified against Cisco's published models 17.9.1–26.1.1. Model presence ≠ runtime behavior — do one supervised run per new train. Rebuild letters (17.15.4**d**) are **distinct versions**. |
-| **Platform** | Catalyst **9300 family** + **C8000V** | **9300 and 9300L** hardware-tested; the remaining 9300 variants (LM/X) run the identical cat9k image and flow (run pending). **C8000V** (autonomous): **validated live** — a full 17.12 → 17.15.5 upgrade on a running Cat8kv, with `bootflash:` discovered from the device. **9500** (StackWise Virtual): **hardware-validated in production** — a 9500-16X SVL pair upgraded as the lab core. **9200** and **9400/9600**: model sets identical (runs pending). **9800 WLC**: mechanically compatible but **operationally out of scope** — controller only, no AP predownload; a full-scope run is warned in-job. Nexus/NX-OS is a different API — not supported. **3650/3850 cannot be supported** (their terminal 16.12 train lacks the install API; Cisco's replacement, the 9300L, is supported). |
+| **Platform** | Catalyst **9300 family** + **C8000V** | **9300 and 9300L** hardware-tested; the remaining 9300 variants (LM/X) run the identical cat9k image and flow (run pending). **C8000V** (autonomous): **validated live** — a full 17.12 → 17.15.5 upgrade on a running C8000V, with `bootflash:` discovered from the device. **9500** (StackWise Virtual): **hardware-validated in production** — a 9500-16X SVL pair upgraded as the lab core. **9200** and **9400/9600**: model sets identical (runs pending). **9800 WLC**: mechanically compatible but **operationally out of scope** — controller only, no AP predownload; a full-scope run is warned in-job. Nexus/NX-OS is a different API — not supported. **3650/3850 cannot be supported** (their terminal 16.12 train lacks the install API; Cisco's replacement, the 9300L, is supported). |
 
 **By IOS-XE train:**
 
@@ -637,7 +642,10 @@ xcopy entirely (the pre-2.0 behavior, with the field history).
 > with the engine's own `install-op-succ` ledger verdict and byte-exact size
 > matches — both **~15 minutes, well past the ~600s ceiling** that kills
 > classic copy, both on the 17.18.03 lab device (one Postman-fired, one the
-> job's own first live run).
+> job's own first live run). Plus a **first field run on a 9500 StackWise
+> Virtual pair** (2026-07-31, Nautobot 3.1.8) — a 15m07s staging transfer
+> that also surfaced this platform's lazily-deferred package verification
+> and produced the bounded verify-settle wait.
 > WAN **field** runs remain outstanding. Validate on a lab device first, and
 > report results either way ([Contributing](#contributing)). One known
 > history item: a real 17.15.05 once **silently failed to transfer via
@@ -659,9 +667,14 @@ Shared semantics: a file already on flash byte-exact is skipped by every
 tier — for xcopy the pre-check itself is **ledger-first and fully
 walk-free on the happy path** (the engine's package inventory names the
 file and a keyed read corroborates the byte count; **absence** is likewise
-decided by keyed probes of device-published candidate dirs — bench-proven
-AVC-silent for hits and misses, 2026-07-30 — with the authoritative
-listing as the fallback tier whenever any of it cannot decide). The free-space gate, `install add`'s mandatory signature
+decided by keyed probes of up to **three** ranked device-published candidate
+directories — package-inventory `pkg-dir`s first, then download-descriptor
+`dest-dir`s — bench-proven AVC-silent for hits and misses, 2026-07-30. A
+clean miss across every probed directory is accepted as absence: the cost
+of a false absence is bounded to one harmless re-transfer that overwrites,
+which is why this differs from the mid-transfer watch, where a keyed miss
+never proves anything. The authoritative listing remains the fallback tier
+whenever any of it cannot decide. The free-space gate, `install add`'s mandatory signature
 validation, and all downstream gates are unchanged. The transfer window
 (`WAN_TRANSFER_TIMEOUT_MIN`, **90 minutes** by default) is the **job-side**
 wait budget and must fit the job's overall time limits — for very slow WANs
@@ -1000,8 +1013,8 @@ mode.
 | Install state / mode / ledger | `GET .../Cisco-IOS-XE-install-oper:install-oper-data` |
 | Boot-config filesystem hint (zero-walk; corroborated against partitions) | `GET .../data/Cisco-IOS-XE-native:native/boot` |
 | Partition stats (discovery corroboration + space gate — **one shared read**) | `GET .../q-filesystem?fields=fru;slot;bay;chassis;partitions(name;total-size;used-size)` |
-| Full file listing (copy pre-check, first-sighting learn, transfer verify) | `GET .../Cisco-IOS-XE-platform-software-oper:cisco-platform-software/q-filesystem` |
-| Per-poll copy progress after the learn (walk-free, no SELinux bursts) | `GET .../q-filesystem=<fru>,<slot>,<bay>,<chassis>/partitions=<name>/partition-content=<full-path>` (address exactly as a real listing published it) |
+| Full file listing — the **fallback floor** for the pre-check, the classic-copy first-sighting learn, and any confirm the walk-free tiers cannot settle | `GET .../Cisco-IOS-XE-platform-software-oper:cisco-platform-software/q-filesystem` |
+| Keyed single-entry file read (walk-free, no SELinux bursts) — pre-check skip/absence, per-poll progress, and the byte-exact confirm tier | `GET .../q-filesystem=<fru>,<slot>,<bay>,<chassis>/partitions=<name>/partition-content=<full-path>` (address learned from a real listing **or** constructed from the engine's download descriptor + partition-stats keys) |
 | Copy image (Async xcopy, default) | `POST .../operations/Cisco-IOS-XE-xcopy-rpc:xcopy` (async; tracked via the engine's uuid-keyed install-oper ledger — the install-oper GET above, polled each cycle; success = ledger verdict confirmed byte-exact; file-size polls are progress display only) |
 | Copy image (Classic copy — fallback tier / selectable) | `POST .../operations/Cisco-IOS-XE-rpc:copy` (worker thread) |
 | Add / activate / commit / remove | `POST .../operations/Cisco-IOS-XE-install-rpc:{install,activate,install-commit,remove}` |
@@ -1137,12 +1150,12 @@ answer re-learns from the next full listing, and a rejected URL form or two
 consecutive misses **latch a loud full-listing fallback** — the pre-change
 behavior is the floor, never entered silently. The copy pre-check and the
 byte-exact verify always use the authoritative full listing. Expected
-bursts per fresh copy on an affected release: a **handful** — ONE shared
-partition-stats read serving both discovery and the free-space gate
-(`fields`-scoped for payload size, but the device still walks
-server-side; the boot-config read that picks the filesystem is zero-walk),
-the pre-check listing, the watcher's full read(s) until the first
-sighting, and the final verify listing — instead
+bursts per fresh copy **on the classic-copy fallback tier**: a
+**handful** — ONE shared partition-stats read serving both discovery and
+the free-space gate (bench-measured 2026-07-30 at ~2 mount-level statfs
+denials, *not* a file-enumeration walk; the boot-config read that picks
+the filesystem is zero-walk), the pre-check listing, the watcher's full
+read(s) until the first sighting, and the final verify listing — instead
 of **one every 30 seconds for the whole transfer** (~30 for a 15-minute
 copy; the device's audit rate-limiter sometimes truncates the tail of
 that storm, but a fresh run is loud). Every fallback still logs a
@@ -1296,9 +1309,10 @@ support for hardware we can reach. A few ground rules keep the project honest:
   scope or not yet committed.
 - **Target `main`.** All changes land on `main` first; bug fixes are then
   cherry-picked to the stable train ([RELEASING.md](RELEASING.md)).
-- **Test before you open the PR:** run **Dry-run** and, where relevant, the
-  scenario checks; describe how you tested it; and keep changes small and
-  reviewable. For anything non-trivial, open an issue first — it saves everyone
+- **Test before you open the PR:** run **Dry-run** against real hardware and,
+  for anything touching upgrade logic, a live lab run; make sure CI is green
+  (ruff lint + format + byte-compile); describe how you tested it; and keep
+  changes small and reviewable. For anything non-trivial, open an issue first — it saves everyone
   time.
 
 ## License

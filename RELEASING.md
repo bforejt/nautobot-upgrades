@@ -25,9 +25,15 @@ only ever receives bug fixes.**
   behavior an operator may depend on. Ships as a **new train branch**.
 
 Every release is tagged `vX.Y.Z`. `JOB_VERSION` in
-[`jobs/constants.py`](jobs/constants.py) (exported as `jobs.__version__`)
-must match the tag — the upgrade job logs it at the start of every run, so
-each Job Result records exactly which release produced it.
+[`jobs/constants.py`](jobs/constants.py) (exported as `jobs.__version__`) is
+logged by the upgrade job at the start of every run, so each Job Result
+records exactly which code produced it:
+
+- **On a train branch** it must match the tag exactly.
+- **On `main`** it carries the next train's version with a **`-dev`**
+  suffix (e.g. `2.0.0-dev`), so a development run can never be mistaken for
+  a stable release in the log. A bare `X.Y.Z` on `main` is always a bug —
+  set the `-dev` value in the same commit that cuts a train.
 
 ## Support policy
 
@@ -44,8 +50,9 @@ each Job Result records exactly which release produced it.
 2. `git cherry-pick -x` the fix commit(s) onto the train branch.
 3. On the train: bump `JOB_VERSION`, add the CHANGELOG entry (mirror the
    entry on `main` too).
-4. Verify on the train tip: byte-compile, the Nautobot loader check, and the
-   scenario checks when the fix touches upgrade logic.
+4. Verify on the train tip: CI green (ruff lint, ruff format check,
+   byte-compile) and a **Dry-run against real hardware**; when the fix
+   touches upgrade logic, a live lab run on an affected platform.
 5. Tag `vX.Y.Z` on the train tip; push the branch and tag; publish a GitHub
    Release with the CHANGELOG entry.
 

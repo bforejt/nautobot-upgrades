@@ -32,7 +32,12 @@ TERM_W, TERM_H = 320, 64
 #   branch = {"cond": <right-edge label>, "pass": <down-edge label>,
 #             "kind": "okr"|"abort", "text": <terminal box text>}
 SPINE = [
-    ("start", "start", "Select devices + target version\n(Nautobot → Jobs)", None),
+    (
+        "start",
+        "start",
+        "Select devices and/or dynamic groups\n+ target version (Nautobot → Jobs)",
+        None,
+    ),
     (
         "gcbefore",
         "runopt",
@@ -72,7 +77,8 @@ SPINE = [
     (
         "copy",
         "proc",
-        "Copy image + verify exact size\n(skipped if the file is already on flash)",
+        "Transfer image + verify exact size\n(async xcopy by default, ledger-tracked;\n"
+        "classic copy = fallback tier; skipped if already on flash)",
         None,
     ),
     (

@@ -38,8 +38,11 @@ the next major train once the transfer path is field-proven:
   front on wire-proven preconditions (ported image URL, no recorded file
   size) or after a positively terminal device-reported xcopy failure —
   never on ambiguous ends.
-- Walk-free, ledger-first pre-check and progress reads (SELinux AVC burst
-  profile drops to typically one filesystem walk per run).
+- Walk-free, ledger-first pre-check, progress reads, and byte-exact confirm:
+  the happy path performs **no filesystem walk at all** (SELinux AVC profile
+  drops to ~2 mount-level denial lines per run — bench-measured on a single
+  lab 9300; per-member counts on a stack/SVL unmeasured). The authoritative
+  full listing survives only as the loud fallback floor.
 
 ### Changed
 - Classic copy is now the **fallback tier** (still selectable outright).
@@ -83,4 +86,5 @@ core; a three-stack site of 6–7-member stacks through the full staged cycle),
 and one field-observed auto-rollback of an unconfirmable upgrade. See the
 README's *Current status* for what is not yet proven.
 
+[Unreleased]: https://github.com/bforejt/nautobot-upgrades/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/bforejt/nautobot-upgrades/releases/tag/v1.0.0

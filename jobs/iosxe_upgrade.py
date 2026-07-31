@@ -29,8 +29,12 @@ Upgrade flow (per device):
      inactive/staged software — the deliberate staged-conflict override);
      target-filesystem discovery from the device; free-space (minimum across
      stack members, evaluated on the cleaned flash)
-  3. Classic copy RPC in a worker thread, with the on-device file size polled
-     for progress reporting and a size verification on completion
+  3. Transfer + integrity: async xcopy by default (an install-engine
+     operation tracked by its uuid in the ledger; success = the engine's
+     published verdict confirmed byte-exact from the package inventory, a
+     keyed read, or the authoritative listing), with the classic copy RPC
+     as the fallback tier (worker thread, file-size progress polling,
+     size verification on completion)
      (Run scope 'stage-copy' STOPS here — staged, nothing armed)
   4. install add -> tracked to COMPLETION in the engine's operation ledger
      (install-oper / install-oper-hist records keyed by our RPC uuid; install

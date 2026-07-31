@@ -6,9 +6,11 @@ upgrade job.
 ## Architecture: Nautobot is the index, the firmware server holds the bytes
 
 The upgrade is **RESTCONF-only and device-initiated** — the switch pulls its own
-image via the classic copy RPC (`Cisco-IOS-XE-rpc:copy`) from a URL we hand
-it — while the job polls the growing file for progress. That dictates
-the storage model:
+image from a URL we hand it. By default that is the async xcopy RPC
+(`Cisco-IOS-XE-xcopy-rpc:xcopy`), run by the install engine and tracked
+through its operation ledger; the classic blocking copy RPC
+(`Cisco-IOS-XE-rpc:copy`, file-size progress polling) is the fallback tier.
+That dictates the storage model:
 
 ```
             (metadata / index)                  (the bytes — companion stack)

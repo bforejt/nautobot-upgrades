@@ -13,10 +13,13 @@ RESTCONF endpoints used (verified against Cisco's published YANG models):
   * Cisco-IOS-XE-platform-software-oper (filesystem free space / file sizes)
 """
 
-# Release version of this jobs repository (see RELEASING.md). Must match the
-# release tag; the upgrade job logs it at the start of every run so a Job
-# Result always records which release produced it.
-JOB_VERSION = "1.0.0"
+# Release version of this jobs repository (see RELEASING.md). The upgrade job
+# logs it at the start of every run so a Job Result always records which code
+# produced it. On a TRAIN branch this must match the release tag exactly; on
+# `main` it carries the NEXT train's version with a `-dev` suffix, so a
+# development run can never be mistaken for a stable release in the log. A
+# bare `X.Y.Z` on main is always a bug.
+JOB_VERSION = "2.0.0-dev"
 
 # --- Connectivity -----------------------------------------------------------
 
