@@ -3043,11 +3043,16 @@ class IOSXEUpgrade(Job):
         on-device timeout), and LEDGER_BLIP_POLLS consecutive unreadable
         ledger polls.
 
-        Walk-minimization (2026-07-30, both device-published, both with the
-        loud listing fallback): (1) the byte-exact confirm is attempted from
+        Walk-minimization (2026-07-30, all device-published, all with the
+        loud listing fallback): (1) the byte-exact confirm runs in TIERS —
         the engine's own install-packages INVENTORY first (pkg-size ==
         recorded size exactly — bench-verified equality — plus verify-ok and
-        a timestamp inside this op; entries vanish with deleted files); (2)
+        a timestamp inside this op; entries vanish with deleted files), with
+        a bounded XCOPY_VERIFY_SETTLE_POLLS wait when the engine still
+        reports verification DEFERRED (field 2026-07-31, 9500 SVL), then a
+        keyed byte-exact read of the destination (positive-accept only —
+        miss/error/mismatch never judges), with the authoritative listing
+        as the floor retaining negative-verdict authority; (2)
         the walk-free progress address is CONSTRUCTED from the descriptor's
         dest-dir/dest-filename plus the partition-stats keys (q-filesystem's
         own keys — a real 9300 publishes chassis=-1 there vs install-oper's
@@ -3112,6 +3117,7 @@ class IOSXEUpgrade(Job):
         error_streak = 0  # consecutive unreadable ledger polls
         stall_warned = False
         verify_settle_polls = 0  # bounded wait for a DEFERRED engine verify
+        ledger_success_detail = None  # set once the ledger publishes success
         polls = 0
         dp = None  # the engine's download descriptor (dest-dir/dest-filename)
         address = _partition_address(partitions_data, target_fs)
@@ -3180,6 +3186,18 @@ class IOSXEUpgrade(Job):
                     "still-running transfer."
                 ) from exc
             if time.monotonic() > deadline:
+                if ledger_success_detail is not None:
+                    # The TRANSFER succeeded per the engine's own ledger —
+                    # only the byte-exact confirm could not complete inside
+                    # the window. Say so; a re-run skips a verified copy.
+                    raise UpgradeAbort(
+                        f"xcopy transfer SUCCEEDED per the engine ledger "
+                        f"({ledger_success_detail}), but the byte-exact "
+                        f"confirm could not complete within the job's "
+                        f"transfer window ({C.WAN_TRANSFER_TIMEOUT_MIN} min "
+                        "+ slack). Verify the file on flash and re-run — the "
+                        "pre-check skips a verified copy."
+                    )
                 raise UpgradeAbort(
                     f"xcopy passed the job's transfer window "
                     f"({C.WAN_TRANSFER_TIMEOUT_MIN} min + slack) without a "
@@ -3353,6 +3371,7 @@ class IOSXEUpgrade(Job):
                     + _fetch_hints(image.download_url)
                 )
             if verdict == "success":
+                ledger_success_detail = detail
                 # The engine's verdict is authoritative for the TRANSFER;
                 # byte-exact remains the job's own integrity gate. Tier 1:
                 # the engine's package INVENTORY, read from the SAME ledger
@@ -3381,10 +3400,13 @@ class IOSXEUpgrade(Job):
                     ) or [None]
                     ok, why = False, "no inventory entry for this file"
                     settling_any = False
+                    settle_why = None
                     for pkg in candidates:
                         ok, why, settling = _package_confirms(pkg, expected, op_started)
                         if ok:
                             break
+                        if settling and settle_why is None:
+                            settle_why = why  # the DEFERRED candidate's own reason
                         settling_any = settling_any or settling
                     if ok:
                         self.logger.info(
@@ -3397,51 +3419,70 @@ class IOSXEUpgrade(Job):
                             extra=log,
                         )
                         return
-                    if settling_any and verify_settle_polls < C.XCOPY_VERIFY_SETTLE_POLLS:
+                    if (
+                        settling_any
+                        and verify_settle_polls < C.XCOPY_VERIFY_SETTLE_POLLS
+                        and time.monotonic() + C.POLL_INTERVAL < deadline
+                    ):
+                        # Deadline-aware: never spend the last slack on a
+                        # settle wait — yield to the keyed/listing tiers.
                         verify_settle_polls += 1
                         self.logger.info(
                             "Engine package verification still settling (%s) "
                             "— waiting one poll for the engine's own verdict "
                             "(%d/%d; zero-AVC ledger re-poll; the terminal "
                             "transfer verdict is durable).",
-                            why,
+                            settle_why or why,
                             verify_settle_polls,
                             C.XCOPY_VERIFY_SETTLE_POLLS,
                             extra=log,
                         )
                         continue
-                    self.logger.info(
-                        "Package inventory could not confirm the transfer "
-                        "(%s) — trying a keyed read of the destination.",
-                        why,
-                        extra=log,
-                    )
+                    inventory_note = f"package inventory could not confirm ({why})"
                 else:
-                    self.logger.info(
-                        "Ledger never published a download descriptor "
-                        "(download-param) for uuid %s — the package-inventory "
-                        "confirm is unavailable here; trying a keyed read of "
-                        "the destination.",
-                        op_uuid,
-                        extra=log,
+                    inventory_note = (
+                        f"ledger never published a download descriptor for "
+                        f"uuid {op_uuid} — the package-inventory confirm is "
+                        "unavailable here"
                     )
                 # Tier 1.5: keyed byte-exact confirm — measures the
                 # destination file itself (same filesystem fact the listing
                 # publishes, scoped to our one entry, zero AVC). POSITIVE
                 # ACCEPT ONLY: a miss, error, or mismatch never judges —
                 # the authoritative listing keeps negative-verdict authority.
+                # Honors the keyed_ok latch: a release that rejected keyed
+                # reads mid-watch is never probed again here.
                 confirm_url = keyed_url
-                if confirm_url is None and address is not None and dp is not None:
+                if confirm_url is None and keyed_ok and address is not None and dp is not None:
                     confirm_url = _keyed_content_url(
                         address[0],
                         address[1],
                         f"{dp['dest-dir']}/{dp['dest-filename']}",
                     )
-                if confirm_url is not None:
+                if confirm_url is None:
+                    self.logger.info(
+                        "%s, and no keyed destination address is available — "
+                        "deciding from the authoritative listing.",
+                        inventory_note,
+                        extra=log,
+                    )
+                else:
+                    self.logger.info(
+                        "%s — trying a keyed read of the destination.",
+                        inventory_note,
+                        extra=log,
+                    )
                     try:
                         ksize = _keyed_size_read(client, confirm_url, image.image_file_name)
-                    except RestconfError:
+                    except RestconfError as exc:
                         ksize = None
+                        kstatus = getattr(exc, "status_code", None)
+                        if kstatus is not None and 400 <= kstatus < 500:
+                            # Structural rejection — never re-fire this form
+                            # on later confirm iterations (transient errors
+                            # stay retryable next poll).
+                            keyed_url = None
+                            address = None
                     if ksize is not None and abs(ksize - expected) <= C.SIZE_MATCH_TOLERANCE_BYTES:
                         self.logger.info(
                             "xcopy complete (engine ledger: %s), confirmed "
@@ -3454,6 +3495,14 @@ class IOSXEUpgrade(Job):
                             extra=log,
                         )
                         return
+                    self.logger.info(
+                        "Keyed read of the destination could not confirm "
+                        "(%s) — falling back to the authoritative listing.",
+                        f"read {ksize} bytes, expected {expected}"
+                        if ksize is not None
+                        else "no keyed answer",
+                        extra=log,
+                    )
                 final = self._read_q_filesystem(client)
                 if final is None:
                     self.logger.warning(
@@ -5595,11 +5644,14 @@ def _keyed_size_read(client, keyed_url, image_file_name):
     lenient scan is safe here because the keyed URL already constrains the
     response to the one addressed entry. 404/empty is None; what None MEANS
     is the caller's contract: the WATCH treats it as a miss and re-learns
-    from a full listing (never as file absence — mid-transfer stakes), while
-    the PRE-CHECK may treat a corroborated all-dirs miss as absence (bench
+    from a full listing (never as file absence — mid-transfer stakes); the
+    PRE-CHECK may treat a corroborated all-dirs miss as absence (bench
     2026-07-30: keyed misses are AVC-silent; a false absent there only
-    costs a harmless overwriting re-transfer). RestconfError propagates so
-    the caller can distinguish a rejected URL form from a transient blip.
+    costs a harmless overwriting re-transfer); and the post-success CONFIRM
+    treats None or a mismatch as fall-to-the-next-tier only — positive
+    accept only, never a negative verdict (the authoritative listing keeps
+    that authority). RestconfError propagates so the caller can distinguish
+    a rejected URL form from a transient blip.
     """
     data = client.get(keyed_url, ok_404=True)
     if not isinstance(data, dict):

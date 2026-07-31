@@ -1153,8 +1153,10 @@ performs anywhere: the pre-check decides **both** skip and absence
 walk-free (the engine's package inventory plus keyed reads — bench-proven
 AVC-silent for **hits and misses alike**), the transfer watch rides the
 install-oper ledger plus a constructed keyed address, and the final
-byte-exact confirm comes from the package inventory. The full listing
-survives only as the loud fallback tier for every gap. Two device-tested
+byte-exact confirm comes from the package inventory (waiting a bounded
+beat when the engine's verification is still deferred) or a keyed read of
+the destination. The full listing survives only as the loud fallback
+floor for every gap. Two device-tested
 dead ends worth recording: RFC 8040 `depth` is a **post-filter** on this
 backend (returns pruned output, still collects and denies — not an
 alternative), and trimming the partition-stats projection to names-only
