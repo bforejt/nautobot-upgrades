@@ -12,7 +12,8 @@ from .cancel_run import CancelUpgradeRun
 from .constants import JOB_VERSION
 from .iosxe_upgrade import IOSXEUpgrade
 from .register_image import RegisterImage
+from .restconf_dev_tester import RestconfDevTester
 
 __version__ = JOB_VERSION
 
-register_jobs(CancelUpgradeRun, IOSXEUpgrade, RegisterImage)
+register_jobs(CancelUpgradeRun, IOSXEUpgrade, RegisterImage, RestconfDevTester)

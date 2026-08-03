@@ -11,6 +11,7 @@ RPC ``operations``. All higher-level upgrade logic lives in ``iosxe_upgrade.py``
 from __future__ import annotations
 
 import re
+import time
 
 import requests
 
@@ -214,6 +215,74 @@ class RestconfClient:
             return resp.json()
         except ValueError:
             return {}
+
+    # -- recorder primitives ---------------------------------------------------
+
+    @staticmethod
+    def _probe_record(resp, started):
+        # Decode explicitly as UTF-8 (RFC 8040/7951 mandates it for RESTCONF
+        # JSON) — requests has no charset for application/yang-data+json and
+        # would fall back to a chardet GUESS, silently corrupting non-ASCII in
+        # an evidence capture. content_bytes is the device's true byte count.
+        elapsed = int((time.monotonic() - started) * 1000)
+        return {
+            "status": resp.status_code,
+            "elapsed_ms": elapsed,
+            "text": resp.content.decode("utf-8", errors="replace"),
+            "content_bytes": len(resp.content),
+            "error": None,
+        }
+
+    @staticmethod
+    def _probe_error(exc, started):
+        elapsed = int((time.monotonic() - started) * 1000)
+        return {
+            "status": None,
+            "elapsed_ms": elapsed,
+            "text": "",
+            "content_bytes": 0,
+            "error": str(exc),
+        }
+
+    def probe_get(self, path, *, timeout=C.GET_TIMEOUT):
+        """GET as an evidence probe: record, never judge.
+
+        Unlike :meth:`get`, an HTTP error status is a RESULT here, not a
+        failure — the RESTCONF Dev Tester job exists to capture exactly those
+        responses verbatim (UTF-8-decoded per RFC 8040/7951). Returns a record
+        dict ``{"status", "elapsed_ms", "text", "content_bytes", "error"}``
+        where ``status`` is None only for transport-level failures (connection
+        refused, timeout, TLS), with the exception text in ``error``. Never
+        raises.
+        """
+        url = f"{self.base_url}/{path}"
+        self._debug(f"PROBE GET {url}")
+        started = time.monotonic()
+        try:
+            resp = self._session.get(url, timeout=timeout)
+        except requests.RequestException as exc:
+            return self._probe_error(exc, started)
+        return self._probe_record(resp, started)
+
+    def probe_post(self, operation, payload=None, *, timeout=C.RPC_TIMEOUT):
+        """POST an RPC as an evidence probe: record, never judge.
+
+        ``payload=None`` sends NO body (the RESTCONF form for no-input RPCs);
+        callers may retry once with ``{}`` if the device 400s the bodiless
+        form — both attempts are legitimate recorded evidence. Same record
+        shape as :meth:`probe_get`; never raises.
+        """
+        url = f"{self.base_url}/{operation}"
+        self._debug(f"PROBE POST {url} body={self._truncate(_redact(payload))}")
+        started = time.monotonic()
+        try:
+            if payload is None:
+                resp = self._session.post(url, timeout=timeout)
+            else:
+                resp = self._session.post(url, json=payload, timeout=timeout)
+        except requests.RequestException as exc:
+            return self._probe_error(exc, started)
+        return self._probe_record(resp, started)
 
     def clone(self):
         """A new client (fresh HTTP session) with this client's settings.
