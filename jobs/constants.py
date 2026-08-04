@@ -415,3 +415,67 @@ FIRMWARE_BASE_URL_HTTPS_ENV = "FIRMWARE_BASE_URL_HTTPS"
 #: validation (then the device URL is validated directly).
 FIRMWARE_INTERNAL_URL_ENV = "FIRMWARE_INTERNAL_URL"
 FIRMWARE_INTERNAL_URL_DEFAULT = "http://firmware-download/images/"
+
+
+# --- Catalyst 9800 WLC / AP predownload (bench provenance: 2026-08-03/04, ---
+# --- C9800-CL 17.15.5 -> 17.18.3 with two live APs, full arc recorded)    ---
+
+#: AP operational data (Cisco-IOS-XE-wireless-access-point-oper). capwap-data
+#: lists JOINED APs only (~10 KB/AP measured); predownload-data is an ACTIVITY
+#: list — EMPTY (HTTP 204) until a predownload engages, never a roster mirror
+#: (bench: World 2). Both keyed by wtp-mac. An AP whose CAPWAP session dies
+#: mid-download VANISHES from both lists (bench: the port-pull capture) — the
+#: roster CONTRACT (snapshot before firing) is what preserves accountability.
+DATA_AP_CAPWAP = "data/Cisco-IOS-XE-wireless-access-point-oper:access-point-oper-data/capwap-data"
+DATA_AP_PREDOWNLOAD = (
+    "data/Cisco-IOS-XE-wireless-access-point-oper:access-point-oper-data/predownload-data"
+)
+#: Per-AP prime info (primary/secondary/tertiary controller) lives in the
+#: oper-data list — NOT capwap-data (bench-located 2026-08-03).
+DATA_AP_OPER_DATA = "data/Cisco-IOS-XE-wireless-access-point-oper:access-point-oper-data/oper-data"
+#: Per-AP+slot radio admin/oper state (health checks).
+DATA_AP_RADIO_OPER = (
+    "data/Cisco-IOS-XE-wireless-access-point-oper:access-point-oper-data/radio-oper-data"
+)
+#: The bundle's device-published AP-model <-> image map. After `install add`
+#: of the target, prepare-location publishes the TARGET release's map
+#: (bench-proven) — the pre-fire "is every joined model covered?" advisory
+#: reads THIS, never a static matrix. NOTE: entries omit the regulatory
+#: suffix (C9130AXI), while capwap models carry it (C9130AXI-B) — strip it.
+DATA_AP_IMG_PREPARE = (
+    "data/Cisco-IOS-XE-wireless-access-point-oper:access-point-oper-data/ap-image-prepare-location"
+)
+#: Chassis/HA topology. A STANDALONE 9800-CL publishes stack-mode
+#: 'mode-active-standby', topology 'stack-type-one-plus-one', and
+#: sso-ready-flag FALSE as CONSTANTS (bench 2026-08-03) — they indicate
+#: nothing. The real standalone signature: exactly ONE stack-node entry with
+#: role-active + state-ready. Never gate on the mode/topology strings.
+DATA_STACK_OPER = "data/Cisco-IOS-XE-stack-oper:stack-oper-data"
+
+#: Fire AP predownload to every joined AP. Mandatory caller uuid; NO output
+#: (RFC 8040: success = 204 no-body — bench-confirmed). The uuid is NOT
+#: echoed in any oper data (bench: hunted, nowhere) — tracking is the
+#: roster-contract state join, not a ledger. A refused fire is an HTTP 4xx
+#: with a structured error; key on the STATUS CLASS, never the message text
+#: (bench: a semantic refusal arrived as 'malformed-message' + an EAGAIN
+#: string).
+OP_AP_PREDOWNLOAD_ALL = (
+    "operations/Cisco-IOS-XE-wireless-access-point-cmd-rpc:set-rad-predownload-all"
+)
+
+#: Poll cadence for the predownload watch (predownload-data is ~350 B/AP;
+#: capwap-data ~10 KB/AP rides every poll for vanish detection). Bench: a
+#: 2-AP LAN fleet engaged in <5 s and finished in minutes; WNCD dispatch is
+#: BATCHED on big fleets (docs: per-WNCD sets re-issued every 10-60 s), so
+#: not-yet-engaged is NORMAL early — see PREDOWNLOAD_ENGAGE_SECS.
+PREDOWNLOAD_POLL_SECS = 30
+#: Zero-engagement window before the ONE bounded resend, then one more
+#: window before declaring the fire lost. Generous vs the bench's <5 s
+#: because WNCD batching on real fleets defers APs by design.
+PREDOWNLOAD_ENGAGE_SECS = 300
+#: Post-commit AP-rejoin REPORT window (report-only, never a gate): the
+#: bench AP swapped and rejoined in <3 min on LAN; stragglers doing the
+#: slow post-reload download (oper-state 'downloading', EMPTY version
+#: fields — bench signature) can take far longer and are reported, not
+#: awaited.
+REJOIN_REPORT_SECS = 900
