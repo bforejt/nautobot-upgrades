@@ -30,3 +30,10 @@ env/
 *.rtf
 *.log
 nautobot_joblogentry_data*.csv
+
+# Bench/test evidence dropped into the working tree (Dev Tester exports,
+# Postman captures) — NEVER commit: these carry internal hostnames, IPs,
+# and serials, and this repo is public.
+*.zip
+UUID.txt
+partA-step*.txt
