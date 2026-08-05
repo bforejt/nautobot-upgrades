@@ -31,11 +31,12 @@ C9800-CL 17.15.5 -> 17.18.3, live APs, port-pull negative case):
     NOT flip to failed). A gate over "entries currently present" would
     pass wrongly; the gate is over R0.
   * Per-AP completion = present in predownload-data + pre-dwnld-complete +
-    predownload-version matching the target (integer-quad compare on the
-    first three fields). Independent corroborator: the AP's
-    backup-sw-version flips to the target quad (also the SKIP signal for
-    an already-predownloaded fleet — same doctrine as the transfer
-    pre-check).
+    predownload-version equal to the LEARNED target quad. The quad is
+    learned from the device after `install add` (prepare-location minus
+    active-location — the version STRING cannot express a rebuild letter
+    or the AP build field, so the string never gates). The AP's
+    backup-sw-version flipping to the same quad is the corroborator and
+    the already-held SKIP tier — same doctrine as the transfer pre-check.
   * pre-dwnld-failed mid-window means the AP is RETRYING (device retry
     machinery is real) — keep watching; failed AT the deadline is failure.
   * The deadline only ever declares failure, and names every incomplete
@@ -109,29 +110,68 @@ def _quad(container):
         return None
 
 
-def _quad_matches_target(quad, target_triplet):
-    """True when a wireless quad denotes the target release.
+def _quad_from_str(text):
+    """(a, b, c, d) ints from a dotted image-version string, else None.
 
-    Compared on the first THREE fields: the quad's fourth field is the AP
-    image build (e.g. 17.18.3.18 for WLC 17.18.03) and has no counterpart
-    in the SoftwareVersion string. Rebuild letters (17.15.4d) cannot be
-    expressed in a numeric quad at all — callers refuse earlier when the
-    target carries one (see _target_triplet).
+    prepare/active-location publish image-version as a STRING quad
+    ("17.18.3.18"), unlike the int containers elsewhere.
     """
-    return quad is not None and target_triplet is not None and quad[:3] == target_triplet
-
-
-def _target_triplet(target_str):
-    """(major, minor, patch) for quad comparison, or None when unexpressable.
-
-    A rebuild letter makes the target unexpressable in AP quads — the
-    caller aborts predownload scopes rather than guess which build quad a
-    lettered rebuild maps to (no bench evidence exists for that mapping).
-    """
-    m = re.match(r"^\s*(\d+)\.(\d+)\.(\d+)([a-z])?\s*$", str(target_str), re.IGNORECASE)
-    if not m or m.group(4):
+    m = re.match(r"^\s*(\d+)\.(\d+)\.(\d+)\.(\d+)\s*$", str(text or ""))
+    if not m:
         return None
-    return tuple(int(m.group(i)) for i in (1, 2, 3))
+    return tuple(int(m.group(i)) for i in (1, 2, 3, 4))
+
+
+def _bundle_quads(payload, list_name):
+    """Every image-version quad a prepare/active-location list publishes."""
+    quads = set()
+    for entry in _oper_entries(payload, list_name):
+        for img in entry.get("image-data") or []:
+            quad = _quad_from_str(img.get("image-version"))
+            if quad:
+                quads.add(quad)
+    return quads
+
+
+def _learned_target_quad(prepare_payload, active_payload):
+    """(quad, detail): the STAGED bundle's AP image quad, device-published.
+
+    The version STRING cannot express what the AP quads need (a rebuild
+    letter has no numeric form, and even a plain target says nothing about
+    the AP image build field) — but after `install add` the device itself
+    publishes the staged bundle's exact quad in prepare-location
+    (bench-proven for 17.18.03 -> 17.18.3.18). The staged quad is the set
+    difference prepare-minus-active; anything but exactly ONE candidate is
+    a refusal, never a guess. State over inference: the string was the
+    inference, this is the state.
+    """
+    prepare = _bundle_quads(prepare_payload, "ap-image-prepare-location")
+    active = _bundle_quads(active_payload, "ap-image-active-location")
+    staged = prepare - active
+    base = (
+        f"prepare-location publishes {sorted(prepare) or 'nothing'}, "
+        f"active-location {sorted(active) or 'nothing'}"
+    )
+    if len(staged) == 1:
+        return staged.pop(), base
+    if not staged and prepare:
+        # 0 candidates with a populated prepare read: the staged bundle
+        # publishes no AP image version outside the active set — possibly a
+        # rebuild shipping IDENTICAL AP images (unbenched corner; if ever
+        # proven, the fix is a device-verified prepare-subset tier, not an
+        # override flag).
+        return None, (
+            f"{base} — the staged bundle publishes no AP image version "
+            "outside the active set (identical AP images in a rebuild?)"
+        )
+    return None, (
+        f"{base} — {len(staged)} staged candidate(s)"
+        + (
+            "; a second staged bundle? 'Clean device first' clears staged software"
+            if len(staged) > 1
+            else ""
+        )
+    )
 
 
 def _ap_roster(capwap_payload):
@@ -182,18 +222,17 @@ def _strip_reg_suffix(model):
     return re.sub(r"-[A-Z]{1,3}$", "", str(model or ""))
 
 
-def _model_map(prepare_payload, target_triplet):
-    """{base-model: image-name} for the TARGET release from prepare-location.
+def _model_map(prepare_payload, target_quad):
+    """{base-model: image-name} for the STAGED bundle from prepare-location.
 
     prepare-location publishes one entry per bundle on box; only image-data
-    rows whose image-version matches the target triplet count — the running
-    release's rows must never vouch for the staged one.
+    rows at the LEARNED target quad count — the running release's rows must
+    never vouch for the staged one.
     """
     covered = {}
     for entry in _oper_entries(prepare_payload, "ap-image-prepare-location"):
         for img in entry.get("image-data") or []:
-            triplet = _target_triplet(re.sub(r"\.\d+$", "", str(img.get("image-version", ""))))
-            if triplet != target_triplet:
+            if _quad_from_str(img.get("image-version")) != target_quad:
                 continue
             for model in img.get("ap-model-list") or []:
                 covered[str(model)] = img.get("image-name") or "?"
@@ -225,7 +264,7 @@ def _standalone_verdict(stack_payload):
     return False, f"single chassis but role={role!r} state={state!r}"
 
 
-def _completion_report(r0, pred_states, roster_now, target_triplet, allow_unsupported):
+def _completion_report(r0, pred_states, roster_now, target_quad, allow_unsupported):
     """Per-AP verdicts for the R0 contract: {mac: (satisfied, state, why)}.
 
     The vocabulary is deliberately closed:
@@ -252,7 +291,7 @@ def _completion_report(r0, pred_states, roster_now, target_triplet, allow_unsupp
         if pred is not None:
             status, quad = pred
             if status == "pre-dwnld-complete":
-                if _quad_matches_target(quad, target_triplet):
+                if quad is not None and quad == target_quad:
                     report[mac] = (True, "complete", f"quad {quad}")
                 else:
                     report[mac] = (False, "wrong-version", f"complete but quad {quad}")
@@ -267,7 +306,7 @@ def _completion_report(r0, pred_states, roster_now, target_triplet, allow_unsupp
             else:
                 report[mac] = (False, status.replace("pre-dwnld-", "") or "unknown", "engaged")
         elif now is not None:
-            if _quad_matches_target(now.get("backup_quad"), target_triplet):
+            if now.get("backup_quad") is not None and now.get("backup_quad") == target_quad:
                 report[mac] = (True, "already-held", f"backup partition {now['backup_quad']}")
             else:
                 report[mac] = (False, "not-engaged", "joined, no predownload entry yet")
@@ -821,16 +860,8 @@ class C9800Upgrade(InstallEngineMixin, Job):
             )
 
         # -- 3. Wireless blast-radius echo (all scopes, incl. dry-run) --------
-        target_triplet = _target_triplet(target_str)
         roster = self._read_roster(client, log)
         self._blast_radius_echo(client, roster, log)
-        if roster and target_triplet is None and run_scope in ("predownload", "full"):
-            raise UpgradeAbort(
-                f"Target '{target_str}' carries a rebuild letter or unexpected form — "
-                "AP predownload versions are numeric quads and cannot express it, so "
-                "per-AP completion could not be positively confirmed. Stage-only "
-                "scopes still work; predownload/full refuse rather than guess."
-            )
 
         image = self._resolve_image(device, target_version, log)
         # Stale-choice guard + pre-fire xcopy guards (same rules as the switch
@@ -926,16 +957,28 @@ class C9800Upgrade(InstallEngineMixin, Job):
         ledger_confirmed_add = self._install_add(
             client, image, str(uuid_lib.uuid4()), log, target_fs
         )
-        self._model_map_advisory(
-            client, roster, target_triplet, allow_unsupported_aps, run_scope, log
-        )
+        # The AP-side identity of the target is LEARNED from the device, not
+        # derived from the version string: rebuild letters (17.15.4d) have no
+        # numeric form, and even a plain string says nothing about the AP
+        # image build field. Post-add, prepare-location publishes the staged
+        # bundle's exact quad (prepare-minus-active set difference).
+        target_quad = self._learn_target_quad(client, log)
+        self._model_map_advisory(client, roster, target_quad, allow_unsupported_aps, run_scope, log)
         if run_scope == "stage-add":
             return f"STAGED (add): {target_str} is marked for activation."
+        if target_quad is None:
+            raise UpgradeAbort(
+                "Could not learn the staged bundle's AP image version from "
+                "prepare-location (see the log for what the device published) — "
+                "per-AP predownload completion cannot be positively confirmed "
+                "without it. Staging is complete; refusing the predownload/full "
+                "scopes rather than guessing."
+            )
 
         # -- 6. AP predownload (the point of this job) -------------------------
         predownload_summary, r0_fire = self._predownload_fleet(
             client,
-            target_triplet,
+            target_quad,
             deadline_minutes,
             tolerate_missing_aps,
             allow_unsupported_aps,
@@ -1000,7 +1043,7 @@ class C9800Upgrade(InstallEngineMixin, Job):
         # fleet-wide outage traded for a partial one. Do not "fix" this.
         # Rejoin is measured against the FIRE-TIME roster (review finding —
         # the step-3 roster can be hours stale by the window).
-        rejoin_note = self._rejoin_report(client, r0_fire or roster, target_triplet, log)
+        rejoin_note = self._rejoin_report(client, r0_fire or roster, target_quad, log)
         if save_config_after and committed:
             try:
                 self._save_config(client, log, context="after commit")
@@ -1102,17 +1145,56 @@ class C9800Upgrade(InstallEngineMixin, Job):
             extra=log,
         )
 
-    def _model_map_advisory(
-        self, client, roster, target_triplet, allow_unsupported, run_scope, log
-    ):
+    def _learn_target_quad(self, client, log):
+        """The staged bundle's AP image quad, learned from the device post-add.
+
+        Reads prepare-location and active-location and takes the set
+        difference (see _learned_target_quad). Returns None — with the
+        device's actual publication logged — when the answer is not exactly
+        one quad; callers fail closed on None for the predownload scopes.
+        Blip doctrine (review finding): the learn happens once, potentially
+        hours into a run — a single transient read failure must not convert
+        into the None-refusal downstream. Bounded retries, then honest None.
+        """
+        prepare = active = None
+        for attempt in range(3):
+            try:
+                prepare = client.get(C.DATA_AP_IMG_PREPARE, ok_404=True) or {}
+                active = client.get(C.DATA_AP_IMG_ACTIVE, ok_404=True) or {}
+                break
+            except RestconfError as exc:
+                self.logger.warning(
+                    "AP image location read failed (attempt %d/3: %s)%s.",
+                    attempt + 1,
+                    exc,
+                    " — retrying" if attempt < 2 else " — no learned quad",
+                    extra=log,
+                )
+                if attempt == 2:
+                    return None
+                time.sleep(20)
+        quad, detail = _learned_target_quad(prepare, active)
+        if quad:
+            self.logger.info(
+                "Learned the staged bundle's AP image version from the device: **%s** (%s).",
+                ".".join(map(str, quad)),
+                detail,
+                extra=log,
+            )
+        else:
+            self.logger.warning("No unambiguous staged AP image quad: %s.", detail, extra=log)
+        return quad
+
+    def _model_map_advisory(self, client, roster, target_quad, allow_unsupported, run_scope, log):
         """Device-published 'is every joined model covered?' check, post-add.
 
         prepare-location carries the TARGET bundle's model map only after
-        install add (bench-proven). Missing models refuse the predownload
-        scopes unless allow_unsupported_aps — an uncovered AP takes the slow
-        post-reload path or cannot join the new release at all.
+        install add (bench-proven), selected by the LEARNED quad. Missing
+        models refuse the predownload scopes unless allow_unsupported_aps —
+        an uncovered AP takes the slow post-reload path or cannot join the
+        new release at all.
         """
-        if not roster or target_triplet is None:
+        if not roster or target_quad is None:
             return
         try:
             payload = client.get(C.DATA_AP_IMG_PREPARE, ok_404=True) or {}
@@ -1126,7 +1208,7 @@ class C9800Upgrade(InstallEngineMixin, Job):
                 extra=log,
             )
             return
-        covered = _model_map(payload, target_triplet)
+        covered = _model_map(payload, target_quad)
         if not covered:
             self.logger.warning(
                 "Model-map advisory: prepare-location published no image map for "
@@ -1175,7 +1257,7 @@ class C9800Upgrade(InstallEngineMixin, Job):
     def _predownload_fleet(
         self,
         client,
-        target_triplet,
+        target_quad,
         deadline_minutes,
         tolerate_missing_aps,
         allow_unsupported,
@@ -1199,18 +1281,17 @@ class C9800Upgrade(InstallEngineMixin, Job):
                 extra=log,
             )
             return "No APs were joined; predownload had nothing to do.", {}
-        if target_triplet is None:
-            # Re-checked here because APs may have joined since the step-3
-            # echo (review finding) — an unexpressable target must refuse
-            # NOW, not burn the deadline blaming the fleet.
+        if target_quad is None:
+            # Callers gate on this already; kept as a hard invariant so no
+            # refactor can reach the fire without a learned quad.
             raise UpgradeAbort(
-                "The target release cannot be expressed as an AP version quad "
-                "(rebuild letter?) — per-AP completion could not be positively "
-                "confirmed. Refusing before the fire."
+                "No learned AP image quad for the staged bundle — per-AP "
+                "completion could not be positively confirmed. Refusing "
+                "before the fire."
             )
 
         pred_before = _predownload_states(client.get(C.DATA_AP_PREDOWNLOAD, ok_404=True) or {})
-        report = _completion_report(r0, pred_before, r0, target_triplet, allow_unsupported)
+        report = _completion_report(r0, pred_before, r0, target_quad, allow_unsupported)
         if all(ok for ok, _, _ in report.values()):
             # Idempotent re-run: the fleet already holds the target (stale
             # complete entries and/or backup partitions at the target quad).
@@ -1282,7 +1363,7 @@ class C9800Upgrade(InstallEngineMixin, Job):
             blip_streak = 0
             pred = _predownload_states(pred_payload or {})
             roster_now = _ap_roster(roster_payload or {})
-            report = _completion_report(r0, pred, roster_now, target_triplet, allow_unsupported)
+            report = _completion_report(r0, pred, roster_now, target_quad, allow_unsupported)
             counts = _report_counts(report)
             if counts != last_counts:
                 last_counts = counts
@@ -1396,7 +1477,7 @@ class C9800Upgrade(InstallEngineMixin, Job):
         )
         return op_uuid
 
-    def _rejoin_report(self, client, r0, target_triplet, log):
+    def _rejoin_report(self, client, r0, target_quad, log):
         """Post-commit, report-only AP rejoin watch. Facts, never verdicts.
 
         Bounded by REJOIN_REPORT_SECS; ends early when every R0 AP is back
@@ -1431,14 +1512,16 @@ class C9800Upgrade(InstallEngineMixin, Job):
                     self._check_stop()
                     time.sleep(C.PREDOWNLOAD_POLL_SECS)
                     continue
-                triplet_prefix = ".".join(map(str, target_triplet or ()))
+                # The AP's post-swap sw-version IS the AP image quad
+                # (bench: 17.18.3.18) — compare exactly against the learned
+                # quad; with none learned, count registered-only and say so.
+                quad_str = ".".join(map(str, target_quad)) if target_quad else None
                 back = {
                     mac
                     for mac, ap in roster_now.items()
                     if mac in r0
                     and ap["oper"] == "registered"
-                    # exact-field prefix: "17.18.30" must NOT satisfy 17.18.3
-                    and str(ap.get("sw", "")).split(".")[:3] == triplet_prefix.split(".")
+                    and (quad_str is None or str(ap.get("sw", "")) == quad_str)
                 }
                 downloading = [
                     r0.get(mac, roster_now[mac])["name"]
@@ -1448,6 +1531,7 @@ class C9800Upgrade(InstallEngineMixin, Job):
                 missing = [r0[mac]["name"] for mac in r0 if mac not in roster_now]
                 line = (
                     f"{len(back)} of {len(r0)} AP(s) rejoined on the target"
+                    + ("" if quad_str else " (registered-only; no learned quad to compare)")
                     + (
                         f"; downloading (slow path): {', '.join(sorted(downloading))}"
                         if downloading

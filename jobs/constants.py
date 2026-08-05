@@ -479,3 +479,10 @@ PREDOWNLOAD_ENGAGE_SECS = 300
 #: fields — bench signature) can take far longer and are reported, not
 #: awaited.
 REJOIN_REPORT_SECS = 900
+#: The RUNNING bundle's AP image map — subtracted from prepare-location to
+#: learn the STAGED bundle's exact AP image quad post-add (rebuild letters
+#: have no numeric form, so the version string never gates predownload;
+#: the device's own publication does).
+DATA_AP_IMG_ACTIVE = (
+    "data/Cisco-IOS-XE-wireless-access-point-oper:access-point-oper-data/ap-image-active-location"
+)
