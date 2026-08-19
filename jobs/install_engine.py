@@ -826,24 +826,80 @@ def _partition_free(partition):
     return (total - used) * 1024
 
 
-def _flash_frees(data, fs_names):
-    """(name, free-bytes) for EVERY matching flash partition, stack members too.
+def _partition_capacity(partition):
+    """TOTAL bytes of one partition (q-filesystem reports sizes in kilobytes).
 
-    Matches a partition whose name equals a configured name OR is that name with
-    a stack-member suffix ('flash-1', 'flash:1') — but never 'bootflash'/
-    'usbflash'. On a stack, one entry per member is returned; 'install add'
+    The ceiling a space requirement must fit under — see _space_verdict.
+    A non-positive (or boolean) total is NOT a device fact — an unmounted or
+    still-booting member, or transient garbage — and returns None so it can
+    never create the distinct 'unsatisfiable' refusal path (review finding:
+    silence is not evidence, and neither is nonsense).
+    """
+    raw = partition.get("total-size") if isinstance(partition, dict) else None
+    if isinstance(raw, bool):
+        return None
+    try:
+        total = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return total * 1024 if total > 0 else None
+
+
+def _matching_partitions(data, fs_names):
+    """Yield (name, partition) for every partition belonging to `fs_names`.
+
+    Matches a partition whose name equals a configured name OR is that name
+    with a stack-member suffix ('flash-1', 'flash:1') — but never 'bootflash'/
+    'usbflash'. On a stack, one entry per member is yielded; 'install add'
     distributes packages to every member, so all of them matter.
     """
-    out = []
     for partition in _find_partitions(data):
         name = str(partition.get("name", "")).strip().rstrip(":").lower()
         for fs in fs_names:
             if _partition_matches(name, fs):
-                free = _partition_free(partition)
-                if free is not None:
-                    out.append((name, free))
+                yield name, partition
                 break
-    return out
+
+
+def _flash_readings(data, fs_names):
+    """((name, free, total) per matching partition, [unreadable names]).
+
+    BOTH numbers are required per partition. A matched member that yields one
+    but not the other is reported UNREADABLE rather than silently dropped:
+    'install add' distributes packages to every member, so a minimum computed
+    over a partial set is silence creating a permissive path (review finding —
+    the old free-only reader dropped such members and gated on the rest).
+    """
+    readings, unreadable = [], []
+    for name, partition in _matching_partitions(data, fs_names):
+        free = _partition_free(partition)
+        total = _partition_capacity(partition)
+        if free is None or total is None:
+            unreadable.append(name)
+        else:
+            readings.append((name, free, total))
+    return readings, unreadable
+
+
+def _space_verdict(free, capacity, needed):
+    """'ok' | 'insufficient' | 'unsatisfiable' for a free-space requirement.
+
+    'unsatisfiable' means the requirement exceeds the partition's TOTAL size:
+    no amount of cleaning can ever reach it, so "free up space" is the wrong
+    remedy and saying it wastes an operator's time. The case this exists for
+    is a small-flash platform meeting the unknown-image-size fallback — e.g.
+    a 1.5 GB industrial-switch flash against a 2 GB floor, which could never
+    pass even empty.
+
+    capacity None (total unreadable) NEVER yields 'unsatisfiable' — silence
+    is not evidence, and the ordinary insufficiency message is the safe
+    reading.
+    """
+    if free >= needed:
+        return "ok"
+    if capacity is not None and needed > capacity:
+        return "unsatisfiable"
+    return "insufficient"
 
 
 def _partition_matches(raw_name, fs):
@@ -2017,18 +2073,31 @@ class InstallEngineMixin:
             if partitions_data is not None
             else self._read_partitions(client, log=log)
         )
-        frees = _flash_frees(data or {}, (target_fs.rstrip(":"),))
-        if not frees:
+        readings, unreadable = _flash_readings(data or {}, (target_fs.rstrip(":"),))
+        if unreadable:
+            raise UpgradeAbort(
+                f"Could not confirm free space on {target_fs} for: "
+                f"{', '.join(sorted(unreadable))} — the partition did not report "
+                "both a total and a used size. 'install add' distributes packages "
+                "to EVERY member, so gating on the members that did answer would "
+                "be a guess; refusing."
+            )
+        if not readings:
             raise UpgradeAbort(
                 f"Could not confirm free space on {target_fs} over RESTCONF "
                 "even though the partition was just discovered — transient "
                 "read failure? Refusing to copy without confirming space."
             )
-        free = min(f for _, f in frees)
-        if len(frees) > 1:
+        # Two independent minima, each reported against ITS OWN member: the
+        # member with the least free space is often not the member with the
+        # smallest disk (review finding — pairing the two numbers described a
+        # partition that does not exist).
+        free_name, free, _free_total = min(readings, key=lambda r: r[1])
+        cap_name, cap_free, capacity = min(readings, key=lambda r: r[2])
+        if len(readings) > 1:
             self.logger.info(
                 "Flash free space per member: %s — gating on the minimum.",
-                {name: f for name, f in frees},
+                {name: f for name, f, _ in readings},
                 extra=log,
             )
         size = image.image_file_size
@@ -2042,14 +2111,48 @@ class InstallEngineMixin:
                 "Image file size not set in Nautobot; using fallback space requirement.",
                 extra=log,
             )
-        if free < needed:
+        verdict = _space_verdict(free, capacity, needed)
+        member = f" on {cap_name}" if len(readings) > 1 else ""
+        if verdict == "unsatisfiable":
+            # The requirement exceeds the whole partition: cleaning cannot help,
+            # so never tell the operator to clean — and never recommend lowering
+            # the fleet-wide headroom constant to fit one platform.
+            if size and size > capacity:
+                raise UpgradeAbort(
+                    f"This image cannot fit this device: the image alone is "
+                    f"{size} bytes and {target_fs}{member} holds {capacity} bytes "
+                    "in total. Check this is the right image for this platform."
+                )
+            if size:
+                raise UpgradeAbort(
+                    f"The space requirement cannot fit this device: {needed} bytes "
+                    f"needed ({label}) exceeds {target_fs}{member} entirely "
+                    f"({capacity} bytes total, {cap_free} free). The image itself "
+                    f"fits ({size} bytes), but not with the headroom 'install add' "
+                    "needs to extract alongside it — and no amount of cleaning "
+                    "reaches a requirement larger than the disk."
+                )
             raise UpgradeAbort(
-                f"Insufficient free space: {free} bytes free "
-                f"({'minimum across members' if len(frees) > 1 else 'flash'}), need "
-                f"{needed} ({label}). Run 'install remove inactive' or clean up flash."
+                f"The unknown-image-size fallback ({needed} bytes) exceeds "
+                f"{target_fs}{member} entirely ({capacity} bytes total) — this "
+                "device could never pass it, however much is cleaned. Record the "
+                "image's file size on the SoftwareImageFile (the Register IOS-XE "
+                "Image job sets it automatically from the server's Content-Length) "
+                "so the gate sizes the requirement to the real image."
+            )
+        if verdict == "insufficient":
+            where = f" on {free_name} (minimum across members)" if len(readings) > 1 else ""
+            raise UpgradeAbort(
+                f"Insufficient free space: {free} bytes free{where}, need "
+                f"{needed} ({label}). Free space with 'install remove inactive', "
+                "or re-run with 'Clean device first' ticked."
             )
         self.logger.info(
-            "Free-space gate passed (%s bytes free, need %s).", free, needed, extra=log
+            "Free-space gate passed (%s bytes free of %s total, need %s).",
+            free,
+            capacity if capacity is not None else "unknown",
+            needed,
+            extra=log,
         )
 
     @staticmethod
