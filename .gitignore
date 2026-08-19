@@ -37,3 +37,7 @@ nautobot_joblogentry_data*.csv
 *.zip
 UUID.txt
 partA-step*.txt
+
+# Local bench workspace: battery, fixtures (Job Result exports), loader
+# config. Never committed — fixtures carry internal hostnames/IPs/serials.
+.bench/
