@@ -458,7 +458,8 @@ same engine and doctrine, because on a controller "Full" means something
 different: the reload reboots **every joined AP** with it. The centerpiece is
 therefore **AP image predownload**: push the target image to every AP's
 backup partition *before* the reload, so APs come back with a partition swap
-instead of a long download.
+instead of a long download. In one picture:
+**[docs/9800-overview-flow.md](docs/9800-overview-flow.md)**.
 
 **Run scopes** extend the switch chain with a fourth, zero-impact stop —
 the point of the job:

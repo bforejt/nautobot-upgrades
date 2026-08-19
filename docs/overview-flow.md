@@ -1,7 +1,8 @@
 # What the upgrade does (overview)
 
-A plain, high-level summary of the **Cisco IOS-XE Upgrade (RESTCONF)** job — the
-seven core phases (plus the opt-in **8a/8b** health-check bracket) and how a
+A plain, high-level summary of the **Cisco IOS-XE Upgrade (RESTCONF)** job
+(the **switch** job — the 9800 wireless sibling has
+[its own overview](9800-overview-flow.md)) — the seven core phases (plus the opt-in **8a/8b** health-check bracket) and how a
 device's run can end (dry-run, staged, committed, or rolled back). For the full gate-by-gate decision logic (every abort and
 warning), see [upgrade-flow.md](upgrade-flow.md).
 

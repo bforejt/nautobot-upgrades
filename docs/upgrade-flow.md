@@ -1,6 +1,8 @@
 # Upgrade process flow
 
-The per-device control flow of the **Cisco IOS-XE Upgrade (RESTCONF)** job
+The per-device control flow of the **Cisco IOS-XE Upgrade (RESTCONF)** job —
+the **switch** job; the 9800 wireless sibling has its own
+[overview diagram](9800-overview-flow.md) —
 (`jobs/iosxe_upgrade.py`, `IOSXEUpgrade._upgrade_device`). The job runs this flow
 independently for each selected device; an **ABORT** logs the reason and fails
 **that device only**, then the job continues with the next selected device.
@@ -15,7 +17,10 @@ independently for each selected device; an **ABORT** logs the reason and fails
   **Green** = a successful end state (already-on-target no-op, dry-run report, or
   a completed upgrade).
 - The conservative design means almost every step is a PASS/FAIL gate, and the
-  flow stops at the first failed gate. After `install activate`, a failure to
+  flow stops at the first failed gate. Not drawn: the stored-kwargs guards —
+  values a ScheduledJob saved before an input was removed or renamed (e.g. an
+  unknown Image transfer method) abort loudly before the transfer rather than
+  being silently rerouted. After `install activate`, a failure to
   return or boot the target version deliberately does **not** commit — the
   device's auto-rollback timer reverts it to the previous image.
 
