@@ -1,1319 +1,837 @@
 # nautobot-upgrades
 
-A native **Nautobot Job** that reliably and cautiously upgrades **Cisco IOS-XE**
-devices — **Catalyst 9300** primarily — driven entirely over **RESTCONF**.
+Native **Nautobot Jobs** that upgrade **Cisco IOS-XE** devices — Catalyst
+switches and, via a sibling job, Catalyst 9800 wireless controllers — driven
+entirely over **RESTCONF**. No SSH, no CLI scraping, no SNMP: decisions are
+driven by state the device itself publishes, and every run is a series of
+PASS/FAIL gates that stop at the first failure.
 
-> **⚠ Development status (2026-07): `main` is in active churn.** The transfer
-> engine is being reworked — async `xcopy` (install-engine ledger-tracked) is
-> now the **default** transfer with classic copy as its fallback tier, and the
-> engine-download experiment has been removed. These enhancements land
-> bench-validated; WAN field runs are still pending. **If you want stability, pin a release train:
-> production should track `1.0.x`** (bug fixes only — see
-> [Releases & pinning](#releases--pinning)). Everything documented below
-> describes `main`.
+Two facts to weigh before anything else: **activation is always a whole-box
+reload** (~10–15 minutes of outage per device; this project never uses ISSU),
+and **you host the images yourself** — Nautobot stores only metadata, and any
+plain HTTP file server the devices can reach will do.
+
+> **⚠ Development status:** `main` is active development and currently
+> carries the 2.0 work. **Production should pin the stable train — point
+> your Git Repository at the `1.0.x` branch** (bug fixes only). Everything
+> documented below describes `main`; what `main` adds over `1.0.x` today:
+> the **9800 wireless job**, the **async-xcopy transfer engine** (with its
+> walk-free reads), and **Dynamic Groups** roster selection — pinned readers
+> should skip those sections. See [Releases & pinning](#releases--pinning).
+
+## Requirements and exclusions
+
+You need — the ten-second qualification check:
+
+- **Devices**: autonomous Cisco IOS-XE **≥ 17.9.1**, booted in **install
+  mode**, reachable over **RESTCONF** with a privilege-15 account. (Not
+  SD-WAN- or Meraki-managed devices.)
+- **Nautobot 2.4 LTM or 3.1+** with inventory populated: primary IPs, device
+  types, and credentials in **Secrets**.
+- **A web server you control** hosting the `.bin` images (plain HTTP is the
+  validated path).
+
+Explicitly **not** supported — stop here if any of these is what you need:
+**Nexus/NX-OS** (a different API entirely), **Catalyst 3650/3850** (their
+terminal 16.12 train predates the install API), IOS-XE **below 17.9.1**
+(refused — key API components are missing), **ISSU / hitless upgrades**
+(out of charter; activation is a reload everywhere), and — for now —
+**9800 HA SSO pairs** (the wireless job is standalone-only; a topology gate
+refuses pairs — see [its boundaries](#upgrading-catalyst-9800-wireless-controllers)).
 
 ## Current status
 
-**A work in progress — and going well.** Thoroughly exercised on real Catalyst
-hardware over RESTCONF: **30+ upgrade and downgrade runs across the 9300, 9300L,
-and **C8000V** — single switches, a 2-member stack, and serial and
-parallel batches — on Nautobot **2.4 and 3.1**, with the same results on either. It's now run in **early production at more than one organization**: it
-upgraded our lab's Catalyst **9500** StackWise Virtual core, and a separate
-company took it across a production site of **three switch stacks (6–7 members
-each)** through the full **stage-1 → stage-2 → full-upgrade** cycle.
-**Auto-rollback has also been observed in the field** — an upgrade that couldn't
-be confirmed after the reload was never committed, and the device rolled back to
-its prior image on its own. **The post-upgrade health checks have their first
-field true positive** as well: a trunk port facing a WAP that did not return
-after an upgrade was caught and reported by the post-check.
+**Bench-validated (our lab, real hardware):** 30+ upgrade and downgrade
+runs across Catalyst **9300/9300L** and **C8000V** — single switches, a
+2-member stack, serial and parallel batches — across IOS-XE **17.12, 17.15,
+17.18, and 26.1**, on Nautobot **2.4 and 3.1** with identical behavior. The
+**9800 wireless job** is bench-validated end-to-end on a 9800-CL with live
+APs: AP image predownload proven per-AP, a deliberately interrupted AP, and
+a second arc against a rebuild-letter target (e.g.-style versions like
+**17.15.4d**) exercising the learned-quad gate live
+([details](#upgrading-catalyst-9800-wireless-controllers)).
 
-Development stays active on **`main`** — production should track the
-**`1.0.x` stable train**, which changes **only for bug fixes** (see
-[Releases & pinning](#releases--pinning)). Read the Job Result logs and
-**always run Dry-run first**. Not yet proven: parallelism above 2, sustained
-fleet-wide production use, and a couple of failure paths we have not been
-able to stage (a corrupt image — Cisco's signature validation is the
-documented mechanism, but we have never watched the job handle a rejection —
-and a member failing to rejoin). Platform, per-train, and compatibility detail is in
-[Versions & support](#versions--support).
+**In early production, at more than one organization** — on the code line that
+became **1.0.0**: it upgraded our lab's Catalyst 9500 StackWise Virtual core,
+and a separate company took a production site of three switch stacks (6–7
+members each) through the full stage → window cycle. The safety nets have
+field evidence too: **auto-rollback** fired correctly for an upgrade that
+could not be confirmed after its reload, and the **post-upgrade health
+checks** caught their first real finding — a trunk port facing a WAP that did
+not come back.
+
+**Not yet proven:** parallelism above 2, sustained fleet-wide production use,
+WAN-distance transfers under the new engine, production-scale 9800 fleets, and
+two failure paths we have not been able to stage (a corrupt image — Cisco's
+signature validation is the documented mechanism, but we have never watched a
+rejection live — and a stack member failing to rejoin). Treat every new
+platform or train to one supervised run first, and always start with
+**Dry-run**.
+
+## Contents
+
+- **Getting started** — [Requirements](#requirements-and-exclusions) ·
+  [Installing](#installing-into-nautobot) · [Image storage](#image-storage) ·
+  [Authentication](#authentication) ·
+  [Your first upgrade](#your-first-upgrade-end-to-end) ·
+  [How a run flows](#how-a-run-flows)
+- **[Operating the switch job](#operating-the-switch-upgrade-job)** — [Selecting devices](#selecting-devices) ·
+  [Run scopes & pre-staging](#run-scopes--pre-staging) ·
+  [Image transfer](#image-transfer-methods) ·
+  [Parallel batches](#parallel-batches) · [Cancelling](#cancelling-a-run) ·
+  [Optional protections](#optional-protections)
+- **[Upgrading Catalyst 9800 wireless controllers](#upgrading-catalyst-9800-wireless-controllers)**
+- **[Troubleshooting](#troubleshooting)**
+- **Reference** — [Versions & support](#versions--support) ·
+  [Job inputs](#job-inputs) · [RESTCONF operations](#restconf-operations-used) ·
+  [Configuration](#configuration) · [Known limitations](#known-limitations)
+- **Project** — [Design choices](#design-choices) ·
+  [Releases & pinning](#releases--pinning) · [Reuse & licensing](#reuse--licensing-analysis) ·
+  [Roadmap](#roadmap) · [Contributing](#contributing) · [License](#license)
 
 ---
 
-## Background & intended use
+## Installing into Nautobot
 
-This project was built for a specific, common situation — and it is still
-**young software**:
+This project is consumed the standard Nautobot way — a **Git Repository that
+provides Jobs**. Nautobot clones the repo, discovers the Jobs in
+[`jobs/`](jobs/), and runs them on its Celery worker; there is nothing to
+`pip install` (the only runtime dependency is `requests`, always present with
+Nautobot core).
 
-- **The fleet is uniform Cisco Catalyst 9300s.** A switching estate
-  standardized on one platform and one image family, where an upgrade playbook
-  that handles the 9300 well handles most of the network.
-- **The inventory already lives in Nautobot.** Devices, platforms, primary
-  IPs, and credentials (**Secrets**) are populated and maintained in a working
-  Nautobot — so the source of truth for *what to upgrade* and *how to reach it*
-  is already there, and this Job simply reads from it.
-- **The team values REST.** Operators comfortable with REST and what it buys —
-  structured request/response, idempotency, and true device state instead of
-  screen-scraping CLI — rather than a traditional SSH/TFTP-driven upgrade.
+- **Add the repository**: **Extensibility → Git Repositories → Add** — remote
+  URL of this repo, branch **`1.0.x`** for production (`main` only for labs),
+  tick **Provides: Jobs**, and **Sync**. NTC's
+  [Git as a Data Source](https://docs.nautobot.com/projects/core/en/stable/user-guide/feature-guides/git-data-source/)
+  guide walks the mechanics.
+- **Enable the Jobs**: newly synced Jobs arrive **disabled**. Under
+  **Jobs → Jobs**, group **IOS-XE Upgrades**, enable *Cisco IOS-XE Upgrade
+  (RESTCONF)*, *Cisco 9800 WLC Upgrade (IOS-XE)*, *Register IOS-XE Image*, and
+  *Cancel IOS-XE Upgrade Run*
+  ([Managing Jobs](https://docs.nautobot.com/projects/core/en/stable/user-guide/platform-functionality/jobs/managing-jobs/)).
+- **After changing Job code**, re-sync the repository; on non-container
+  installs, restart the Celery worker.
 
-It began as a **research question**: how much of an IOS-XE install-mode upgrade
-could be driven *purely* over RESTCONF, with no CLI and no SNMP? On the code
-trains this fleet runs, the answer turned out to be **essentially all of it** —
-image copy, `install add`/`activate`/`commit`, reload, rollback, and the state
-reads that gate each step. That result was strong enough to justify building
-this prototype rather than stopping at a feasibility note.
+**Inventory prerequisites** (per target device): a **primary IPv4** reachable
+from the worker; a **device type** mapped to the target version's **Software
+Image File** (or a default image on the version); an assigned **Secrets
+Group** ([Authentication](#authentication)); IOS-XE **≥ 17.9.1** booted in
+**install mode** (`flash:packages.conf`) with **RESTCONF enabled**
+(`restconf` + `ip http secure-server`) — enabling RESTCONF is a one-time
+manual prerequisite the job deliberately does not bootstrap.
 
-**Where it stands:** the flow is working well, thoroughly exercised in a **lab**
-on real Catalyst 9300-family hardware, and **production vetting has now begun** —
-the lab's Catalyst 9500 core was upgraded in production successfully (see
-[Current status](#current-status)). The design is conservative and its stability
-so far is encouraging, but this is **early** production use, not broad
-production hardening, so every run should still start with **Dry-run**.
+Don't have a Nautobot? The same author's
+[nautobot-composer](https://github.com/bforejt/nautobot-composer) is a
+Docker-Compose stack that ships a matching Nautobot **and** the firmware
+server this job pulls images from.
 
-**Key design choices** (from an up-front analysis, to avoid reinvention):
+## Image storage
 
-- **RESTCONF drives the entire upgrade** on modern IOS-XE — the
-  `Cisco-IOS-XE-install-rpc` model (`install`/`activate`/`commit`/`remove`),
-  `Cisco-IOS-XE-xcopy-rpc`, and the classic `Cisco-IOS-XE-rpc:copy`. There is
-  no SSH/CLI path, on principle. The floor is **17.9.1**, the lowest
-  model-complete release; older is refused.
-- **Ledger-first, no guessing**: every decision prefers state the device
-  itself publishes. The install engine's **operation ledger** (uuid-keyed
-  records) and **package inventory** are the primary sources of truth —
-  over filesystem walks, over version-row inference, over timers. Timers
-  are **fallback tiers only**: they bound waits or declare failure, and
-  device-published verdicts always outrank them. (The one timer that
-  green-lights anything — the fixed pre-activate settle delay — exists
-  solely for releases that publish neither `sys-activity` nor a
-  ledger-confirmed add, and is labeled a fallback in the logs.) Addresses
-  and paths are never guessed: they are observed from what the device
-  published, or the code falls back loudly to a broader read.
-- **Async xcopy is the default transfer** (the engine runs it, ledger-
-  tracked, immune to the platform's ~600s blocking-RPC ceiling) with the
-  field-proven classic copy as its **fallback tier**. History honestly
-  told: a real 17.15.05 once silently broke xcopy — in hindsight consistent
-  with the port-URL parser failure root-caused (bench + wire, 2026-07) and
-  guarded here; the fallback tier exists for exactly this class of
-  surprise. See
-  [Image transfer methods](#image-transfer-methods-wan-options).
-- **Integrity without the on-device `verify` RPC**: optional server-side
-  **hash-verify** at registration, a **byte-exact size match** after every copy,
-  and `install add`'s **mandatory signature validation** before activation —
-  stronger than an MD5 self-check because it catches tampering too. (The native
-  `verify` RPC exists but returns only async event notifications with no pollable
-  result, so it isn't used; it becomes a clean addition if Cisco ever makes the
-  result pollable.)
-- **Reuses Nautobot core, adds no data models of its own**: `dcim.SoftwareVersion`
-  and `dcim.SoftwareImageFile` (core since Nautobot 2.2) already hold the image
-  name, checksum, size, download URL, and device-type map.
-- **Shipped as a Git Repository, not a packaged app** — the idiomatic way to
-  deliver jobs from public GitHub. Its one constraint (git-delivered jobs can't
-  install their own pip dependencies) is a non-issue here: the only dependency is
-  **`requests`**, always present with Nautobot core.
+The `.bin` images are **not** stored in Nautobot — it holds only metadata
+(`SoftwareImageFile`: name, checksum, size, `download_url`, device-type map).
+**You serve the binaries from any web server the devices can reach**; the
+transfer is a device-initiated pull that just needs a URL it can `GET`. Two
+rules: **plain HTTP is the validated path** (HTTPS should work when devices
+trust the server's cert, but is untested — treat *Use HTTPS URL* as
+experimental), and the default async-xcopy transfer needs a **port-less URL**
+(a `:port` in the URL falls back to the classic copy tier).
 
-## What it does
+The **Register IOS-XE Image** job builds the device `download_url` from a
+configurable base (`FIRMWARE_BASE_URL` on the worker) plus the uploaded
+filename, validates reachability, optionally downloads and hash-verifies the
+image, and records the `SoftwareImageFile` mapped to compatible device types.
+It does **not** upload files — publish them to your web server first. The
+**file size** is recorded automatically from the server's `Content-Length`
+during validation; if the server reports none (the job warns), add it to
+the `SoftwareImageFile` manually — the byte-exact post-copy gate and the
+default transfer method depend on it. The device must be able to reach the
+stored URL over a transport it supports (https/http/scp/ftp/tftp); embed
+credentials in the URL if the host requires them.
 
-From the Nautobot **Jobs** page you scope target devices — by picking them
-explicitly (the **location, role, status, platform, device type, current
-version, and tag** filters narrow the picker) and/or by selecting **Dynamic
-Groups**, resolved live at run start; the roster is the deduplicated union of
-both. You pick a target version, and the job runs an **install-mode** upgrade
-as a series of PASS/FAIL gates, stopping at the first failure for a device.
-In one picture:
+The reference host is nautobot-composer's opt-in `firmware` profile
+(Filebrowser for engineer uploads, read-only nginx for device pulls) — one
+convenient option, not a requirement. Full detail — URL formats, the
+acquire → upload → register workflow, TLS notes, retention:
+**[docs/image-storage.md](docs/image-storage.md)**.
+
+## Authentication
+
+Credentials are resolved **at run time from Nautobot's Secrets manager** —
+never typed into the job, never stored in job records. Per device: the job
+uses the device's assigned **Secrets Group** (or the run-level override),
+reads the **username** and **password** secrets trying access types
+**RESTCONF → HTTP(S) → REST → Generic** (store them under **RESTCONF**), and
+sends them as HTTP Basic auth over HTTPS — backed by the device's own AAA
+(local, TACACS+, RADIUS). Secrets are provider-agnostic: environment
+variables, files, Vault, AWS/Azure managers — the job is indifferent.
+
+**Setup:** one Secret each for username and password → both into a **Secrets
+Group** under access type **RESTCONF** (secret types *username*/*password*) →
+assign the group to each device. The account must be **privilege 15** /
+authorized for `install` and `copy`. Auth failures are distinguished in the
+job log — see [Troubleshooting](#troubleshooting).
+
+## Your first upgrade, end to end
+
+The intended on-ramp, one lab device, four runs:
+
+1. **Register the image.** Publish the `.bin` to your firmware server, then
+   run **Register IOS-XE Image**: filename, target Software Version (or
+   create it inline), checksum, device-type mapping (the file size is
+   recorded automatically from the server during validation). Dry-run it
+   first — it validates reachability without writing.
+2. **Dry-run the upgrade.** Open **Cisco IOS-XE Upgrade (RESTCONF)**, pick
+   the device and target version, leave **Dry-run** ticked (the default), and
+   run. Every read-only gate executes — reachability, version floor, install
+   mode, image resolution, free space — and the log states exactly what a
+   real run would do. Fix anything it flags.
+3. **Stage.** Re-run with Dry-run unticked and **Run scope** at its default
+   (*Step 1 - Copy image*), or *Steps 1 & 2* to also `install add`. No
+   reload, no outage — the image lands on flash, size-verified (and staged,
+   with scope 2). Safe during business hours.
+4. **Full, in a window.** Re-run with scope **Full**. Staged work is skipped
+   automatically; the device activates, reloads (~10–15 min), is verified to
+   have booted the target, and only then commits. Read the Job Result top to
+   bottom once — the logs are written to be read, and every gate explains
+   itself.
+
+Scale from there: more devices, [Dynamic Groups](#selecting-devices),
+[parallelism](#parallel-batches), and the [optional protections](#optional-protections).
+
+---
+
+## How a run flows
 
 [![IOS-XE upgrade — high-level overview](docs/overview-flow.svg)](docs/overview-flow.md)
 
-The seven core phases, plus the opt-in health-check bracket (the numbered keys
-on the diagram above map to this list):
+The phases (the numbered keys on the diagram): **1 Connect** (primary IP +
+Secrets, RESTCONF reachability) → **2 Pre-flight gates** (already-on-target
+short-circuit; ≥ 17.9.1; install mode; image resolved with device-type
+compatibility; free space — all of it evaluated by Dry-run too) → **3 Copy +
+verify** (device-initiated pull, byte-exact gate, skipped if already on
+flash) → **4 `install add`** (staged to every member; Cisco's mandatory
+signature validation; ledger-tracked to true completion — never trusting the
+RPC's 2xx) → **5 Activate + reload** (explicitly non-ISSU; a
+silently-dropped activate is detected and re-sent; ledger failures abort
+quoting the engine's own phase) → **6 Verify, then commit** (reconfirm the
+target actually booted; if not, no commit and the device auto-rolls-back) →
+**7 Sync + optional cleanup** (Nautobot `software_version`; optional
+remove-inactive) → **8a/8b Health checks** (opt-in bracket). The opt-ins
+hang off their own decision diamonds; an unticked run is exactly the solid
+spine. Every gate logs to the Job Result with the device attached; the full
+gate-by-gate logic is drawn in
+**[docs/upgrade-flow.md](docs/upgrade-flow.md)**.
 
-1. **Connect** — resolve the primary IP + credentials (from core Secrets),
-   confirm RESTCONF is reachable.
-2. **Pre-flight gates** — running version and already-on-target short-circuit;
-   **≥ 17.9.1**; **install mode**; image resolved from Nautobot with device-type
-   compatibility; then — after the opt-in **Clean device first** — **enough
-   free space**. A dry run validates all of these, free space included, before
-   it stops.
-3. **Copy + verify** — the device pulls the image (async `xcopy` by default:
-   the install engine runs the transfer, ledger-tracked and immune to the
-   platform's blocking-RPC ceiling, with the classic `copy` RPC as the
-   fallback tier), gated on a **byte-exact size match**. Skipped if the
-   file is already on flash. (See
-   [Image transfer methods (WAN options)](#image-transfer-methods-wan-options).)
-4. **`install add`** — extract and stage the image to **every member**, with
-   Cisco's **mandatory image signature validation** (a corrupt or untrusted
-   image is rejected here). Like every engine write, it is **gated on
-   engine-idle and tracked to true completion in the device's operation
-   ledger** — never trusting the RPC's 2xx.
-5. **Activate + reload** — **activate** (explicitly non-ISSU, by the device's
-   full internal version; a silently-dropped activate is detected via the ledger
-   and re-sent) → **reload**. A ledger-recorded failure aborts quoting the
-   engine's own failing phase. (Where a release doesn't populate these signals,
-   the job degrades to version-state inference and a settle timer, labeled as
-   fallbacks in the logs.)
-6. **Verify, then commit** — reconnect, confirm the target actually booted, and
-   **only then** `install commit`. If it didn't come back or booted wrong, the
-   job does **not** commit and the device auto-rolls-back.
-7. **Sync + optional cleanup** — update `Device.software_version` in Nautobot;
-   optionally `install remove inactive` to reclaim space (off by default).
-8. **Health checks (opt-in)** — two opt-in steps bracketing the disruptive
-   part: a **pre-test** baseline (**8a**) captured just before activation, and
-   a **post-test** comparison (**8b**) after the sync — ports, CDP/LLDP
-   neighbors, environment sensors, and the device's own reload-reason verdict.
-   Report-only, with a ~10-minute convergence window. The full pre/post test
-   lists are in [Pre/post health checks](#prepost-health-checks-report-only).
+## Operating the switch upgrade job
 
-The remaining opt-ins — **Clean device first**, the **config saves** (before
-reload / after commit), and **Remove inactive** — appear as side-steps hanging
-off their own decision diamonds, and the once-per-run **Golden Config
-backups** are the dashed blocks bracketing the spine; an unticked run is
-exactly the solid spine.
+The sections below cover the switch job (*Cisco IOS-XE Upgrade
+(RESTCONF)*); the [9800 job](#upgrading-catalyst-9800-wireless-controllers)
+shares the same machinery and adds its own section.
 
-Every gate logs to the Job Result with the device attached (a **Debug** toggle
-logs every RESTCONF call). Batches run **in parallel**
-([details](#parallel-batches)); a per-device failure doesn't stop the batch, but
-**any failure marks the whole Job Result FAILED**. Per-device durations and the
-reload outage window are logged for change-window planning.
+### Selecting devices
 
-See the **[full gate-by-gate decision logic](docs/upgrade-flow.md)** for every
-gate and abort.
+Two roster sources, one merged run: pick **Devices** explicitly (the
+location/role/status/platform/type/version/tag filters narrow the *picker
+only*), and/or select **Dynamic groups**. The final roster is the deduplicated
+union. The scenarios this serves:
+
+- **Lab / one-off** — pick devices explicitly.
+- **Deployment rings** — one Dynamic Group per ring, one run per ring; the
+  job takes the ring's *current* membership at each run.
+- **Fleet sweeps** — a group whose filter encodes the predicate (e.g.
+  *software version = the one being retired*) selects exactly the stragglers,
+  every time.
+
+**Live resolution, deliberately.** Groups resolve at run start via the
+platform's own fresh-membership computation — never a stale cache — and every
+group's resolution is logged (count, method, first 20 names), which makes
+**Dry-run the roster preview**. A stored ScheduledJob re-resolves at each
+fire: membership drift between save and fire is intentional (that is what
+makes rings work), and the run log is the audit record. Two notes: group
+membership resolves with the *job's* database access, not the submitting
+user's device-view permissions — a user permitted to run the job can upgrade
+member devices their view constraints would hide, so scope who can run the
+job **and who can view/edit the groups** accordingly; and
+there is **no count-confirmation ritual, deliberately** — a named group is the
+expressed intention, and the per-device gates (Dry-run, install-mode, version
+floor, the staged-software advisory, free space) are the safety net. A group resolving to
+zero devices warns by name; an empty total roster refuses the run.
+
+### Run scopes & pre-staging
+
+An install-mode upgrade splits into a **harmless half** (copy;
+`install add` — extracts, distributes to every member, marks for activation;
+a Cisco-supported resting state that survives power cycles) and the
+**disruptive half** (activate → reload → commit). **Run scope** exposes that
+split:
+
+- **Step 1 - Copy image** (**default**) — size-verified copy, stop.
+- **Steps 1 & 2 - Copy image and prep** (recommended staging) — copy + a
+  ledger-confirmed `install add`, stop. The window run then needs only
+  activate → reload → commit: per-device window time collapses to roughly
+  the reload.
+- **Full** — the only scope that reloads.
+
+Staging structurally cannot reach `activate`, so it is safe during business
+hours and pairs naturally with job scheduling ("stage the fleet overnight").
+A real upgrade therefore requires **two deliberate acts** — unticking Dry-run
+*and* selecting Full; a forgotten dropdown can never reload a device. API
+callers should pass `run_scope` explicitly. If plans change, staged software
+is inert; *Remove inactive* on a later run reclaims the space.
+
+**Clean-then-stage** for tight-flash devices (4 GB 9200s, 8 GB C8000V): tick
+*Clean device first* together with a stage scope — the free-space gate then
+evaluates the cleaned flash. Read the
+[clean warnings](#clean-device-first) before ticking it anywhere else.
+
+### Image transfer methods
+
+The **Image transfer method** dropdown (default **Async xcopy**) selects how
+the image reaches the device. Async xcopy exists because of a field-found
+platform limit: the classic `copy` RPC is a **blocking** call, and the
+device's management plane kills any blocking RPC after roughly **600
+seconds** — so a ~1 GB image over a slow WAN deterministically failed. The
+async fire returns immediately; the engine runs the transfer and the job
+tracks it in the engine's own uuid-keyed operation ledger.
+
+| | Async xcopy (default) | Classic copy (fallback tier / selectable) |
+| --- | --- | --- |
+| Slow-WAN safe (>600s transfers) | ✓ | ✗ (the ~600s ceiling) |
+| Success decided by | **install-oper ledger verdict + byte-exact check** (no filesystem walk on the happy path) | byte-exact size gate |
+| Needs the recorded file size | **required** (falls back to classic when absent) | recommended |
+| Ported firmware URLs (`:9080`-style) | ✗ guarded — falls back to classic | ✓ |
+
+Classic copy is taken in exactly two situations, both logged: **up front**
+(pre-fire guards, dry-run visible — a ported image URL, wire-proven to fail
+inside the device's parser, or no recorded file size) or after a
+**positively terminal, device-reported** xcopy failure. Ambiguous ends —
+deadlines, stops, unreadable polls — **never fall back**: the engine may
+still be writing the file, and a fallback would put two writers on one file.
+On a genuinely slow WAN the fallback can itself die at the ~600s ceiling —
+fix the xcopy precondition (the log names it) rather than re-running the
+fallback. A file already on flash byte-exact is skipped by every tier, and
+the pre-check is fully walk-free on the happy path (device-published package
+inventory + keyed reads).
+
+> **Maturity:** async xcopy is **bench-validated end-to-end** (two ~15-minute
+> transfers well past the ceiling, ledger-verdict + byte-exact confirmed) with
+> a first field run on a 9500 StackWise Virtual pair; it also carried the
+> 9800-CL bench arcs. **WAN-distance field runs remain outstanding.** One
+> honest history item: a real 17.15.05 once silently failed to transfer via
+> xcopy — in hindsight consistent with the ported-URL parser failure since
+> root-caused and guarded — which is exactly why the fallback tier and the
+> bench-per-train advice exist.
+
+The transfer window (`WAN_TRANSFER_TIMEOUT_MIN`, 90 minutes by default) is
+the job-side wait budget — for very slow WANs raise it *and* the job's time
+limits together (a Nautobot admin can override a Job's limits in the UI).
+A worst-case tier stack — a device-timeout xcopy failure followed by the
+full fallback copy — can exceed the default soft time limit; the stop is
+cooperative and an idempotent re-run picks the device back up, but raise
+the limits if your WAN routinely needs both tiers.
+Full mechanics — the ledger watch, fire-lost detection, walk-free progress
+reads, and the removed engine-download experiment — live in
+**[docs/internals.md](docs/internals.md)**.
+
+### Parallel batches
+
+**Parallelism** (default 4, range 1–16) upgrades that many devices
+concurrently; an upgrade is ~90% waiting, so a 12-device batch at parallelism
+4 is ~3 waves. Every device is fully independent by construction — its own
+sessions, its own ledger uuids, its own gates. **Validation to date is at
+parallelism 2**; higher fan-out is expected to behave but unproven — raise it
+deliberately and watch the first runs. Size it to the firmware server's
+capacity for simultaneous pulls. Logs interleave in time order with per-device
+attribution (filter the Job Result by object to read one device's story);
+green means every device succeeded, and any failure marks the whole Job
+Result FAILED with winners and losers named. Each device's result line
+carries its own `[total: …]` duration — the number change windows are
+planned around. If the time budget expires mid-batch (soft time limit,
+default **2 hours**), in-flight devices stop at safe step boundaries and a
+post-mortem names completed / stopped / never-started — everything is safe
+to re-run.
+
+### Cancelling a run
+
+Until every supported Nautobot train has native job cancellation (it lands in
+core 3.2; the 2.4 LTM and 3.1 lines predate it), this repo ships it as a job:
+**Cancel IOS-XE Upgrade Run** — pick the running Job Result and run it. The
+upgrade run stops exactly like the soft time limit: every in-flight device
+halts at its next safe step boundary, queued devices never start, and the
+post-mortem lists completed / stopped / never-started. Stopped devices are at
+safe boundaries — a later re-run picks each up (idempotent gates,
+commit-to-be-safe). One exception: an async transfer in flight keeps running
+*on the device* until it finishes or times out — the stop message says so,
+and the engine-idle gate makes the eventual re-run wait it out safely.
+Cancelling a *queued* run simply prevents it from starting. The job stays
+shipped until the native control demonstrably matches this graceful
+step-boundary stop — it is likely gentler than a hard kill.
+
+## Optional protections
+
+All default **off**; each is an explicit opt-in with its trade-offs stated.
+
+### Clean device first
+
+Runs the engine's `install remove inactive` *before* upgrading — deleting
+every piece of software the device is not currently running, **including any
+version another engineer staged** (it is the deliberate override of the
+staged-software advisory and the engine's own refusal). ⚠ **Do not tick it on a Full run after you
+pre-staged — it deletes your own staging** and forces a full re-download in
+your window; the correct pairing is clean on the *staging* run, unticked on
+the Full run. Tick it only when you know the state of the network and
+nothing else is planned for this device. It cannot touch the rollback image
+for *this* upgrade (the running version is active software); what it removes
+is one generation older — and if that earlier upgrade is still in its soak
+window, cleaning removes *its* rollback option (going back that far would
+mean a full re-copy targeting that version). Clean failures abort the
+device's run; a dry-run only reports what would be removed.
+The setting that reclaims *this* upgrade's replaced version after the fact is
+**Remove inactive (after commit)** — default off to preserve the soak-window
+rollback path.
+
+### Save running-config (before reload / after commit)
+
+RPC-triggered reloads **never** ask the CLI's *"configuration modified —
+save?"* question; unsaved changes are silently lost, and the job cannot
+detect whether a save is needed (the only readable source is an SNMP bridge
+this project deliberately does not depend on). So: **Save running-config
+before reload** performs the save itself (`cisco-ia:save-config`) right
+before activation, aborting the device if the save fails; unticked, Full runs
+log a one-line reminder instead. **Save running-config after commit**
+normalizes startup-config to the *new* OS's rendering (ends the persistent
+startup/running diff compliance tools flag) — but during the soak window an
+old-syntax startup is the safer rollback path, which is why it is off and why
+Cisco's own guides save before, not after. Conservative pattern: upgrade →
+soak → save later. A refused or failed post-commit save marks the device
+FAILED with an explicit message — the upgrade itself **stays committed**;
+save manually.
+
+### Golden Config backups (before & after)
+
+Wraps the run in two config snapshots by enqueuing the **Golden Config**
+backup job for exactly the selected devices — before any upgrades start and
+again after all finish. **Fail-closed before** (a requested safety net that
+can't run aborts the run before any device is touched), **warn-only after**.
+Coverage is verified, not assumed — Golden Config silently intersects
+requests with its own scopes, so the job checks GC's per-device bookkeeping
+and aborts naming uncovered devices. Requires the GC app and a **free worker
+slot** (a concurrency-1 worker will always time out here); each wait is
+bounded at 15 minutes — budget the two waits against the job's soft time
+limit on big batches (both backup Job Result ids are logged for the audit
+trail). A run aborted mid-wait leaves the already-enqueued backup running
+harmlessly under its own Job Result. Runs on every scope; Dry-run logs and
+skips.
+
+### Pre/post health checks (report-only)
+
+Snapshots network health immediately **before activation** and compares
+**after the commit**, hunting what upgrades quietly break: ports that never
+came back, downstream switches or APs no longer seen, a power supply that
+died in the reload, a boot the device itself classifies as a crash.
+
+| Check | Source (pure oper reads) | Severity |
+| --- | --- | --- |
+| Port states | `interfaces-oper` | **error** on trunk/infrastructure ports (config trunks ∪ CDP Switch-capability peers), warning on access |
+| CDP / LLDP neighbors | `cdp-oper` / `lldp-oper` | *gone* vs *moved* distinguished; warning, **error** on trunks |
+| Environment | `environment-oper` | healthy-before, degraded-after = **error** |
+| Reload reason | `device-hardware-oper` | the device's **own** abnormal-reboot verdict (typed enum) = **error** |
+
+Semantics, all deliberate: **report-only** (findings never un-succeed a
+committed upgrade); **convergence-aware** (re-polls up to ~10 minutes — STP,
+PoE-powered APs, CDP holdtimes); **fail-closed baseline** (an unreadable
+pre-snapshot aborts *before* anything reloads); empty classes auto-skip
+loudly; new things are never findings; artifacts
+(`health-pre/post/report_<device>.json`) attach to the Job Result and are
+never read back for decisions. Deliberately excluded as false-positive
+machines: CPU/memory, full routing tables, full STP state. Full runs only.
+
+> **Maturity:** newer than the core flow, report-only by design — and carrying
+> a **first field true positive**: a WAP-facing trunk port that did not return
+> after a production upgrade was caught and reported. Treat findings as a
+> signal to verify, not a verdict.
+
+## Upgrading Catalyst 9800 wireless controllers
+
+A **separate sibling job** — *Cisco 9800 WLC Upgrade (IOS-XE)* — built on the
+same engine and doctrine, because on a controller "Full" means something
+different: the reload reboots **every joined AP** with it. The centerpiece is
+therefore **AP image predownload**: push the target image to every AP's
+backup partition *before* the reload, so APs come back with a partition swap
+instead of a long download.
+
+**Run scopes** extend the switch chain with a fourth, zero-impact stop —
+the point of the job:
+
+1. `Step 1 - Copy image to controller (default)` →
+2. `Steps 1 & 2 - Copy image and prep (install add)` →
+3. **`Steps 1-3 - Stage + AP predownload (stops before any reload)`** —
+   every joined AP holds the image; schedulable days ahead →
+4. `Full - Activate: reloads controller AND every joined AP`.
+
+**How predownload is proven — device state, never inference.** At fire time
+the job snapshots the joined-AP roster; that snapshot is the contract. Every
+AP in it must be confirmed complete from the controller's own per-AP status
+at the target version — or already hold the target in its backup partition —
+before activation. APs that vanish mid-download (bench-proven: their status
+entry disappears with their CAPWAP session), fail, report unsupported, or
+never engage are **named individually**; the deadline (an operator input,
+default 120 minutes) only ever **declares failure** — it never expires into
+success. Two named-exception escapes exist, both default-off: *Proceed despite
+incomplete APs (Full scope)* and *Allow predownload-unsupported AP models* —
+each proceeds with every affected AP named as taking the slow post-reload
+path.
+The target's AP-side identity is **learned from the device** after
+`install add` (the staged bundle publishes its exact AP image version), so
+rebuild-letter targets (17.15.4**d**) work and a base release can never
+satisfy a rebuild's gate.
+
+**Service-level guardrails on Full**, beyond the per-device gates: explicitly
+picked devices only (no Dynamic Groups — "which campus reloads tonight" is a
+named decision), exactly **one controller per run**, always serial, and a
+**blast-radius echo** at run start and in Dry-run: joined-AP count and
+models, and how many APs have a backup controller configured (read from the
+device's own per-AP priming info). AP rejoin after the reload is
+**report-only by design** — refusing to commit on an AP shortfall would let
+the rollback timer revert the controller and force every already-swapped AP
+to downgrade again, converting a partial problem into a guaranteed second
+fleet-wide outage. The one controller-side fact that stays fatal is the
+controller itself. Wireless health checks (opt-in, report-only) compare the
+AP roster as a *named set difference*, per-AP version and operation state,
+radio states for radios that were up before, and the controller's
+reload-reason verdict; client counts and RF/RRM metrics are deliberately
+excluded as post-reboot false-positive machines.
+
+**v1 boundaries, stated as promises:** **standalone controllers only** — an
+HA SSO pair is *refused by the topology gate* with the exact device reading
+named (the gate identifies standalone positively from the chassis roster;
+SSO orchestration ships only when we have SSO hardware to validate against).
+No N+1 / rolling AP migration, no EWC (either flavor), no mesh APs, no
+site-filter staggered upgrades, no ISSU — refused where detectable (HA SSO,
+non-controllers), otherwise out of scope and protected only by the strict
+per-AP gate.
+
+Inputs mirror the switch job (same selection, transfer, secrets, GC backup,
+and save-config machinery) with these differences: **Parallelism defaults to
+1**; the SELinux-quieting option does not exist (no AVC noise observed on
+virtual platforms); and three 9800-only inputs — **Predownload deadline
+(minutes)** and the two named-exception checkboxes above.
+
+> **Maturity:** **bench-validated end-to-end on a 9800-CL** with live APs —
+> a full 17.15.5 → 17.18.3 arc (staging, predownload proven per-AP from
+> device state, activation, auto-swap confirmed: the predownloaded AP
+> returned already running the target, and a deliberately interrupted AP
+> was correctly named incomplete), then a second arc against a
+> rebuild-letter target (**17.15.4d**) exercising the learned-quad gate
+> live. **Not yet proven:** production-scale AP fleets (the controller
+> engages APs in internal per-process batches — WNCD — so pacing at fleet
+> size is unmeasured), hardware 9800 appliances (same models — should work,
+> unvalidated), and WAN-distance predownloads. Supervised first runs, as
+> always.
+
+## Troubleshooting
+
+**Authentication and reachability**, distinguished in the pre-flight log:
+**HTTP 401** → bad or missing credentials; **HTTP 403** → authenticated but
+under-privileged (needs privilege 15); **HTTP 502/503** → the RESTCONF
+backend is still starting — typical for 1–3 minutes after enabling
+`restconf` or right after a reload; wait and re-run; anything else →
+connectivity or RESTCONF not enabled. If the device authenticates via
+central AAA, the account must actually be consulted for HTTP/RESTCONF
+logins.
+
+**Expected device log noise during an upgrade** (benign — do not stop on
+these): `%ISSU-3-ISSU_COMP_CHECK_FAILED` on every `install add` (the engine
+auto-probes for an ISSU path this job never uses); repeated
+`%DMI-5-AUTH_PASSED` lines (the job's own polling); and, on affected
+platforms, SELinux AVC bursts — next paragraph.
+
+**SELinux `%SELINUX-1-VIOLATION` bursts** (observed so far only on Catalyst
+9300 switches; a C8000V run showed none): the platform's SELinux policy
+denies `smand` read access to a handful of paths it touches whenever it
+builds a filesystem listing — anything that walks the filesystem trips it,
+including an operator's `dir`. In our correlated captures every burst came
+from file reads, none from install operations, and **no operation ever
+failed** — but Cisco does not document these as universally cosmetic, so
+treat ours as *benign in our testing, not Cisco-confirmed*; if a burst ever
+coincides with a real failure, open a TAC case. The job now avoids nearly
+all of them by design (its reads are walk-free on the happy path — expected
+profile **~2 AVC lines per run**), and the opt-in **Quiet SELinux log noise
+on terminals** checkbox filters the rest from the console and
+terminal-monitor only (`show logging` and syslog stay complete). The full
+forensic story, the manual discriminator workaround, and the measured
+numbers: **[docs/internals.md](docs/internals.md#the-selinux-avc-story)**.
+
+**"Install DB also tracks other versions":** a staged version usually means
+someone else's change is in flight. The job warns and never clears staged
+software on its own; the device's install engine typically refuses a
+conflicting add, and the abort quotes what is staged. *Clean device first*
+is the deliberate override — [read its warnings](#clean-device-first)
+first.
+
+**The device didn't come back / booted the wrong image:** the job does
+**not** commit — the auto-rollback timer reverts the device to its prior
+image on its own (field-observed working). The job log states exactly what
+was and wasn't confirmed.
+
+**Commit failed after a successful boot:** the device is activated but
+uncommitted, with the rollback timer ticking — **re-run the job**; the
+already-on-target path commits-to-be-safe (both jobs). The abort message
+says exactly this.
+
+**9800: predownload deadline expired / APs named incomplete:** nothing was
+activated — the deadline only declares failure. Re-running is cheap (staged
+work and completed APs are skipped); the two named-exception checkboxes are
+the deliberate overrides, and every affected AP is named either way.
+
+**9800: APs slow to rejoin after a Full run:** the rejoin watch is
+report-only by design — the controller's commit stands. An AP in
+`downloading` is taking the slow path predownload exists to avoid; a
+missing AP may be on its configured backup controller, which the job does
+not query.
+
+**A run was cancelled or hit its time budget:** every stopped device is at a
+safe step boundary and idempotent to re-run; the post-mortem in the log
+names completed / stopped / never-started.
+
+---
 
 ## Versions & support
 
 | Component | Supported | Notes |
 | --- | --- | --- |
-| **Nautobot** | **2.4 LTM** and **3.1+** | Job execution verified on **both 2.4 LTM and 3.1, with the same behavior on either**; the current test bed is a stock **2.4.36**, with earlier volume on 3.1. **3.0 is untested by choice** — unmaintained since 3.1 shipped. Earlier 2.x (≥ 2.2) *may* work but is untested (dynamic-group resolution uses the platform's fresh-membership API, 2.3+; earlier 2.x falls back to the group's query). |
-| **Device OS** | Cisco IOS-XE **≥ 17.9.1** (incl. 26.x) | Hardware-validated across **17.12–26.1**; every YANG model the job touches verified against Cisco's published models 17.9.1–26.1.1. Model presence ≠ runtime behavior — do one supervised run per new train. Rebuild letters (17.15.4**d**) are **distinct versions**. |
-| **Platform** | Catalyst **9300 family** + **C8000V** | **9300 and 9300L** hardware-tested; the remaining 9300 variants (LM/X) run the identical cat9k image and flow (run pending). **C8000V** (autonomous): **validated live** — a full 17.12 → 17.15.5 upgrade on a running C8000V, with `bootflash:` discovered from the device. **9500** (StackWise Virtual): **hardware-validated in production** — a 9500-16X SVL pair upgraded as the lab core. **9200** and **9400/9600**: model sets identical (runs pending). **9800 WLC**: mechanically compatible but **operationally out of scope** — controller only, no AP predownload; a full-scope run is warned in-job. Nexus/NX-OS is a different API — not supported. **3650/3850 cannot be supported** (their terminal 16.12 train lacks the install API; Cisco's replacement, the 9300L, is supported). |
-
-**By IOS-XE train:**
-
-| Train | Status | Basis |
-| --- | --- | --- |
-| **17.12 / 17.15 / 17.18 / 26.1** | ✅ **Tested on real equipment** | Repeated upgrades **and** downgrades on 9300s — single switches **and** a 2-member stack across all four trains; lettered rebuilds; cross-era moves in both directions; serial and Parallelism-2 batches. Ledger tracking, engine-idle gating, byte-exact verify, the all-members-rejoined gate, remove-inactive, and interrupted-run recovery all exercised live. |
-| **17.9 / 17.10 / 17.11** | ⚠️ **Not tested — might work** | Model-complete on paper (17.9 is the floor). Best used as an *escape source* (upgrade FROM it) — 17.9 left Cisco maintenance Aug 2025. Run one supervised upgrade first. |
-| **< 17.9** | 🚫 **Not supported** | Refused: key API components are missing below the floor (the RESTCONF install models and reliable file-size reporting the job relies on). |
-
-**What makes a device compatible.** The job targets a *capability set*, not a
-model list — so rather than chase which platforms qualify, hold it to the rule.
-A device is a candidate when it is:
-
-- **Autonomous Cisco IOS-XE at ≥ 17.9.1** — the box manages its own upgrade, not
-  a device driven by an SD-WAN controller or a Meraki dashboard;
-- **booted in install mode** — the job refuses bundle mode; and
-- **reachable over RESTCONF**.
-
-Activation is always a **whole-box reload** (this job never uses ISSU). Any
-device meeting all of the above should, **in principle**, be upgradable by this
-job regardless of family — the C8000V router already rides the same path as the
-switches. We validate on the hardware we have and **don't try to predict the
-rest**; if you run it somewhere new, tell us how it went
-([Contributing](#contributing)).
-
-The job imports only **`requests`** plus Nautobot core, so there is no separate
-Python dependency matrix — whatever ships with a supported Nautobot suffices.
-
-## Authentication
-
-Every device is contacted with credentials — nothing is attempted anonymously.
-Credentials are resolved **at run time from Nautobot's Secrets manager**, never
-typed into the job and never stored in job-run records (`has_sensitive_variables`
-stays effective because no secret is a job input).
-
-How it resolves, per device:
-
-1. The job uses the device's assigned **Secrets Group** (`Device.secrets_group`),
-   or the optional **Secrets group** job-input override.
-2. It reads the **username** and **password** secrets, trying access types in
-   order **RESTCONF → HTTP(S) → REST → Generic** (store them under **RESTCONF**).
-3. They are sent as **HTTP Basic auth over HTTPS** — the mechanism IOS-XE
-   RESTCONF uses (backed by the device's AAA: local / TACACS+ / RADIUS).
-
-Because Nautobot Secrets are **provider-agnostic**, the secret values themselves
-can live in environment variables, files, or an external manager (HashiCorp
-Vault, AWS Secrets Manager, Azure Key Vault, Delinea, …) via the corresponding
-Nautobot secrets-provider app — the job calls `get_secret_value()` and is
-indifferent to the backend.
-
-**Setup:** create a Secret for the username and one for the password → add both
-to a **Secrets Group** under access type **RESTCONF** (secret types *username*
-and *password*) → assign the group to each device (or pass it as the override).
-The account must be **privilege 15** / authorized for `install` and `copy`.
-
-The pre-flight check distinguishes the failure modes so the Job Result is
-actionable: **HTTP 401** → bad/missing credentials; **HTTP 403** → authenticated
-but under-privileged (needs privilege 15); **HTTP 502/503** → the RESTCONF
-backend is still starting (typical for 1–3 minutes after enabling `restconf`
-or right after a reload — wait and re-run); otherwise → connectivity /
-RESTCONF not enabled.
-
-## Image storage
-
-The `.bin` images are **not** stored in Nautobot — Nautobot holds only the
-metadata (`SoftwareImageFile`: name, checksum, size, `download_url`, device-type
-map). **You serve the binaries from any web server the devices can reach.** The
-transfer is a device-initiated pull — async `xcopy` by default, the classic
-`copy` RPC as the fallback tier — that just needs a URL it can `GET` (note:
-xcopy requires a **port-less** URL; a ported URL falls back to classic
-copy), so **any plain HTTP file server works** — there is no dependency on
-a particular stack.
-
-**HTTP is the validated path.** All testing to date uses **plain HTTP** (a
-simple static file server handing out the `.bin`). **HTTPS should also work** if
-the firmware server presents a certificate the devices trust — IOS-XE's TLS
-client rejects self-signed certs — but it is **not yet tested or validated**, so
-treat the **Use HTTPS URL** option as experimental. Encryption is also of
-questionable value for this traffic: the images are public, Cisco-signed
-binaries whose integrity is already checked independently (byte-exact size +
-`install add` signature validation), so confidentiality buys little and
-tampering is caught regardless. On a locked-down management segment, HTTPS here
-may simply not be necessary.
-
-**A convenient reference host: [nautobot-composer](https://github.com/bforejt/nautobot-composer).**
-Its opt-in `firmware` profile is where all the testing ran, and it worked out
-nicely: a **Filebrowser** UI (`:8088`, authenticated) for engineers to upload,
-plus a read-only **nginx** service (HTTP on `:80`, port-less URLs / `:9443` HTTPS,
-network/ACL-restricted) that devices pull from. The Filebrowser-for-upload +
-static-server-for-download split is a good pattern — but it is only one option;
-any equivalent web server will do.
-
-The **Register IOS-XE Image** job builds the device `download_url` from a
-configurable base + the uploaded filename, validates the image is reachable
-(preferring the worker's internal route, falling back to the device URL),
-optionally downloads + hash-verifies it, and records the `SoftwareImageFile`
-mapped to the compatible device types — creating the `SoftwareVersion` too if
-you don't pick an existing one. It does **not** upload files — publish them to
-your web server first.
-
-Configure on the Nautobot worker: `FIRMWARE_BASE_URL` (device-facing base,
-plain HTTP — e.g. `http://<host>/images/`), `FIRMWARE_BASE_URL_HTTPS` (the HTTPS
-variant, stored instead when the **Use HTTPS URL** option is ticked — untested,
-see above), and `FIRMWARE_INTERNAL_URL` (the worker's own validation route,
-e.g. `http://firmware-download/images/`). The base is overridable per run.
-
-See **[docs/image-storage.md](docs/image-storage.md)** for the reference
-nautobot-composer design in detail: URL formats, the acquire → upload → register
-workflow, TLS notes, and retention.
-
-## Releases & pinning
-
-Nautobot pins a Git repository to a **branch**, and this project uses that as
-its release mechanism:
-
-- **Production: point the Git Repository at the stable train branch —
-  `1.0.x`.** A train changes **only to fix bugs** — no new features, no
-  changed defaults, no renamed inputs — so it is safe to re-sync at any time.
-- **`main` is development.** It moves freely; use it for labs and evaluation,
-  never production.
-- **New features arrive as a new train** (`1.1.x`, `2.0.x`, …). Moving trains
-  is always your deliberate act — edit the repository's branch field when
-  you're ready. Nothing changes underneath you.
-
-Every release is tagged (`v1.0.0`, `v1.0.1`, …) and listed in
-[CHANGELOG.md](CHANGELOG.md); the upgrade job logs its version at the start
-of every run, so each Job Result records exactly which release produced it.
-The full release model is in [RELEASING.md](RELEASING.md).
-
-## Installing into Nautobot (getting started)
-
-This project is consumed the standard Nautobot way — as a **Git Repository that
-provides Jobs**. Nautobot clones the repo, discovers the Jobs in
-[`jobs/`](jobs/), and runs them on its own Celery worker; there is nothing to
-`pip install`. The mechanics of Git data sources and Jobs are core Nautobot
-features maintained by Network to Code — this section covers the
-project-specific basics as bullets and links out to NTC's documentation for the
-detailed steps.
-
-**Prerequisites**
-
-- A working **Nautobot 2.4 or 3.1+** (see [Versions & support](#versions--support)).
-  Don't have one? The same author's
-  [nautobot-composer](https://github.com/bforejt/nautobot-composer) is a
-  Docker-Compose stack that ships a matching Nautobot **and** the firmware
-  server this job pulls images from.
-- **Inventory in Nautobot**: each target device needs a **primary IPv4**
-  reachable from the worker, a **device type** mapped to the target version's
-  **Software Image File** (or a default image on the version), and an assigned
-  **Secrets Group** exposing a username + password under the **RESTCONF** access
-  type (see [Authentication](#authentication)).
-- A **Software Version** record for the target with a **Software Image File**
-  carrying at least a **download URL** and **image file name** (add the **file
-  size** to enable the post-copy size gate). The device must be able to reach
-  that URL over a transport it supports (https/http/scp/ftp/tftp); embed
-  credentials in the URL if the host requires them. Binaries live on the
-  firmware server, not in Nautobot — see [Image storage](#image-storage).
-- **Devices**: Cisco IOS-XE **≥ 17.9.1**, booted in **install mode**
-  (`flash:packages.conf`), with **RESTCONF enabled** (`restconf` +
-  `ip http secure-server`) and a **privilege-15** account (or exec-authorized
-  for `install`/`copy`). Enabling RESTCONF is a one-time **manual prerequisite**
-  (those few commands) — the job deliberately does not bootstrap it.
-- No extra Python packages: the Job's only runtime dependency is `requests`,
-  already present with Nautobot core.
-
-**Steps** (the basics — follow the linked NTC docs for the full how-to)
-
-- **Add the repository.** In Nautobot, go to **Extensibility → Git Repositories
-  → Add**, set the remote URL to this public repo, pick a branch (**`1.0.x`**
-  for production, `main` only for labs — see
-  [Releases & pinning](#releases--pinning)), tick
-  **Provides: Jobs**, and **Sync**. Getting the URL into the right place and the
-  sync options are walked through in NTC's
-  [Git as a Data Source](https://docs.nautobot.com/projects/core/en/stable/user-guide/feature-guides/git-data-source/)
-  guide (and the
-  [Git Repositories](https://docs.nautobot.com/projects/core/en/stable/user-guide/platform-functionality/gitrepository/)
-  reference).
-- **Enable the Jobs.** Newly synced Jobs are **disabled** by default. Under
-  **Jobs → Jobs**, in the **IOS-XE Upgrades** group, edit and **Enable** each of
-  *Cisco IOS-XE Upgrade (RESTCONF)*, *Register IOS-XE Image*, and *Cancel IOS-XE
-  Upgrade Run*. How enabling works is documented in NTC's
-  [Managing Jobs](https://docs.nautobot.com/projects/core/en/stable/user-guide/platform-functionality/jobs/managing-jobs/).
-- **Know how Jobs run.** Jobs execute on Nautobot's Celery worker and log to a
-  **Job Result**; permissions, scheduling, and the run model are core Nautobot
-  behavior, covered in NTC's
-  [Jobs](https://docs.nautobot.com/projects/core/en/stable/user-guide/platform-functionality/jobs/)
-  guide.
-- **After changing Job code**, re-sync the repository; on non-container installs,
-  restart the Celery worker so the new code is loaded.
-
-Then head to [Running it](#running-it) for the first (Dry-run) execution.
-
-## Running it
-
-1. Populate the target **Software Version** + **Software Image File** in Nautobot
-   (download URL, image file name, and ideally checksum + size), and map the
-   image to the relevant **device type(s)**.
-2. Open the job, optionally narrow the list with the **location / role / status /
-   platform / device type / current version / tags** filters, select **devices**
-   and the **target version**, leave **Dry-run** checked (the default), and run
-   it. Dry-run executes every read-only gate and reports exactly what *would*
-   happen.
-3. When the dry-run is clean, run it again with Dry-run unchecked.
-
-**Expected device log noise during an upgrade** (benign — do not stop on these):
-`%ISSU-3-ISSU_COMP_CHECK_FAILED` appears on every `install add` (the engine
-auto-probes for a hitless ISSU path that Catalyst 9300s in normal deployments
-don't have; our upgrade is reload-based by design), and affected releases emit
-SELinux `%SELINUX-1-VIOLATION` AVC-denial bursts whenever ANY process asks `smand`
-for a filesystem listing — including this job's own file reads (copy
-pre-check, progress polls, transfer verify — see
-[SELinux AVC log events](#selinux-avc-log-events-cause-and-workaround)
-for the cause and the workaround). The repeated `%DMI-5-AUTH_PASSED`
-entries are this job's own RESTCONF polling.
-
-### Selecting devices at scale
-
-Two roster sources, one merged run: pick **Devices** explicitly (the
-filters above the picker narrow its list — they scope the *picker only*,
-never group membership), and/or select **Dynamic groups**. The final
-roster is the union of both, deduplicated — a device selected twice runs
-once.
-
-The three scenarios this is built for:
-
-- **Lab / one-off test** — pick the device(s) explicitly. Unchanged.
-- **Deployment rings** — one Dynamic Group per ring, one run per ring.
-  Ring membership is managed centrally in Nautobot, and the job takes the
-  ring's **current** truth at each run.
-- **Fleet sweeps / stragglers** — a Dynamic Group whose filter encodes the
-  predicate (e.g. *software version = the one being retired*) selects
-  exactly the devices still needing the move, every time it runs.
-
-**Live resolution, deliberately.** Groups are resolved at run start via
-the platform's own fresh-membership computation
-(`update_cached_members()` — the documented cross-version API), never
-from a stale cache: on Nautobot 2.4 that computes from the group's query,
-on 3.1 from its membership queryset, and it covers all three group types —
-filter-based, set-based ("group of groups"), and static assignments.
-(Side effect embraced: the refresh keeps the group's page in Nautobot
-showing exactly the roster the run used.) A stored ScheduledJob therefore
-re-resolves at **each** fire — membership drift between save and fire is
-intentional (that is what makes rings work), and the run log is the audit
-record: every group's resolution is logged at start (exact count, method,
-and the first 20 names), which also makes **Dry-run the roster preview**.
-One permissions note: group membership is resolved with the job's own
-database access, **not** the submitting user's device-view permissions — a
-user permitted to run this job and view a group can upgrade member
-devices their view constraints would hide from the Devices picker, so
-scope who can run the job and who can view/edit the groups accordingly.
-
-**No count-confirmation gate, deliberately.** Selecting a named group is
-the expressed intention; a type-the-number ritual adds friction, not
-safety. The safety net is unchanged and per-device: Dry-run first, then
-the install-mode gate, version floor, staged-conflict stop, and free-space
-gate on every member of the roster. Loud edges: a group resolving to zero
-devices warns by name (usually a drifted filter), and an empty total
-roster refuses the run before anything is touched.
-
-### Parallel batches
-
-Batch runs upgrade up to **Parallelism** devices concurrently (default **4**,
-range 1–16; `1` = strictly one at a time). An upgrade is ~90 % waiting — copy,
-install, reload — so parallelism collapses batch wall-clock dramatically: a
-12-device batch at parallelism 4 is ~3 waves ≈ 90 minutes instead of ~6 hours
-serial. Each device's result line carries its own `[total: …]` for the
-change-window arithmetic.
-
-**Validation to date is at Parallelism 2** (run 10+ times across versions in
-the lab). The per-device independence below is by construction, so higher
-fan-out is expected to behave — but treat anything above 2 as unproven: raise
-it deliberately and watch the first runs (see
-[Current status](#current-status)).
-
-**Why it's safe**: every device is fully independent by construction — its own
-RESTCONF sessions, its own per-operation correlation uuids in the device's
-install ledger, its own gates and timers. Nothing is shared between device
-threads except the read-only job inputs.
-
-**Sizing Parallelism**: the practical limit is the firmware server's capacity
-for simultaneous image pulls (each device downloads the full image during its
-copy phase) and log readability. 4 is a comfortable default for the bundled
-nginx firmware server; raise it after watching a batch's copy-progress lines
-for signs of contention (all devices' transfer rates dropping together).
-
-**Reading the logs**: per-device entries interleave in **time order**, each
-still attributed to its device — use the Job Result's per-object filtering to
-read one device's story in isolation. The final per-device results table and
-the success/failure verdict are unchanged: **green still means every device
-succeeded**, and any failure marks the whole Job Result FAILED with winners
-and losers named.
-
-**If the job's time budget expires mid-batch** (soft time limit, default
-2 hours): in-flight devices are **stopped at safe step boundaries** — between
-steps, never mid-decision — within about one poll interval; queued devices are
-cancelled; and the post-mortem names three lists: completed, stopped/failed
-(each entry carries its reason), and never started. Everything is safe to
-re-run — the idempotent gates (copy/add skip-if-done, commit-to-be-safe) pick
-each device up where it stopped.
-
-### Cancelling a run
-
-Native job cancellation is coming to **Nautobot core in 3.2** (a "Stop Job
-execution" control —
-[nautobot#2088](https://github.com/nautobot/nautobot/issues/2088), closed for
-the v3.2 milestone). Until every supported train has it — the **2.4 LTM** line
-and **3.1** predate 3.2 — this repo ships cancellation as a job: **Cancel IOS-XE
-Upgrade Run**. It will remain here until all supported Nautobot trains can
-cancel jobs natively — and even then only once we've confirmed the native
-control gives the **same graceful result**. This cooperative stop is tuned to
-the upgrade job (safe step boundaries, a drained post-mortem) and is likely
-gentler than a hard, immediate kill; we're monitoring the 3.2 control and will
-retire this job once it demonstrably matches. Pick the running Job
-Result and run it — the upgrade run receives the same signal as the soft time
-limit, which it handles **gracefully by design**: every in-flight device stops
-at its next safe step boundary (never mid-decision, within ~one poll
-interval), queued devices never start, and the cancelled run logs the full
-**completed / stopped / never-started** post-mortem. Stopped devices are left
-at safe boundaries — re-running the upgrade job later picks each one up
-(idempotent gates + commit-to-be-safe). Cancelling a *queued* run simply
-prevents it from starting. One exception to "everything stops": an **async
-WAN transfer in flight** (an async xcopy) keeps running
-*on the device* after the stop until it finishes or its own timeout fails
-it — the stop message says so, and the engine-idle gate makes the eventual
-re-run wait it out safely.
-
-### Pre-staging (stage now, activate in the window)
-
-An install-mode upgrade splits into a **harmless half** (copy the image;
-`install add` extracts, distributes to every stack member, and marks the
-version for activation — no reload, no boot change, nothing armed, a
-Cisco-supported resting state that survives power cycles) and the
-**disruptive half** (activate → reload → commit). The **Run scope** input
-lets you do the harmless half ahead of time:
-
-- **`stage-add`** (recommended): every pre-flight gate + copy + a
-  ledger-confirmed `install add`, then stop. The maintenance-window run
-  (scope `full`) skips the finished work automatically — the idempotent
-  gates recognize it — and needs only **activate → reload → commit**,
-  collapsing per-device window time to roughly the reload (~10–15 min).
-- **`stage-copy`**: stop after the size-verified copy — for fleets tight on
-  flash (staged packages roughly double the image's footprint until the
-  window).
-
-Staging causes **no outage** (it structurally can't reach `activate`), so it is
-the safe scope to run during business hours and to push **Parallelism** higher —
-with the same "validated at 2, raise deliberately" caveat as any batch (see
-[Parallel batches](#parallel-batches)) — and it pairs naturally with Nautobot's
-native job scheduling ("stage the fleet overnight"). Structural guarantee: stage scopes return
-before any code path that can reach `activate` — the only disruptive verb.
-If plans change, a staged image is inert; `install remove inactive` (or the
-Remove-inactive option on a later run) reclaims the space.
-
-**Clean-then-stage** for tight-flash devices (4 GB 9200s, 8 GB C8000V
-profiles): tick *Clean device first* together with a stage scope — the device
-is groomed by the install engine, the free-space gate evaluates the cleaned
-flash, and the staged image lands with maximum headroom.
-
-**The safe step is the default**: Run scope defaults to *Step 1 - Copy
-image*, so an actual upgrade requires **two deliberate acts** — unchecking
-Dry-run *and* selecting *Full* — and a forgotten dropdown can never reload a
-device (the run just stages and says so). Anyone automating runs via the API
-should pass `run_scope` explicitly.
-
-### Cleaning a device first
-
-The **Clean device first** checkbox tells the job to groom the device
-*before* upgrading: it runs the install engine's own `install remove
-inactive`, which deletes every piece of software the device is not
-currently running — inactive packages, leftover image files, **and any
-version another engineer may have staged**.
-
-⚠️ **What you are accepting when you tick it:**
-
-- **Do NOT tick this if you already pre-staged the code — it deletes your own
-  staging too.** The staged image and packages are, by definition, software
-  the device is not running yet, so the clean removes them and the Full run
-  is forced to **re-download and re-stage everything** during your window.
-  This has surprised people: stage ahead with Step 1 (or Steps 1 & 2), then
-  run Full with this box ticked, and the pre-staging you did is gone. The two
-  work as alternatives — if you need both, tick the clean on the *staging*
-  run (the clean-then-stage pattern), and leave it **unticked** on the Full
-  run that follows.
-- **Anything in-flight is deleted.** A staged version usually means someone
-  else's change is already underway. Normally the job STOPS when it finds a
-  conflicting staged version (the staged-conflict safety stop); this
-  checkbox is the deliberate override. Tick it only when you know the state
-  of the network and nothing else is planned for this device.
-- **It does NOT remove the rollback image for THIS upgrade.** The currently
-  running version is active software, which `install remove inactive`
-  cannot touch — and that is exactly what becomes the rollback image once
-  the new version activates. What the clean deletes is one generation
-  older: the version kept on flash from a *previous* upgrade. If that
-  earlier upgrade is still in its soak window, cleaning removes its
-  rollback option (going back that far would mean re-running this job
-  targeting that version — a full re-copy).
-
-The setting that DOES remove this upgrade's rollback image is **Remove
-inactive (after commit)**: once the new version is committed and running,
-the replaced version becomes inactive, and that option reclaims its space
-right away instead of keeping it for a soak period (default off).
-
-Mechanics: the clean runs before the free-space gate, so the gate evaluates
-the CLEANED flash (this is the **clean-then-stage** pattern for tight-flash
-devices described above). Clean failures abort the device's run; a dry-run
-only reports what would be removed.
-
-### Image transfer methods (WAN options)
-
-The **Image transfer method** dropdown (default **Async xcopy**) selects how
-the image reaches the device. Async xcopy exists because of a field-found
-platform limit: the classic `copy` RPC is a **blocking** call, and the
-device's management plane (DMI/ConfD) kills any blocking RPC after roughly
-**600 seconds** — an internal, non-configurable limit (it is *not*
-`ip http timeout-policy`, which never aborts an in-flight request). A ~1 GB
-image over a slow WAN legitimately needs longer, so Step 1 deterministically
-failed at distant sites with `HTTP 400 "application timeout"`. The async
-fire returns immediately, so that ceiling never applies.
-
-**The tiers.** Async xcopy is the primary; **classic copy is the fallback
-tier**, taken in exactly two situations:
-
-1. **Up front (pre-fire guards, dry-run visible):** the image URL carries an
-   explicit port (bench- and wire-proven on 17.18.03: the device's
-   express-copy parser fails locally on any `:port`, zero packets sent —
-   serve images port-less to use xcopy; the reference nautobot-composer
-   setup serves port 80 by default since its 2026-07 move), or the image has
-   no recorded file size (xcopy's byte-exact confirmation needs it). The
-   run logs the reason and uses classic copy.
-2. **After a POSITIVELY TERMINAL xcopy failure:** the engine's ledger
-   publishes a failure verdict or the fire is rejected (both
-   device-reported), or the **fire-lost** case — readable ledger polls
-   never showed the uuid AND a fresh authoritative listing positively
-   lacks the destination file (both device-published reads; the wait bound
-   itself is job-side). Ambiguous ends — the job deadline, a stop/cancel,
-   unreadable-ledger streaks, a ledger record that vanished mid-watch, any
-   post-fire change to the destination file, or a declaration-time listing
-   that cannot be read — **never fall back**: the engine may still be
-   writing the file, and a fallback copy would put two writers on one
-   file. (A pre-existing same-named file at the wrong size also blocks the
-   fallback — clear it to restore eligibility.)
-
-Honesty notes on the fallback: on a genuinely slow WAN the classic copy can
-itself die at the ~600s ceiling — the fallback restores the proven LAN
-behavior, it does not rescue WAN transfers. Fix the xcopy precondition (the
-log names it) instead of re-running the fallback. And a worst-case tier
-stack (a device-timeout xcopy failure followed by the full fallback copy)
-can exceed the job's default soft time limit — the stop is cooperative and
-an idempotent re-run picks the device back up; raise the job time limits if
-your WAN routinely needs both tiers. Pick **Classic copy only** to skip
-xcopy entirely (the pre-2.0 behavior, with the field history).
-
-> **Maturity:** **Async xcopy is bench-validated end-to-end** (2026-07-29/30,
-> 17.18.03 autonomous 9300, port-80 server): after every failure mode was
-> root-caused (port-carrying URLs, an omit-means-zero timeout leaf, verbatim
-> destination handling — all fixed or guarded here), full transfers completed
-> with the engine's own `install-op-succ` ledger verdict and byte-exact size
-> matches — both **~15 minutes, well past the ~600s ceiling** that kills
-> classic copy, both on the 17.18.03 lab device (one Postman-fired, one the
-> job's own first live run). Plus a **first field run on a 9500 StackWise
-> Virtual pair** (2026-07-31, Nautobot 3.1.8) — a 15m07s staging transfer
-> that also surfaced this platform's lazily-deferred package verification
-> and produced the bounded verify-settle wait.
-> WAN **field** runs remain outstanding. Validate on a lab device first, and
-> report results either way ([Contributing](#contributing)). One known
-> history item: a real 17.15.05 once **silently failed to transfer via
-> xcopy** (no public bug exists; in hindsight consistent with the port-URL
-> parser failure root-caused here) — that history is why the fallback tier
-> and the per-train bench advice exist. Bench xcopy on the exact trains your
-> fleet runs.
-
-| | Async xcopy (default) | Classic copy (fallback tier / selectable) |
-| --- | --- | --- |
-| Slow-WAN safe (>600s transfers) | ✓ | ✗ (the ~600s DMI ceiling) |
-| Step 1-only staging | ✓ | ✓ |
-| Success decided by | **install-oper ledger verdict + byte-exact check** (normally from the engine's package inventory — no filesystem walk) | byte-exact size gate (warns if no size recorded) |
-| Failure reported by | **the engine's ledger fail/timeout records** (device-published reason) | the device's own error, in seconds |
-| Needs the recorded file size | **required** (falls back to classic when absent) | recommended |
-| Ported firmware URLs (`:9080`-style) | ✗ guarded — falls back to classic | ✓ |
-
-Shared semantics: a file already on flash byte-exact is skipped by every
-tier — for xcopy the pre-check itself is **ledger-first and fully
-walk-free on the happy path** (the engine's package inventory names the
-file and a keyed read corroborates the byte count; **absence** is likewise
-decided by keyed probes of up to **three** ranked device-published candidate
-directories — package-inventory `pkg-dir`s first, then download-descriptor
-`dest-dir`s — bench-proven AVC-silent for hits and misses, 2026-07-30. A
-clean miss across every probed directory is accepted as absence: the cost
-of a false absence is bounded to one harmless re-transfer that overwrites,
-which is why this differs from the mid-transfer watch, where a keyed miss
-never proves anything. The authoritative listing remains the fallback tier
-whenever any of it cannot decide. The free-space gate, `install add`'s mandatory signature
-validation, and all downstream gates are unchanged. The transfer window
-(`WAN_TRANSFER_TIMEOUT_MIN`, **90 minutes** by default) is the **job-side**
-wait budget and must fit the job's overall time limits — for very slow WANs
-raise that constant **and** the job's soft/hard time limits **together**
-(Nautobot lets an admin override a Job's time limits in the UI).
-
-**How the xcopy watch works.** The fire (`Cisco-IOS-XE-xcopy-rpc:xcopy`,
-its device-side `timeout` leaf always set — omitting it means an
-instantly-expired window, bench-proven) is followed by tracking **the
-engine's own ledger record for this run's uuid** (bench-captured: in-flight
-under `install-oper` with the download transaction `in-progress`; terminal
-migrated to `install-oper-hist` with `install-op-succ`/`-fail`). **Success
-is the engine's published verdict, confirmed byte-exact** — normally from
-the engine's own **package inventory**
-(`install-location-information/install-packages`, captured live
-2026-07-30), which publishes the landed file's exact byte size, its
-`verify-ok` status, and a timestamp the job gates against this operation;
-entries vanish when files are deleted. Some trains run that verification
-**lazily** (field-observed on a 9500 SVL: `install-package-verify-deferred`
-right after the transfer), so the confirm waits a bounded beat of zero-AVC
-ledger re-polls for the engine's verdict, then tries a **keyed byte-exact
-read of the destination** (positive-accept only, no walk), with the
-authoritative listing remaining the floor whenever none of that can
-confirm. **Failure is
-the engine's published failing transaction** (e.g. `install-txn-download →
-fail`, sub-state `install-download-fail`) — a device reason, not an
-inference. File-size polls remain for progress display via a walk-free
-keyed address **constructed from device-published state** (the descriptor's
-dest-dir/dest-filename plus the partition-stats keys), with the classic
-learn-from-listing as the floor; zero growth logs a warning but never
-aborts while the ledger says running — the RPC's own timeout fails a dead
-transfer on-device. Job-side failure declarations are fallback tiers only:
-the fire-lost bound (`XCOPY_STALL_SECS`: readable ledger polls — counted,
-never wall time — that never show the uuid) and the transfer-window
-deadline (a backstop past the RPC's own on-device timeout). **A job stop or
-cancel cannot stop the device-side transfer** — the engine keeps running it
-until it completes or its own timeout fails it; the engine-idle gate before
-every fire makes a later re-run wait it out safely. Works on every run
-scope, including **Step 1-only pre-staging** over the WAN.
-
-**Removed: the engine-download experiment (2026-07).** A third method —
-handing the URL to `install add` itself — was bench-validated end-to-end
-(2026-07-28: the install RPC accepts a remote URL as `path`; transfer and
-add complete as uuid-keyed ledger records) and then removed: with xcopy as
-the default and classic copy covering ported-URL servers as the fallback,
-it had no remaining niche worth a third per-train bench matrix. Findings
-retained for the record: the install model's `download-timeout` leaf is
-interpreted roughly as *seconds* despite the modeled minutes (sending 10
-strangled a healthy transfer; the device default ~2000 applies when the
-leaf is omitted), and the same seconds-vs-minutes confusion shapes how the
-xcopy timeout leaf is sent today.
-### Saving running-config before the reload (Full runs)
-
-The CLI `reload` asks *"System configuration has been modified. Save?"* —
-**RPC-triggered reloads never do.** The reload our activation triggers simply
-discards unsaved running-config changes (Cisco's own model says as much: the
-reload RPC's `force` leaf is described as *"Force a restart even if there is
-unsaved config"*).
-
-The job **cannot detect** whether a save is needed: the only
-programmatically-readable source for the saved/unsaved determination is the
-config-management timestamps served through the device's **SNMP bridge**
-(`CISCO-CONFIG-MAN-MIB`), which requires an `snmp-server` configuration and
-simply hangs without one — a dependency this project deliberately does not
-take (verified on real hardware; no native YANG replacement exists even on
-26.1). Detection was therefore removed.
-
-What the job does instead:
-
-- Tick **Save running-config before reload** and the job performs the save
-  itself (`cisco-ia:save-config`, the programmatic `write memory` — a native
-  DMI RPC with no SNMP dependency) right before activation. A refused or
-  failed save **aborts before the reload**; success is confirmed by the
-  device's own result string. Default **off**: saving is itself a write, and
-  it would persist half-applied changes an engineer deliberately left
-  unsaved.
-- With the box unticked, Full runs log a one-line reminder of the platform
-  fact before activating, so the silent-discard behavior is never a surprise.
-
-
-### Saving running-config after the commit (opt-in, soak trade-off)
-
-**Save running-config after commit** (default **off**) writes running-config to
-startup-config *after* the upgrade is committed and Nautobot is synced — the
-programmatic `write memory`, verified by the device's own RPC result exactly
-like the pre-reload save.
-
-**Why you might want it:** after booting the new version, running-config is the
-new OS's *canonical rendering* of your configuration — translated syntax and
-new defaults included. Saving normalizes startup to that rendering, which
-captures the translation deliberately and eliminates the persistent
-startup/running diff that compliance tooling (Golden Config included) would
-otherwise flag until someone's unrelated `wr mem` months later.
-
-**Why it's off by default:** during the **soak window**, a startup written by
-the *new* OS may carry syntax the *old* image cannot cleanly parse — so leaving
-startup in old-version form preserves the cleanest rollback/downgrade path.
-This is why Cisco's own upgrade guides save *before* the reload, not after. The
-conservative pattern is: upgrade → soak → then save (re-tick this on a later
-run, or `write memory` by hand).
-
-Notes: applies to the run that performs the activation (an already-on-target
-re-run does not save). It does **not** interact with the *Quiet SELinux log
-noise* filter — the activation reload erased that from running-config before
-this save runs (only the *pre-reload* save persists it). A refused/failed
-post-commit save FAILS the device with an explicit message — the upgrade
-itself **stays committed**, and the message says to save manually.
-
-
-### Golden Config backups (before & after)
-
-**Golden Config backup (before & after)** (default **off**) wraps the run in
-two configuration snapshots: the job enqueues the **Golden Config backup job**
-for exactly the selected devices *before any upgrades start*, waits for it to
-finish, and runs it again *after all devices finish* — so you have a
-known-good config capture on both sides of the reload, and Golden Config's
-own diff/compliance views show any drift the upgrade introduced.
-
-Requirements and mechanics:
-
-- Requires the **Golden Config app** with its backup job installed, enabled,
-  and working for these platforms (the job is found by class `BackupJob` in
-  `nautobot_golden_config*`, falling back to the name "Backup
-  Configurations"). This stays inside the project's charter — it orchestrates
-  another **Nautobot job**; Golden Config does its own transport under its
-  own configuration, and this job still never touches SSH.
-- **Fail-closed before, warn-only after:** if the *before* backup is
-  unavailable, fails, or times out, the run **aborts before touching any
-  device** — an explicitly requested safety net must not silently not exist.
-  A failed *after* backup logs a warning and never un-succeeds completed
-  upgrades. The *after* backup runs even when some devices failed (capturing
-  state then is exactly the point) but is skipped on the cooperative-stop
-  path.
-- Each backup waits up to **15 minutes** (`GC_BACKUP_TIMEOUT`), polling the
-  enqueued Job Result; both Job Result ids are logged for the audit trail.
-  Budget the two waits against the job's soft time limit on big batches.
-- **A free worker slot is required**: the backup runs as a separately queued
-  job while this job occupies its own slot — a **concurrency-1 Celery worker
-  will always time out here** (the timeout message says so). If the run aborts
-  or is cancelled mid-wait, the already-enqueued backup keeps running
-  harmlessly under its own Job Result.
-- **Coverage is verified, not assumed**: Golden Config silently intersects the
-  device filter with its own settings scopes, so a SUCCESS can cover fewer
-  devices than selected. After each backup the job checks GC's own per-device
-  bookkeeping — a coverage gap **aborts** the *before* run (and warns after),
-  naming the uncovered devices.
-- **Runs on every Run scope**, staging included — cheap insurance around any
-  change. For business-hours staging runs where the ~15-minute waits aren't
-  worth it, leave it unticked and rely on the Full run's backups.
-- **Dry-run stays read-only** — it logs what would be backed up and skips
-  both snapshots.
-
-
-### Pre/post health checks (report-only)
-
-**Pre/post health checks** (default **off**) snapshot the device's network
-health immediately **before activation** and compare it **after the commit** —
-looking for the things an upgrade quietly breaks: ports that never came back,
-downstream switches or APs no longer seen, a power supply that didn't survive
-the reload, or a boot the device itself classifies as a crash. On the
-[overview diagram](docs/overview-flow.md) these are the **8a** (pre-test) and
-**8b** (post-test) decision branches.
-
-> **Maturity:** newer than the core flow — exercised in lab runs on the 9300
-> and report-only by design, with **less field time** than the copy/install
-> path. **First field true positive (2026-07):** after a production upgrade,
-> a trunk port facing a WAP did not come back, and the post-check caught and
-> reported exactly that — a real detection of the failure class these checks
-> exist for. Still: treat findings as a signal to verify, not a verdict, and
-> send field reports either way ([Contributing](#contributing)).
-
-**Pre-test (8a)** — the baseline, captured immediately before activation
-(fail-closed: if this snapshot can't be read, the device aborts *before*
-anything reloads):
-
-- Every port's admin/oper state, plus which ports count as
-  **trunk/infrastructure** (configured `switchport mode trunk` ∪ ports with a
-  CDP **Switch**-capability peer)
-- The CDP neighbor table — which neighbor, on which local port
-- The LLDP neighbor table — same shape, independent second feed
-- Environment sensors (power supplies, fans, temperature) and their states
-- Attached as the `health-pre_<device>.json` artifact
-
-**Post-test (8b)** — after the commit and Nautobot sync, re-polled for up to
-~10 minutes so slow converging things (STP, PoE-powered APs, CDP holdtimes)
-get a fair chance to return:
-
-- Every port that was admin-up **and** oper-up before is up again — **error**
-  on trunk/infrastructure ports, warning on access ports
-- Every CDP and LLDP neighbor is back **on the same port**, distinguishing
-  *gone* from *moved* (a lost redundant uplink to the same upstream counts as
-  gone, not moved)
-- No environment sensor that was healthy before is degraded now
-- The device's **own reload-reason verdict** is not *abnormal* — i.e. the
-  reboot was the upgrade, not a crash
-- New ports, new neighbors, and pre-existing bad sensors are **noted, never
-  flagged**
-- Attached as the `health-post_<device>.json` and
-  `health-report_<device>.json` artifacts
-
-Severity reference:
-
-| Check | Source (all pure oper reads — no config writes, no AVC noise) | Finding | Severity |
-| --- | --- | --- | --- |
-| Port states | `interfaces-oper` | admin-up port that was oper-up before, still down after convergence | **error** on trunk/infrastructure ports, warning on access |
-| Trunk identification | interface **config** (`switchport mode trunk`) ∪ CDP Switch-capability peers | classifies severity above | — |
-| CDP neighbors | `cdp-oper` | neighbor gone, or moved to a genuinely new port (a lost redundant uplink to the same upstream counts as *gone*, not moved) | warning; **error** when the affected port is a trunk |
-| LLDP neighbors | `lldp-oper` | same comparator, second feed | same |
-| Environment | `environment-oper` | sensor healthy before, degraded after (pre-existing bad sensors are noted, never flagged) | **error** |
-| Reload reason | `device-hardware-oper` (`last-reboot-reason` + `reason-severity`) | the device's OWN verdict that the reboot was **abnormal** — a typed enum, not string-matching | **error** |
-
-Semantics, all deliberate:
-
-- **Report-only**: findings are logged at error/warning level and attached as
-  Job Result artifacts — they never un-succeed a committed upgrade. (Gating
-  the commit on health is a possible future opt-in with real
-  rollback-loop risks; not built.)
-- **Convergence-aware, not snapshot-at-an-instant**: everything up-before
-  must return within ~10 minutes (`HEALTH_CONVERGENCE_TIMEOUT`) — ports
-  renegotiate, STP reconverges, PoE-powered APs take minutes to boot, CDP
-  ages in at 180-second holdtimes. The post-check re-polls until clean or
-  deadline (the budget is approximate: the final in-flight capture may run
-  a couple of minutes past it).
-- **Fail-closed baseline**: if the pre-snapshot cannot be captured, the
-  device aborts *before activation* (nothing has reloaded yet, so the abort
-  is free). A requested baseline must exist.
-- **Empty classes auto-skip, loudly**: a device with no CDP neighbors before
-  the upgrade logs "class skipped" — never silence, never a failure. The
-  baseline scope is always declared ("22 ports up (4 trunks), 9 CDP, …").
-- **Comparison in memory, artifacts for audit**: the diff only ever compares
-  two observations made by the same run; `health-pre/post/report_<device>.json`
-  are attached to the Job Result (retention rides Nautobot's JobResult
-  cleanup) and are never read back for decisions.
-- **New things are never findings**: new ports up, new neighbors — noted,
-  not flagged.
-- Full runs only (stage scopes never reload, so there is nothing to compare).
-
-**Deliberately excluded** (false-positive machines in a post-boot window):
-CPU/memory (legitimately high right after boot), full routing-table diffs,
-full STP state. **v2 queue**: OSPF/BGP/EIGRP/HSRP adjacencies (same
-comparator pattern), PoE per-port power, MAC/ARP count sanity,
-syslog-traceback scan, per-stack-member reboot reasons.
-
-### ISSU-capable platforms (9400/9500/9600): install mode only
-
-**This job upgrades in _install mode_ only — including on ISSU-capable
-platforms.** Install mode (`install add`/`activate`/`commit`) is the standard
-IOS-XE upgrade method on every Catalyst platform this job supports; **ISSU is an
-optional overlay on that same workflow** (`install activate issu`), not a
-separate system. This job's activate is **explicitly non-ISSU**, so on a
-StackWise Virtual pair or a dual-supervisor chassis it performs the ordinary
-reload-based activation: the device reloads **as a whole** and comes back on the
-target version — a correct, complete upgrade, but with a **full reboot outage**,
-exactly like a 9300.
-
-**Why we are confident this works on those platforms** (validated by design, and
-now by a real 9500 StackWise Virtual run; one supervised run per new platform is
-still the recommended due diligence):
-
-- The install-mode YANG models the job drives (`install-rpc`, `install-oper`,
-  `q-filesystem`, `copy`, `device-hardware-oper`) are **verified identical
-  across 9300 / 9400 / 9500 / 9600** — it is the same code path, not a
-  platform-specific one.
-- The confirmation choreography — activate → observe the device go **DOWN**
-  (reload) → confirm it booted the target → commit — is exactly how a non-ISSU
-  install-mode activate behaves on a redundant chassis (both supervisors / both
-  SVL members reload together). **ISSU is the only variant that avoids the
-  device-down signal**, and the job never requests it.
-- Stack/SVL handling already gates on **all members** reporting install mode,
-  having free space, and **rejoining after reload** — the 2-member stack is
-  lab-validated, a **6-/7-member stack** was upgraded at a third-party
-  production site, and an **SVL pair (two chassis) is now hardware-validated as
-  well**: a **9500-16X StackWise Virtual pair** upgraded correctly through these
-  gates in production. (A single-chassis **dual-supervisor** system
-  reports as one chassis, so the rejoin gate confirms the chassis rebooted but
-  does not separately verify the standby supervisor rejoined — that variant
-  remains untested.)
-- The activate payload sets **`issu: false` explicitly** — an ambiguous
-  (issu-unspecified) request fatally failed activation on a real 17.15.4 with an
-  "ISSU compatibility check" — so it is unambiguously the standard reload path
-  and cannot accidentally invoke ISSU. It also omits `auto-abort-timer-val`,
-  leaving the platform's **default rollback timer** to apply (verified after
-  reload).
-
-The **9500 is now hardware-confirmed** — a StackWise Virtual pair upgraded in
-production — leaving **9400 and 9600** as the remaining platforms with model
-sets proven identical but a supervised run still pending (see
-[Versions & support](#versions--support)). The *behavior* is validated by the
-above; each remaining *platform run* is the same due-diligence step as any new
-platform.
-
-**ISSU itself is out of scope — by charter.** This project is deliberately built
-on exactly three primitives: **RESTCONF, install mode, and Nautobot jobs**. ISSU
-is a fundamentally different behavior — hitless, rolling standby-first, no
-device-down event — that would need its own confirmation model and would pull
-the job past that single focus. Supporting ISSU here would violate the project's
-charter, so **there is no current plan**. We may add a **sister job**, or add
-ISSU support later **if it proves safe and easy**, but not as part of this one.
-
-**If you must run a real ISSU**, the job can still assist the RESTCONF-able
-parts: stage with Run scope *Steps 1 & 2* (verified copy + ledger-confirmed
-`install add` on the pair, non-disruptive), perform `install activate issu` by
-hand in the window, then re-run the job at scope *Full* — the already-on-target
-path runs **commit-to-be-safe** and syncs Nautobot. This assist is a
-convenience, **untested against a real SVL / dual-sup pair**, not a supported
-mode.
-
-### Job inputs
-
-| Input | Required | Purpose |
-| --- | --- | --- |
-| Location / Role / Status / Platform / Device type / Current version / Tags | no | Optional filters that narrow the **Devices** picker for field operations. |
-| Devices | no* | Target devices to upgrade (narrowed by the filters above). Optional when Dynamic groups supply the roster; *at least one of Devices / Dynamic groups must yield a device or the run refuses. |
-| Dynamic groups | no* | Device Dynamic Groups, resolved **live at run start** via the platform's own membership computation (filter-based, set-based "group of groups", and static — never a stale cache). The final roster is the **union** of both selectors, deduplicated; each group's resolution is logged (exact count + first 20 names), so **Dry-run is the preview**. Membership resolves with the job's database access, not the submitter's device-view permissions. See [Selecting devices at scale](#selecting-devices-at-scale). |
-| Target version | yes | Core `SoftwareVersion` to upgrade to. |
-| Clean device first | no | ⚠️ **Default off.** Before upgrading, remove ALL software the device is not running — including **any version another engineer staged** (overrides the staged-conflict stop). See [Cleaning a device first](#cleaning-a-device-first). |
-| Run scope | no | Order of operations, safest first: **Step 1 - Copy image** (**default** — a forgotten dropdown can never reload a device), **Steps 1 & 2 - Copy image and prep** (`install add`, no reload), **Full - Copy, Activate, Reload** (the only choice that reloads; a real upgrade requires selecting it deliberately). See [Pre-staging](#pre-staging-stage-now-activate-in-the-window). |
-| Save running-config before reload | no | **Default off.** RPC reloads never prompt to save, and the job cannot detect whether a save is needed (SNMP-only source — dependency declined). This box makes the job save (`cisco-ia:save-config`) before activating, aborting if the save is refused or fails. See [Saving running-config](#saving-running-config-before-the-reload-full-runs). |
-| Save running-config after commit | no | **Default off.** After the commit and Nautobot sync, write running-config to startup. Normalizes startup to the new OS's rendering (ends the persistent startup/running diff) — **but** during the soak window an old-syntax startup is the safer rollback path. See [Saving running-config after the commit](#saving-running-config-after-the-commit-opt-in-soak-trade-off). |
-| Golden Config backup (before & after) | no | **Default off.** Snapshot configs via the Golden Config backup job before any upgrades start (failure **aborts** the run) and after all devices finish (failure warns). Requires the Golden Config app. See [Golden Config backups](#golden-config-backups-before--after). |
-| Pre/post health checks | no | **Default off.** Snapshot ports, CDP/LLDP neighbors, and environment before activation; compare after commit with a ~10-min convergence window. Report-only: trunk-port and environment findings log at error level, the device's own abnormal-reboot verdict is checked, artifacts attach to the Job Result. See [Pre/post health checks](#prepost-health-checks-report-only). |
-| Image transfer method | no | **Default: Async xcopy** — the install engine runs the transfer (uuid-keyed ledger tracking; immune to the device's ~10-minute ceiling on the blocking copy RPC; success = engine ledger verdict + byte-exact), **falling back to classic copy** when a pre-fire guard (ported image URL, no recorded file size) or a device-reported terminal failure rules xcopy out. **Classic copy only** skips xcopy entirely (the pre-2.0 behavior). Bench-validated end-to-end; WAN field runs pending. See [Image transfer methods (WAN options)](#image-transfer-methods-wan-options). |
-| Quiet SELinux log noise on terminals | no | **Default off.** The SELinux AVC-denial messages come from how the job watches files during an upgrade (observed so far only on Catalyst 9300 switches; benign in our testing — not a Cisco-confirmed cosmetic defect; see below); enable this if you watch the **physical console or terminal-monitor (SSH)** and want them quieted there. `show logging` and syslog servers still record everything. Applied to the RUNNING config at the start of the run (every release); unsaved — erased by the reload — unless combined with *Save running-config before reload* on a **Full** run. See [SELinux AVC log events](#selinux-avc-log-events-cause-and-workaround). |
-| Secrets group override | no | Force one Secrets Group for the whole run; by default each device uses its own assigned group. |
-| Remove inactive | no | After commit, reclaim space (default **off** — keeps the rollback image for a soak period). |
-| Parallelism | no | Devices upgraded concurrently (default **4**, max 16; 1 = serial). **Hardware-validated at 2 so far**; higher fan-out is unproven. Size to the firmware server's capacity for simultaneous image pulls. |
-| Debug | no | Verbose RESTCONF request/response logging. |
-| Dry-run | — | Read-only pre-flight only (default **on**). |
-
-### RESTCONF operations used
+| **Nautobot** | **2.4 LTM** and **3.1+** | Verified on both, same behavior. 3.0 untested by choice (unmaintained since 3.1). Earlier 2.x (≥ 2.2) may work, untested (dynamic-group fresh-membership resolution uses a 2.3+ API; earlier 2.x falls back to the group's query). |
+| **Device OS** | Cisco IOS-XE **≥ 17.9.1** (incl. 26.x) | Hardware-validated 17.12–26.1; every YANG model verified against Cisco's published models 17.9.1–26.1.1. Model presence ≠ runtime behavior — one supervised run per new train. Rebuild letters (17.15.4**d**) are distinct versions. |
+
+**By platform:**
+
+| Platform | Status |
+| --- | --- |
+| Catalyst **9500** (StackWise Virtual) | ✅ **Production-validated** — a 9500-16X SVL pair upgraded as the lab core |
+| Catalyst **9300 / 9300L** | ✅ **Hardware-tested** (singles + 2-member stack); other 9300 variants run the identical image and flow (run pending) |
+| **C8000V** (autonomous) | ✅ **Hardware-tested** — full 17.12 → 17.15.5 on a running instance |
+| Catalyst **9800-CL** (wireless) | 🧪 **Bench-validated** with the sibling 9800 job incl. AP predownload ([details](#upgrading-catalyst-9800-wireless-controllers)); hardware 9800 appliances unvalidated (same models — should work) |
+| Catalyst **9200 / 9400 / 9600** | ⚠️ **Model evidence only** — sets proven identical; supervised runs pending |
+| **9800 via the switch job** | ⚠️ Mechanically compatible; warned in-job — use the sibling job (predownload) |
+| **Nexus/NX-OS** | 🚫 Different API — not supported |
+| Catalyst **3650/3850** | 🚫 Cannot be supported — their terminal 16.12 train lacks the install API (the 9300L is Cisco's replacement) |
+
+**By IOS-XE train:** **17.12 / 17.15 / 17.18 / 26.1** — ✅ tested on real
+equipment, upgrades *and* downgrades, lettered rebuilds, cross-era moves both
+directions. **17.9 / 17.10 / 17.11** — ⚠️ not tested, might work; best used as
+an escape source (17.9 left Cisco maintenance Aug 2025). **< 17.9** — 🚫
+refused (key API components missing).
+
+**What makes a device compatible** — a capability set, not a model list:
+autonomous IOS-XE ≥ 17.9.1, booted in install mode, reachable over RESTCONF.
+Activation is always a whole-box reload. Any device meeting the rule should,
+in principle, work — we validate on the hardware we have and don't predict
+the rest; if you run somewhere new, [tell us](#contributing) either way.
+
+**ISSU-capable platforms (9400/9500/9600) run install mode here — including
+SVL pairs and dual-sup chassis, which reload as a whole.** The activate sets
+`issu: false` explicitly (an ambiguous request fatally failed a real 17.15.4
+on an ISSU compatibility check) and omits the abort-timer leaf so the
+platform default applies. The install-mode models are verified identical
+across 9300–9600, and the 9500 SVL pair is production-validated; a
+single-chassis dual-sup system remains untested (its standby rejoin isn't
+separately verified). ISSU itself is out of charter — see the
+[Roadmap](#roadmap). If you must run a real ISSU by hand, the job can stage
+(Steps 1 & 2) and afterwards commit-and-sync via an already-on-target Full
+run — a convenience, **untested against a real SVL / dual-sup pair**, not a
+supported mode.
+
+## Job inputs
+
+**Switch job** (*Cisco IOS-XE Upgrade (RESTCONF)*):
+
+| Input | Purpose |
+| --- | --- |
+| Location / Role / Status / Platform / Device type / Current version / Tags | Narrow the **Devices** picker (picker only — never group membership). |
+| Devices / Dynamic groups | The roster: union of both, deduplicated; groups resolve live at run start and are logged (Dry-run = preview). At least one device required. |
+| Target version | Core `SoftwareVersion` to upgrade to. |
+| Run scope | **Step 1 - Copy image (default)** / Steps 1 & 2 / **Full** (the only scope that reloads). |
+| Clean device first | ⚠️ Removes ALL non-running software incl. others' staging — the staged-conflict override. Default off. |
+| Save running-config before reload / after commit | The two save opt-ins ([trade-offs](#save-running-config-before-reload--after-commit)). Default off. |
+| Golden Config backup (before & after) | Fail-closed before, warn-only after. Default off. |
+| Pre/post health checks | Report-only bracket ([checks](#prepost-health-checks-report-only)). Default off. |
+| Image transfer method | **Async xcopy (default - classic-copy fallback)** / Classic copy only. |
+| Quiet SELinux log noise on terminals | Console/terminal-monitor filter only; the record stays complete. Default off. |
+| Secrets group override | One Secrets Group for the whole run. |
+| Remove inactive | Post-commit space reclaim (default off — keeps the soak-window rollback image). |
+| Parallelism | Default **4**, max 16 — validated at 2 so far. |
+| Debug / Dry-run | Verbose RESTCONF logging / read-only pre-flight (**Dry-run defaults on**). |
+
+**9800 job** (*Cisco 9800 WLC Upgrade (IOS-XE)*) — same inputs except: Run
+scope gains **Steps 1-3 - Stage + AP predownload**; **Parallelism defaults to
+1** (Full always runs one controller, serially); no SELinux option; plus
+**Predownload deadline (minutes)** (default 120 — declares failure only,
+naming each incomplete AP), **Proceed despite incomplete APs (Full
+scope)**, and **Allow predownload-unsupported AP models** (both default
+off, both name every affected AP).
+
+## RESTCONF operations used
 
 | Step | RESTCONF call |
 | --- | --- |
 | Read version | `GET .../Cisco-IOS-XE-device-hardware-oper:device-hardware-data/device-hardware/device-system-data` |
-| Stack member roster | `GET .../Cisco-IOS-XE-device-hardware-oper:device-hardware-data/device-hardware/device-inventory` |
+| Stack member roster | `GET .../device-hardware-oper:.../device-inventory` |
 | Install state / mode / ledger | `GET .../Cisco-IOS-XE-install-oper:install-oper-data` |
-| Boot-config filesystem hint (zero-walk; corroborated against partitions) | `GET .../data/Cisco-IOS-XE-native:native/boot` |
-| Partition stats (discovery corroboration + space gate — **one shared read**) | `GET .../q-filesystem?fields=fru;slot;bay;chassis;partitions(name;total-size;used-size)` |
-| Full file listing — the **fallback floor** for the pre-check, the classic-copy first-sighting learn, and any confirm the walk-free tiers cannot settle | `GET .../Cisco-IOS-XE-platform-software-oper:cisco-platform-software/q-filesystem` |
-| Keyed single-entry file read (walk-free, no SELinux bursts) — pre-check skip/absence, per-poll progress, and the byte-exact confirm tier | `GET .../q-filesystem=<fru>,<slot>,<bay>,<chassis>/partitions=<name>/partition-content=<full-path>` (address learned from a real listing **or** constructed from the engine's download descriptor + partition-stats keys) |
-| Copy image (Async xcopy, default) | `POST .../operations/Cisco-IOS-XE-xcopy-rpc:xcopy` (async; tracked via the engine's uuid-keyed install-oper ledger — the install-oper GET above, polled each cycle; success = ledger verdict confirmed byte-exact; file-size polls are progress display only) |
-| Copy image (Classic copy — fallback tier / selectable) | `POST .../operations/Cisco-IOS-XE-rpc:copy` (worker thread) |
+| Boot-config filesystem hint (zero-walk) | `GET .../Cisco-IOS-XE-native:native/boot` |
+| Partition stats (discovery + space gate — one shared read) | `GET .../q-filesystem?fields=fru;slot;bay;chassis;partitions(name;total-size;used-size)` |
+| Full file listing (the fallback floor) | `GET .../Cisco-IOS-XE-platform-software-oper:cisco-platform-software/q-filesystem` |
+| Keyed single-entry file read (walk-free) | `GET .../q-filesystem=<fru>,<slot>,<bay>,<chassis>/partitions=<name>/partition-content=<full-path>` |
+| Copy image (async xcopy, default) | `POST .../operations/Cisco-IOS-XE-xcopy-rpc:xcopy` (tracked via the uuid-keyed install-oper ledger) |
+| Copy image (classic, fallback tier) | `POST .../operations/Cisco-IOS-XE-rpc:copy` (worker thread) |
 | Add / activate / commit / remove | `POST .../operations/Cisco-IOS-XE-install-rpc:{install,activate,install-commit,remove}` |
-| Health snapshots (opt-in; pre + convergence re-polls) | `GET .../Cisco-IOS-XE-interfaces-oper:interfaces/interface?fields=name;admin-status;oper-status`, `GET .../cdp-oper:cdp-neighbor-details`, `GET .../lldp-oper:lldp-entries`, `GET .../environment-oper:environment-sensors`, `GET .../device-hardware-oper:.../device-system-data` (reboot reason) |
-| Trunk identification (opt-in, once at the pre-snapshot) | `GET .../Cisco-IOS-XE-native:native/interface` (config read) |
+| 9800: AP roster / predownload status / AP priming / radio state | `GET .../Cisco-IOS-XE-wireless-access-point-oper:access-point-oper-data/{capwap-data,predownload-data,oper-data,radio-oper-data}` |
+| 9800: chassis topology gate | `GET .../Cisco-IOS-XE-stack-oper:stack-oper-data` |
+| 9800: staged bundle's AP image map (the learned target) | `GET .../access-point-oper-data/{ap-image-prepare-location,ap-image-active-location}` |
+| 9800: fire AP predownload | `POST .../operations/Cisco-IOS-XE-wireless-access-point-cmd-rpc:set-rad-predownload-all` |
+| Health snapshots (opt-in) | `GET .../interfaces-oper`, `cdp-oper`, `lldp-oper`, `environment-oper`, device-system-data |
 | Save running-config (opt-in) | `POST .../operations/cisco-ia:save-config` |
-| AVC suppression filter (opt-in) | `GET`/`PATCH .../data/Cisco-IOS-XE-native:native/logging` (read-before-write; merge only) |
+| AVC suppression filter (opt-in) | `GET`/`PATCH .../Cisco-IOS-XE-native:native/logging` (read-before-write, merge only) |
 
 ## Configuration
 
-Release- and site-specific knobs live in [`jobs/constants.py`](jobs/constants.py):
-the version floor, target filesystem (`flash:`) and its **partition-name match**
-(`TARGET_FS_CANDIDATES`), timeouts, and space headroom (~2× the image size).
-The target filesystem is resolved per device, **boot config proposes and
-runtime state disposes**: a zero-walk read of the device's `boot system`
-config names the filesystem it actually boots from ("flash:packages.conf" →
-`flash:`), and the partition listing — the same single read the free-space
-gate consumes — must corroborate it (an uncorroborated hint is discarded
-with a warning; no usable hint falls back to partition-name discovery,
-`flash:` on Catalyst switches, `bootflash:` on C8000V). If a platform names
-its writable filesystem something else entirely, the discovery-failure abort
-now reports what the boot config points at — add that name to
-`TARGET_FS_CANDIDATES`.
+Release- and site-specific knobs live in
+[`jobs/constants.py`](jobs/constants.py) — the version floor, target
+filesystem candidates, timeouts, space headroom (~2× image size), and the
+wireless predownload cadence — each documented in place with its bench
+provenance. The target filesystem is resolved per device (*boot config
+proposes, runtime state disposes*): an uncorroborated boot-config hint is
+discarded with a warning, and with no usable hint the job falls back to
+partition-name discovery — `flash:` on Catalyst switches, `bootflash:` on
+C8000V. If a platform names its writable
+filesystem something new, the discovery-failure abort reports what the boot
+config points at — add that name to `TARGET_FS_CANDIDATES`. Shared engine
+machinery lives in [`jobs/install_engine.py`](jobs/install_engine.py), which
+both upgrade jobs inherit.
+
+## Known limitations
+
+- Hardware validation covers what [Current status](#current-status) says and
+  no more; 9200/9400/9600 are admitted on model evidence pending supervised
+  runs. On releases that don't populate the operation ledger or
+  `sys-activity`, the job degrades to version-state inference and a settle
+  timer — labeled as fallbacks in the logs.
+- The activate omits `auto-abort-timer-val`, so the platform's default
+  rollback timer applies (observed 7200 s on 17.15.x switches; 9800s
+  document 6 hours) — confirmed after reload rather than assumed.
+- Stack/SVL handling gates on all members rejoining; per-member deep health
+  checks are minimal. Single-chassis dual-sup standby rejoin is not
+  separately verified.
+- 9800 v1 is standalone-only; see
+  [its boundaries](#upgrading-catalyst-9800-wireless-controllers).
+- Free-space and file reads use release-dependent q-filesystem shapes —
+  tunable in `constants.py`.
+
+---
+
+## Design choices
+
+The project began as a research question — *how much of an IOS-XE
+install-mode upgrade can be driven purely over RESTCONF?* — and the answer on
+modern trains turned out to be **essentially all of it**. The principles that
+survived contact with real hardware:
+
+- **RESTCONF only, on principle.** Install RPCs, xcopy, the classic copy,
+  and every state read. No SSH/CLI path exists. Floor 17.9.1, the lowest
+  model-complete release.
+- **Ledger-first, no guessing.** Every decision prefers state the device
+  publishes: the install engine's uuid-keyed operation ledger and package
+  inventory outrank filesystem walks, version-row inference, and timers.
+  **Timers only bound waits or declare failure** — device-published verdicts
+  always outrank them, and the few fallback tiers announce themselves in the
+  logs. (The one timer that green-lights anything — a fixed pre-activate
+  settle delay — exists solely for releases that publish neither
+  `sys-activity` nor a ledger-confirmed add, and is labeled a fallback in
+  the logs.) Addresses and paths are observed, never guessed.
+- **Positive confirmation for every fact.** A 2xx from an install RPC means
+  nothing; an empty read is never evidence; "on target" is not "committed."
+  Each gate demands the device's own affirmative answer, and fail-closed is
+  the default posture everywhere.
+- **Integrity without the on-device `verify` RPC** (its results aren't
+  pollable): optional hash-verify at registration, byte-exact size gates
+  after every copy, and `install add`'s mandatory signature validation.
+- **Reuses Nautobot core, adds no models**: `dcim.SoftwareVersion` /
+  `SoftwareImageFile` hold everything; credentials come from core Secrets.
+  Shipped as a Git Repository; the one dependency is `requests`.
+- **Bench before build.** Device behavior is established on real hardware
+  before code depends on it — the YANG models have been wrong about runtime
+  behavior too often to trust on paper. The deep findings live in
+  [docs/internals.md](docs/internals.md), and the bench instrument that
+  gathered the 9800 evidence is archived with a reconstruction guide in
+  [docs/archive/restconf-dev-tester/](docs/archive/restconf-dev-tester/).
+
+## Releases & pinning
+
+Nautobot pins a Git repository to a **branch**, and this project uses that as
+its release mechanism: **production points at the stable train branch**
+(`1.0.x` today — changes only for bug fixes, safe to re-sync any time);
+**`main` is development** and moves freely; new features arrive as a new
+train, and moving trains is always your deliberate act. Every release is
+tagged and listed in [CHANGELOG.md](CHANGELOG.md); the upgrade jobs log
+their version at the start of every run, so each upgrade Job Result records
+exactly which release produced it. Full model: [RELEASING.md](RELEASING.md).
 
 ## Reuse & licensing analysis
 
-This project is **Apache-2.0** (see [`LICENSE`](LICENSE)). The up-front analysis
-looked hard for something to reuse before writing code:
-
-- **No permissive OSS library ships a turnkey "upgrade IOS-XE" function**, and
-  **none of the Nautobot OSS apps** (Device Lifecycle Mgmt, Golden Config,
-  device-onboarding, nornir-nautobot) ship a software-install/upgrade job. So the
-  orchestration here is new — but it deliberately **reuses Nautobot core** for
-  all data (software versions, images, hashes, credentials) and uses only
-  **`requests`** for transport.
-- **Cisco pyATS/Genie "Clean"** (Apache-2.0) is the best open reference for
-  correct install-mode sequencing; it was used as a **design reference only**, not
-  a runtime dependency (it's heavy and unnecessary for RESTCONF).
-- ⚠️ **Avoided on licensing grounds:** the `cisco.ios` Ansible collection and
-  community IOS-XE upgrade Ansible roles are **GPLv3** (copyleft) — their code is
-  **not** copied here, only their behavior studied. Network to Code's commercial
-  **"OS Upgrades"** Nautobot app is **closed-source** — reference only.
-
-Everything actually depended on (`requests`, Nautobot core) is permissive
-(Apache-2.0 / MIT) and compatible with this repo's license.
-
-## Known limitations / not yet done
-
-- **Hardware validation covers 17.12, 17.15, 17.18, and 26.1** on single
-  switches, a 2-member stack, and a 9500 StackWise Virtual pair, from Nautobot
-  3.1 and 2.4 (with a 6-/7-member stack upgraded once at a third-party
-  production site) — the other platforms (9200, 9400, 9600) are admitted on model
-  evidence (see
-  [Versions & support](#versions--support)); do one supervised run
-  per newly-encountered train or platform. On releases whose devices don't populate
-  the operation ledger or `sys-activity` at runtime, the job degrades to
-  version-state inference and a settle timer — clearly labeled in the logs.
-- **The activate sets `issu: false` explicitly and omits `auto-abort-timer-val`.**
-  An ambiguous (issu-unspecified) request fatally failed activation on a real
-  17.15.4 with an "ISSU compatibility check", so `issu: false` is sent
-  explicitly; `auto-abort-timer-val` is left off so the platform's **default
-  rollback timer** applies, confirmed after reload (observed arming at 7200 s on
-  17.15.x).
-- Free-space and file-size reads use **release-dependent** q-filesystem paths
-  (exact/stack-suffix partition match) — tunable via `constants.py` if a
-  platform names its flash differently.
-- Stack/SVL handling checks that **all members** report install mode, have the
-  free space, and rejoin after reload; per-member deep health checks are
-  minimal.
-- Some platforms/releases (observed so far: Catalyst 9300 switches; a C8000V
-  run showed none) emit SELinux AVC bursts around filesystem
-  listings — see [SELinux AVC log events](#selinux-avc-log-events-cause-and-workaround)
-  for the cause, when the job triggers them, and the optional quieting.
-
-## SELinux AVC log events (cause and workaround)
-
-**What they are.** On affected platforms/releases — **observed so far only on
-Catalyst 9300 switches** (at 17.15.x and 17.18.3); a full C8000V upgrade run
-(17.12 → 17.15.5) showed **none** — the platform's SELinux policy
-denies `smand` (the shell/storage manager) read access to a handful of on-flash
-paths (`biosupgrade`, `yang-infra`, and similar) that it touches whenever it
-builds a **filesystem listing**. Each listing sprays a burst of
-`%SELINUX-1-VIOLATION` AVC-denial lines (~100 observed per listing on a real
-9300 in our lab). Anything that walks the filesystem can trip it. In one
-correlated capture (this job's log lined up against the device console), the
-**overwhelming majority came from our own q-filesystem reads** — ~318 of 319
-denials — while a single denial came from an `install remove` operation itself;
-an operator's `dir`/`show` would trip it too. A later **complete** run
-(copy → add → activate → commit) settled the rest: **1,618 denials, every one
-during the job's own read phases — `install add`, `activate`, and `commit`
-contributed zero** (correlation below).
-
-**What Cisco documents — and what it does not.** `%SELINUX-1-VIOLATION` is a
-documented IOS-XE SELinux message, not an error unique to this job. Cisco's
-*Support for Security-Enhanced Linux* chapter (e.g. the
-[Catalyst 9800 config guide, IOS-XE 17.15.x](https://www.cisco.com/c/en/us/td/docs/wireless/controller/9800/17-15/config-guide/b_wl_17_15_cg/m_support_for_security_enhanced_linux.html)
-— SELinux is a common IOS-XE feature across switches and controllers) documents
-the message, the Enforcing (default) / Permissive modes, and the
-`show platform software selinux` and denial-count commands. Two facts from that
-page are worth being honest about: Cisco lists `%SELINUX-1-VIOLATION` as an
-**alert-level** event where, in Enforcing mode, **the access is denied and the
-operation fails**, and its **recommended action is to contact Cisco TAC** — not
-"ignore it." So Cisco does **not** document these as universally cosmetic, and
-the Bug Search Tool bears that out: some `%SELINUX-1-VIOLATION` bursts are
-genuinely harmful (process crashes, install failures — e.g. CSCwk19620,
-CSCwt91818), while others were judged benign for a specific case — e.g.
-[CSCwr09316](https://bst.cloudapps.cisco.com/bugsearch/bug/CSCwr09316) (a
-config-group AVC burst on routers), whose Cisco workaround says *"these internal
-messages can safely be ignored as they have no impact."*
-
-**Is *our* burst a harmless Cisco bug? Honestly — we can't cite Cisco for
-that.** A direct Bug Search Tool hunt (logged in) for our exact denial —
-`smand`, `biosupgrade`, `yang-infra`, filesystem-listing on the 9300 — returned
-**no matching Cisco defect**. What we can stand behind is our own field finding:
-across every lab upgrade this burst appeared and **no operation failed** — the
-listing returned and copy / `install add` / activate / commit all completed,
-consistent with a read-only denial on paths the listing does not actually need.
-So treat it as **benign in our testing, not a Cisco-confirmed cosmetic defect**.
-If the burst ever coincides with a real failure on your gear, follow Cisco's own
-guidance and open a TAC case rather than assuming it is noise.
-
-**Why the job triggers them — and how it minimizes them (2026-07-12).**
-Correlating a full run's job log against the device console showed the copy
-watcher's per-poll full listings were ~91% of the noise (1,470 of 1,618
-lines; the install engine's add/activate/commit emitted zero). So the copy
-watcher now **learns, then goes quiet**: it full-reads only until it sights
-the growing file, records that entry's own published address, and polls that
-single keyed entry from then on — a walk-free read that is field-proven to
-emit **no** AVC lines. The keyed address is pure observation (never a
-guessed mount root — the guessing tiers were deleted 2026-07-10 for
-reliability, and they stay deleted), and it is **progress-only**: a missing keyed
-answer re-learns from the next full listing, and a rejected URL form or two
-consecutive misses **latch a loud full-listing fallback** — the pre-change
-behavior is the floor, never entered silently. The copy pre-check and the
-byte-exact verify always use the authoritative full listing. Expected
-bursts per fresh copy **on the classic-copy fallback tier**: a
-**handful** — ONE shared partition-stats read serving both discovery and
-the free-space gate (bench-measured 2026-07-30 at ~2 mount-level statfs
-denials, *not* a file-enumeration walk; the boot-config read that picks
-the filesystem is zero-walk), the pre-check listing, the watcher's full
-read(s) until the first sighting, and the final verify listing — instead
-of **one every 30 seconds for the whole transfer** (~30 for a 15-minute
-copy; the device's audit rate-limiter sometimes truncates the tail of
-that storm, but a fresh run is loud). Every fallback still logs a
-breadcrumb attributed to its device. With **Async xcopy** (the default) the
-expected profile is now **~2 AVC lines per run, every run type** — and
-they are not a walk at all. Bench-measured 2026-07-30 on a **single lab
-9300** (17.18.03); on a stack or SVL pair the partition-stats read returns
-per-member entries and the per-member line count is unmeasured — possibly
-a few more lines, still never a file walk. The read emits mount-level
-statfs denials (`"/"`, `mnt_t`) — the ~100-line file-enumeration burst belongs
-only to full `partition-content` listings, which the happy path no longer
-performs anywhere: the pre-check decides **both** skip and absence
-walk-free (the engine's package inventory plus keyed reads — bench-proven
-AVC-silent for **hits and misses alike**), the transfer watch rides the
-install-oper ledger plus a constructed keyed address, and the final
-byte-exact confirm comes from the package inventory (waiting a bounded
-beat when the engine's verification is still deferred) or a keyed read of
-the destination. The full listing survives only as the loud fallback
-floor for every gap. Two device-tested
-dead ends worth recording: RFC 8040 `depth` is a **post-filter** on this
-backend (returns pruned output, still collects and denies — not an
-alternative), and trimming the partition-stats projection to names-only
-returned denials AND no response — do not "optimize" that read.
-
-**Job-managed quieting (opt-in).** The messages did not affect any upgrade in our testing (above) — a result
-of how the job (and any `show` command) watches files on the filesystem —
-so most operators can simply ignore them. But if your upgrade process
-involves watching the physical console or terminal-monitor over SSH, you
-may want to enable the *Quiet SELinux log noise on terminals* checkbox to
-quiet them. It makes the job apply the workaround itself, scoped to where
-the noise actually bothers people: it inserts the `NBAVC` discriminator
-into the **running config** as early in the run as possible (so even the
-gates read is filtered) and attaches it to the **physical console and
-terminal-monitor (SSH) sessions only**. The `show logging` buffer and
-syslog hosts deliberately stay unfiltered — they are the record (genuine
-SELinux events share this facility and remain fully visible there); the
-terminals are the noise. The filter is applied on every release (the
-messages are not tied to one train). The job never replaces an existing
-operator discriminator, logging mode, or an operator-owned `NBAVC` entry
-with different content; `no logging console/monitor` and filtered/XML
-modes are skipped rather than flipped; and any refused write warns instead
-of failing the run. The change is unsaved — the activation reload erases it
-— unless combined with *Save running-config before reload* on a Full run,
-which makes it persistent. Confirm with `show run | include NBAVC` —
-three lines:
-
-```
-logging discriminator NBAVC facility drops SELINUX
-logging console discriminator NBAVC
-logging monitor discriminator NBAVC
-```
-
-**Manual workaround** (same effect, applied by hand — filters these SELinux
-denials from the console/buffer without touching the underlying policy):
-
-```
-logging discriminator NOSEL msg-body drops SELINUX
-logging console discriminator NOSEL
-logging buffered discriminator NOSEL
-```
-
-Remove the discriminator after the upgrade window if you prefer to keep
-SELinux visibility day-to-day.
+This project is **Apache-2.0**. The up-front analysis looked hard for
+something to reuse: no permissive OSS library ships a turnkey IOS-XE upgrade,
+and no Nautobot OSS app ships a software-install job — so the orchestration
+here is new, deliberately built on Nautobot core data and `requests` only.
+Cisco's pyATS "Clean" (Apache-2.0) served as a design reference for
+install-mode sequencing — reference only, not a dependency. Avoided on
+licensing grounds: the GPLv3 `cisco.ios` Ansible collection and community
+roles (behavior studied, no code copied); NTC's commercial OS-Upgrades app is
+closed-source — reference only. Everything depended on is permissive and
+license-compatible.
 
 ## Roadmap
 
-What's coming, what's being weighed, and what's ruled out — in confidence
-tiers, deliberately **without dates or version promises**. Everything here is
-held to the same bar as the rest of the project: it ships only once we can
-validate it on hardware we can reach.
+Confidence tiers, deliberately without dates. Everything ships only once
+validated on hardware we can reach.
 
-**Planned** (committed direction, no dates):
+**Recently shipped on `main`** (arrives with the next train): Dynamic Groups
+roster selection; the async-xcopy transfer engine; the **Catalyst 9800
+wireless job** with AP predownload (bench-validated; see
+[its section](#upgrading-catalyst-9800-wireless-controllers)).
 
-- **Catalyst 9800 wireless job** — a separate sibling job, not a mode of this
-  one: AP image predownload between add and activate
-  (`Cisco-IOS-XE-wireless-access-point-cmd-rpc:set-rad-predownload-all` is
-  available at our floor), AP-fleet completion polling, and SSO awareness.
-  Gated on having a 9800 + APs to validate against; until then this job warns
-  and leaves 9800s to deliberate full-outage use.
-- ~~**Bulk device selection**~~ — **shipped on `main`** (2026-07): Dynamic
-  Groups as a roster source, resolved live at run start — see
-  [Selecting devices at scale](#selecting-devices-at-scale). Ships with the
-  next train.
-- **Pre/post health-check hardening** — the checks now carry their **first
-  field true positive** (a missing WAP-facing trunk port detected and
-  reported post-upgrade); more field validation, then the v2 checks queued
-  in [Pre/post health checks](#prepost-health-checks-report-only).
+**Planned:** field-hardening the 9800 job toward production-scale fleets
+(engagement pacing, hardware appliances); health-check v2 checks (routing
+adjacencies, PoE per-port, MAC/ARP sanity, per-member reboot reasons).
 
-**Under consideration** (real value, unresolved design questions):
+**Under consideration:** a RESTCONF-enabler companion job (the bootstrap
+transport is the open question); Device Lifecycle Management integration;
+run gating / authorization; deeper stack-redundancy checks; 9800 HA SSO
+support (needs SSO hardware to validate against).
 
-- **A RESTCONF-enabler companion job** — turn RESTCONF on for targets that
-  lack it. Manual enablement (a few commands) is the requirement today; the
-  open question is the bootstrap transport, since a device without RESTCONF
-  needs some other channel first.
-- **Device Lifecycle Management integration** — validated/approved-software
-  gating and CVE/EoL/contract context.
-- **Run gating / authorization** — who may run upgrades, second-person
-  approval, change-window enforcement (Nautobot ships native pieces for much
-  of this).
-- **Deeper stack/redundancy checks** — beyond today's all-members-rejoined
-  gate.
+**Exploring:** other platform families (e.g. Nexus/NX-OS) — a different API,
+so any support would be a separate sibling job, and only if the same
+state-driven flow is achievable there.
 
-**Exploring** (research first — no commitment either way):
-
-- **Other platform families (e.g. Nexus/NX-OS)** — a different OS and API
-  entirely, so any support would be a separate sibling job, and only if
-  research shows the same state-driven, positive-feedback flow is achievable
-  there. This job's "Nexus/NX-OS — not supported" stands regardless.
-
-**Not planned:**
-
-- **Native ISSU mode** — **not planned.** ISSU is a narrow corner case: it needs
-  redundant hardware (a StackWise Virtual pair or dual-sup chassis — a single
-  switch can never ISSU), install mode, and an **EM-to-EM hop within one major
-  train** (no cross-train, no downgrades), and even eligible paths can be buggy
-  (17.12 → 17.15, Cisco CSCwn57884). Realistic fleet upgrades take a reload — a
-  **full outage** — anyway, so the value is low and the added confirmation logic
-  is high (ISSU never emits the device-DOWN signal this job confirms on). This
-  job stays **install-mode, reload-based** on every platform — see
-  [ISSU-capable platforms](#issu-capable-platforms-940095009600-install-mode-only).
+**Not planned:** **native ISSU on the switch job** — a narrow corner case
+(redundant hardware, same-train EM-to-EM hops only) whose hitless behavior
+would need its own confirmation model; realistic fleet upgrades take a
+reload anyway. Wireless ISSU is likewise unplanned; if that ever changes it
+belongs to the 9800 sibling job, not this one.
 
 ## Contributing
 
-This is an actively developed project, and real-world feedback is the most
-valuable thing you can send.
+Real-world feedback is the most valuable thing you can send. **Tell us what
+you find — success or failure**: "upgraded a 9400 cleanly, 17.12 → 17.15" is
+as useful as a bug report. Include platform, versions (from → to), Run scope,
+and the relevant Job Result lines (scrubbed).
 
-**Tell us what you find — success _or_ failure.** If you run the job against a
-device type, IOS-XE train, or topology we haven't validated yet (see
-[Current status](#current-status)), please **open an issue either
-way**: "upgraded a 9400 cleanly, 17.12 → 17.15" is as useful to us as a bug
-report. Include the platform and model, the IOS-XE versions (from → to), the
-Run scope, and the relevant Job Result log lines (scrub anything sensitive
-first). Positive reports let us grow the validated matrix; failures show us
-where the gaps are.
-
-**Improvements are welcome as pull requests** — bug fixes, new gates, docs, and
-support for hardware we can reach. A few ground rules keep the project honest:
-
-- **Changes must be testable in our lab to be merged.** The whole project rests
-  on *positive feedback from real devices*, and we hold contributions to that
-  same bar: if we can't exercise a change on hardware we have access to (or a
-  faithful virtual equivalent), we won't merge it — however sound it looks on
-  paper. Example: we don't have **Catalyst 9600** switches yet, so a
-  9600-specific change stays open (with thanks) until we can validate it
-  ourselves, rather than shipping untested behavior to everyone. Being unable to
-  merge right away isn't a rejection — untestable contributions are **parked,
-  not closed**, and merged as soon as we can confirm them.
-- **Stay within the charter:** RESTCONF, install mode, and Nautobot jobs. The
-  design choices, the [ISSU](#issu-capable-platforms-940095009600-install-mode-only)
-  note, and the [Roadmap](#roadmap) tiers cover what is deliberately out of
-  scope or not yet committed.
-- **Target `main`.** All changes land on `main` first; bug fixes are then
-  cherry-picked to the stable train ([RELEASING.md](RELEASING.md)).
-- **Test before you open the PR:** run **Dry-run** against real hardware and,
-  for anything touching upgrade logic, a live lab run; make sure CI is green
-  (ruff lint + format + byte-compile); describe how you tested it; and keep
-  changes small and reviewable. For anything non-trivial, open an issue first — it saves everyone
-  time.
+Ground rules for pull requests: **changes must be testable in our lab to be
+merged** — the project rests on positive feedback from real devices, and
+untestable contributions are parked (with thanks), not closed. **Stay within
+the charter**: RESTCONF, install mode, Nautobot jobs. **Target `main`**; bug
+fixes are cherry-picked to the stable train. **Test before the PR**: Dry-run
+against real hardware (a live lab run for upgrade-logic changes), CI green
+(ruff lint + format + byte-compile), and a note on how you tested. For
+anything non-trivial, open an issue first.
 
 ## License
 
@@ -1321,25 +839,17 @@ Apache License 2.0 — see [`LICENSE`](LICENSE).
 
 ## Disclaimer
 
-This software is provided **"AS IS"**, without warranties or conditions of any
-kind, under the terms of the [Apache License 2.0](LICENSE) — including its
-**Disclaimer of Warranty (§7)** and **Limitation of Liability (§8)**:
-
-- **No warranty.** There is no warranty of any kind, express or implied —
-  including, without limitation, any warranties of merchantability, fitness
-  for a particular purpose, title, or non-infringement. You are solely
-  responsible for determining the appropriateness of using this software and
-  assume all risks of doing so.
-- **No liability.** In no event shall the authors, contributors, or copyright
-  holders be liable for any damages of any character arising from the use or
-  inability to use this software — including, without limitation, network
-  outages, device or hardware failure, data loss, loss of profits, or any
-  other commercial damage — even if advised of the possibility of such
-  damages.
+This software is provided **"AS IS"**, without warranties or conditions of
+any kind, under the [Apache License 2.0](LICENSE) — including its Disclaimer
+of Warranty (§7) and Limitation of Liability (§8). **No warranty**: you are
+solely responsible for determining the appropriateness of using this software
+and assume all risks. **No liability**: in no event shall the authors,
+contributors, or copyright holders be liable for damages of any character
+arising from its use — including network outages, device failure, data loss,
+or any commercial damage — even if advised of the possibility.
 
 Be aware of what this tool does: it **copies software to, and reloads, live
-network equipment**. If you choose to run it in your own environment, you do so
-entirely **at your own risk** — validate in a lab first (see
-[Current status](#current-status)), keep Dry-run on until proven, and
-maintain your own change-control and rollback procedures. Use of this software
-constitutes acceptance of the license terms above.
+network equipment**. If you run it in your environment, you do so entirely
+**at your own risk** — validate in a lab first, keep Dry-run on until proven,
+and maintain your own change-control and rollback procedures. Use of this
+software constitutes acceptance of the license terms above.

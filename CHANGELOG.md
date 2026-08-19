@@ -9,10 +9,33 @@ Stable trains (`MAJOR.MINOR.x` branches) receive **bug fixes only** — see
 
 ## [Unreleased] — on `main` (active churn; pin `1.0.x` for stability)
 
-Transfer-engine rework plus Dynamic Group roster selection, headed for
-the next major train once the transfer path is field-proven:
+The 2.0 body of work: the Catalyst 9800 wireless job, the shared install
+engine, the transfer-engine rework, and Dynamic Group roster selection —
+headed for the next major train:
 
 ### Added
+- **Cisco 9800 WLC Upgrade (IOS-XE)** — a sibling job for Catalyst 9800
+  wireless controllers with **AP image predownload**: a fourth run scope
+  (`Steps 1-3 - Stage + AP predownload`) pushes the target image to every
+  joined AP's backup partition and proves per-AP completion from
+  device-published state before any reload. The AP-side target identity is
+  **learned from the device** after `install add` (prepare-location minus
+  active-location), so rebuild-letter targets work and comparisons are full
+  4-field identity. Full-scope guardrails: explicitly-picked devices, one
+  controller per run, always serial; AP rejoin is report-only by design.
+  v1 supports standalone controllers (HA SSO pairs are refused by a
+  positive topology gate). Bench-validated end-to-end on a 9800-CL with
+  live APs, including an interrupted-AP negative case and a rebuild-letter
+  (17.15.4d) arc.
+- **Shared install-engine layer** (`jobs/install_engine.py`) — the
+  platform-neutral machinery (gates, transfer tiers, uuid-keyed ledger
+  operations) extracted verbatim from the switch job; both upgrade jobs
+  inherit it. The extraction was proven behavior-preserving at the AST
+  level and validated by a full-scope switch downgrade in the lab.
+- Wireless bench findings are recorded in `docs/internals.md`; the bench
+  instrument that gathered them (the RESTCONF Dev Tester) is retired and
+  archived with a reconstruction guide under
+  `docs/archive/restconf-dev-tester/`.
 - **Dynamic group selection**: a `Dynamic groups` input alongside the
   device picker — groups resolve **live at run start** via the platform's
   own fresh-membership computation (filter-, set-, and static-type groups;
