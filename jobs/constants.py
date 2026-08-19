@@ -486,9 +486,3 @@ REJOIN_REPORT_SECS = 900
 DATA_AP_IMG_ACTIVE = (
     "data/Cisco-IOS-XE-wireless-access-point-oper:access-point-oper-data/ap-image-active-location"
 )
-
-#: Opt-in switch for dev tooling (the RESTCONF Dev Tester): set this env var
-#: on the WORKER to "1"/"true"/"yes" to register the bench instrument. Unset
-#: (production default) the module is never even imported — the job does not
-#: appear in the jobs list. See docs/devtools.md.
-DEVTOOLS_ENV = "NAUTOBOT_UPGRADES_DEVTOOLS"

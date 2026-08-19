@@ -217,6 +217,10 @@ class RestconfClient:
             return {}
 
     # -- recorder primitives ---------------------------------------------------
+    # Kept live with no in-tree consumer (the RESTCONF Dev Tester that used
+    # them is archived under docs/archive/restconf-dev-tester/): they are the
+    # reusable half of every future bench instrument — never-raising evidence
+    # reads where an HTTP error is a result, not a failure.
 
     @staticmethod
     def _probe_record(resp, started):
