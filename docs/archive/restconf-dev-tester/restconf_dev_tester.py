@@ -1,5 +1,11 @@
 """RESTCONF Dev Tester — a recording instrument, not an automation.
 
+ARCHIVED (2026-08-05): retired after the Catalyst 9800 AP-predownload bench
+completed. NOT registered, NOT importable from jobs/ (its relative imports
+only resolve there — copy it back into jobs/ to revive it). See README.md
+beside this file for the reconstruction guide; the probe primitives it
+builds on remain live in jobs/restconf.py.
+
 This job points at ONE device and captures raw RESTCONF evidence as JobResult
 file artifacts: exact response bodies, HTTP statuses, and read timings. It
 exists so a tester can gather bench evidence by running a job instead of
