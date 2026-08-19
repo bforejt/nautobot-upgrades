@@ -827,19 +827,19 @@ class IOSXEUpgrade(InstallEngineMixin, Job):
                     "the reload, every joined AP must download the new image "
                     "before rejoining (CAPWAP requires matching versions): "
                     "expect an EXTENDED wireless outage — minutes to hours at "
-                    "fleet scale. Proceed only if a full wireless outage is "
-                    "acceptable (lab, or a full-outage window). On HA SSO pairs "
-                    "BOTH controllers reload together. A wireless-aware mode "
-                    "(AP predownload orchestration) is planned but not built.",
+                    "fleet scale. Use the sibling job 'Cisco 9800 WLC Upgrade "
+                    "(IOS-XE)' instead — it predownloads AP images so APs "
+                    "return with a partition swap. On HA SSO pairs BOTH "
+                    "controllers reload together.",
                     extra=log,
                 )
             else:
                 self.logger.info(
                     "Catalyst 9800 WLC image detected. Staging (copy/add) is "
-                    "safe on a 9800 — nothing reloads. Note for the eventual "
-                    "activation: this job does not predownload AP images, so a "
-                    "full-scope run causes an extended wireless outage until a "
-                    "wireless-aware mode is built.",
+                    "safe on a 9800 — nothing reloads. For the eventual "
+                    "activation use the sibling job 'Cisco 9800 WLC Upgrade "
+                    "(IOS-XE)': this job does not predownload AP images, so "
+                    "its full scope causes an extended wireless outage.",
                     extra=log,
                 )
 

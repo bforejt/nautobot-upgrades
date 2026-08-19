@@ -24,7 +24,7 @@ warning), see [upgrade-flow.md](upgrade-flow.md).
   drawn are the cross-cutting logging toggles (Quiet SELinux noise, Debug) —
   they don't change the flow.
 - The **numbered key** to the left of a row is its phase number in the
-  README's "What it does" list (one key per phase — `install add` and activate
+  README's "How a run flows" section (one key per phase — `install add` and activate
   are distinct phases; commit and sync are distinct blocks). **8a/8b** sit on
   the two health-check decisions: 8a captures the baseline just before
   activation (a failed read aborts while aborting is still free), 8b compares
