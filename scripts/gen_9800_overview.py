@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
-"""Generate docs/overview-flow.drawio (editable) and docs/overview-flow.svg (image):
-a HIGH-LEVEL 'what it does' overview of the upgrade.
+"""Generate docs/9800-overview-flow.drawio (editable) and .svg (image):
+a HIGH-LEVEL 'what it does' overview of the Cisco 9800 WLC Upgrade job.
 
-Companion to gen_flow.py, which renders the detailed per-device DECISION logic
-(every gate and abort). This one is the plain-language phase summary for the
-README's "How a run flows" section: seven core phases, the per-device opt-in side-steps
-(clean-first, config saves, remove-inactive, 8a/8b health checks) as decision
-diamonds with right-hand boxes, and the once-per-run Golden Config backup
-bracket as dashed run-level blocks. Keep the two diagrams in sync at their
-respective altitudes.
+Companion to gen_overview.py (the switch job's overview, whose rendering
+machinery this reuses verbatim) — same visual language, wireless spine:
+the topology gate, the blast-radius echo, and the AP-predownload phase with
+its own zero-impact stop are what differ from the switch flow. Mirror of
+jobs/c9800_upgrade.py's _upgrade_controller() at overview altitude; keep
+them in sync in the same change.
 """
 
 import html
@@ -19,29 +18,29 @@ PITCH = 108  # row center-to-center
 TOP = 78  # first row center y
 
 GEOM = {
-    "start": (360, 52),
-    "proc": (380, 62),
+    "start": (360, 56),
+    "proc": (380, 66),
     "runopt": (400, 72),
-    "dec": (250, 84),
-    "end": (320, 52),
+    "dec": (260, 88),
+    "end": (330, 56),
 }
-RIGHT_X = 580  # left edge of the right-hand terminal boxes
-TERM_W, TERM_H = 320, 64
+RIGHT_X = 590  # left edge of the right-hand terminal boxes
+TERM_W, TERM_H = 330, 72
 
 # spine, top to bottom. Each: id, type, text, branch-or-None.
 #   branch = {"cond": <right-edge label>, "pass": <down-edge label>,
-#             "kind": "okr"|"abort", "text": <terminal box text>}
+#             "kind": "okr"|"abort"|"opt", "text": <terminal box text>}
 SPINE = [
     (
         "start",
         "start",
-        "Select devices and/or dynamic groups\n+ target version (Nautobot → Jobs)",
+        "Select controller(s) + target version\n(Full: ONE controller, picked explicitly)",
         None,
     ),
     (
         "gcbefore",
         "runopt",
-        "Opt-in, once per RUN: Golden Config backup of\nevery target device BEFORE any upgrade starts\n(fail-closed: can't back up → nothing is touched;\na dry run only reports it)",
+        "Opt-in, once per RUN: Golden Config backup of\nevery controller BEFORE any upgrade starts\n(fail-closed: can't back up → nothing is touched)",
         None,
     ),
     (
@@ -50,7 +49,24 @@ SPINE = [
         "Connect & authenticate\n(RESTCONF over HTTPS, creds from Nautobot Secrets)",
         None,
     ),
-    ("gates", "proc", "Pre-flight gates\n≥ 17.9.1 · install mode · image resolved", None),
+    ("gates", "proc", "Pre-flight gates\n≥ 17.9.1 · install mode", None),
+    (
+        "d_topo",
+        "dec",
+        "Positively\nSTANDALONE?\n(one chassis,\nactive, ready)",
+        {
+            "cond": "No",
+            "pass": "Yes",
+            "kind": "abort",
+            "text": "Predownload/Full REFUSED, naming what was\nread (HA SSO orchestration is unvalidated;\nsilence is never standalone) — staging\nscopes proceed with a warning",
+        },
+    ),
+    (
+        "echo",
+        "proc",
+        "Blast-radius echo (also in dry-run):\njoined APs + models + how many have a\nbackup controller (device-published prime info)",
+        None,
+    ),
     (
         "d_clean",
         "dec",
@@ -71,14 +87,13 @@ SPINE = [
             "cond": "Yes",
             "pass": "No",
             "kind": "okr",
-            "text": "DONE: Dry-run — reports what\nWOULD happen; no changes made",
+            "text": "DONE: Dry-run — every pre-flight gate\nevaluated, roster + echo previewed;\nno changes made",
         },
     ),
     (
         "copy",
         "proc",
-        "Transfer image + verify exact size\n(async xcopy by default, ledger-tracked;\n"
-        "classic copy = fallback tier; skipped if already on flash)",
+        "Transfer image + verify exact size\n(async xcopy by default, ledger-tracked;\nclassic copy = fallback tier; skipped if already on flash)",
         None,
     ),
     (
@@ -89,13 +104,19 @@ SPINE = [
             "cond": "Yes",
             "pass": "No",
             "kind": "okr",
-            "text": "DONE: Staged (Step 1) — image\ncopied to flash; nothing else",
+            "text": "DONE: Staged (Step 1) — image\ncopied to bootflash; nothing else",
         },
     ),
     (
         "add",
         "proc",
-        "install add — extract & stage the image\n(gate → track via the device's ledger)",
+        "install add — extract & stage the bundle\n(gate → track via the device's ledger)",
+        None,
+    ),
+    (
+        "learn",
+        "proc",
+        "LEARN the target's AP image version from\nthe device (the staged bundle publishes it —\nrebuild letters OK) + model-coverage advisory",
         None,
     ),
     (
@@ -110,6 +131,34 @@ SPINE = [
         },
     ),
     (
+        "predl",
+        "proc",
+        "AP PREDOWNLOAD: snapshot the joined-AP\nroster (the contract) → fire → watch the\ncontroller's per-AP status to completion",
+        None,
+    ),
+    (
+        "d_complete",
+        "dec",
+        "EVERY roster AP\nholds the target?\n(per-AP complete, or\nalready in backup\npartition)",
+        {
+            "cond": "No",
+            "pass": "Yes",
+            "kind": "abort",
+            "text": "The deadline DECLARES FAILURE, naming\neach incomplete/vanished AP — nothing\nactivates (the named-exception checkboxes\nare the deliberate overrides — tolerate\napplies to Full runs; stragglers take the\nslow post-reload path)",
+        },
+    ),
+    (
+        "d_stagepre",
+        "dec",
+        "Run scope =\nSteps 1-3\n(predownload)?",
+        {
+            "cond": "Yes",
+            "pass": "No",
+            "kind": "okr",
+            "text": "DONE: PREDOWNLOADED — every joined AP\nholds the image; the window run needs\nonly Full (activate → reload → commit)",
+        },
+    ),
+    (
         "d_healthpre",
         "dec",
         "Health checks\nopted in?",
@@ -117,7 +166,7 @@ SPINE = [
             "cond": "Yes",
             "pass": "No",
             "kind": "opt",
-            "text": "Pre-test (8a): capture the health baseline\n(ports · CDP/LLDP · environment · reboot\nreason; a failed read aborts BEFORE activate)",
+            "text": "Pre-test: baseline the AP roster, per-AP\nversions, radio states, reload reason\n(a failed read aborts BEFORE activate)",
         },
     ),
     (
@@ -134,25 +183,36 @@ SPINE = [
     (
         "activate",
         "proc",
-        "Activate (non-ISSU) → reload\n(gate → track via the device's ledger)",
+        "Activate (non-ISSU) → controller reloads;\nEVERY joined AP reboots to swap to its\npredownloaded partition",
         None,
     ),
     (
         "d_boot",
         "dec",
-        "Booted the target\n& came back healthy?",
+        "Controller booted\nthe target &\ncame back?",
         {
             "cond": "No",
             "pass": "Yes",
             "kind": "abort",
-            "text": "Auto-rollback to the previous\nimage — NOT committed",
+            "text": "Auto-rollback to the previous image —\nNOT committed (a rollback would reboot\nthe AP fleet a second time)",
         },
     ),
-    ("commit", "proc", "install commit\n(gate → track via the device's ledger)", None),
+    (
+        "commit",
+        "proc",
+        "install commit — CONTROLLER-side facts only\n(AP rejoin NEVER gates the commit:\nrefusing would guarantee a second fleet outage)",
+        None,
+    ),
     (
         "sync",
         "proc",
-        "Sync Nautobot software version\n(the device record now shows the new OS)",
+        "Sync Nautobot software version\n(the controller record now shows the new OS)",
+        None,
+    ),
+    (
+        "rejoin",
+        "proc",
+        "AP rejoin report (REPORT-ONLY): who is back\non the target, who is downloading (slow path),\nwho is missing (maybe on its backup controller)",
         None,
     ),
     (
@@ -185,33 +245,50 @@ SPINE = [
             "cond": "Yes",
             "pass": "No",
             "kind": "opt",
-            "text": "Post-test (8b): compare vs the baseline\n(everything up/present before must return;\nconvergence-aware ~10 min; report-only)",
+            "text": "Post-test: compare vs the baseline (AP roster\nas a NAMED set difference · per-AP versions ·\nradios up-before · reload reason; report-only)",
         },
     ),
-    ("done", "end", "DONE: Upgraded & committed ✓", None),
+    ("done", "end", "DONE: Upgraded & committed ✓\n(the fleet rebooted once, image pre-staged)", None),
     (
         "gcafter",
         "runopt",
-        "Opt-in, once per RUN: Golden Config backup\nagain AFTER all devices finish (runs even if\nsome failed; warn-only — never un-succeeds)",
+        "Opt-in, once per RUN: Golden Config backup\nagain AFTER all controllers finish (runs even\nif some failed; warn-only — never un-succeeds)",
         None,
     ),
 ]
 
-# Phase-number keys off to the LEFT of a block, matching the README "What it
-# does" list: seven core phases plus the opt-in health-check bracket — 8a/8b
-# sit on the two "Health checks opted in?" decisions whose Yes branch runs the
-# pre-test / post-test. Other decisions are not numbered phases.
-PHASE_TAGS = {
-    "connect": "1",
-    "gates": "2",
-    "copy": "3",
-    "add": "4",
-    "activate": "5",
-    "commit": "6",
-    "sync": "7",
-    "d_healthpre": "8a",
-    "d_healthpost": "8b",
+# No numbered phase rail here: the README's 9800 section describes scopes, not
+# numbered phases — badges would key to nothing.
+PHASE_TAGS = {}
+
+LEGEND = (
+    "Legend\n"
+    "diamonds = decisions; white rounded boxes to\n"
+    "the right = opt-in steps — the flow continues\n"
+    "down and rejoins the spine either way\n"
+    "dashed = opt-in and once per RUN, not per device\n"
+    "green = successful end state (one per Run scope)\n"
+    "red = this controller stops here\n"
+    "The switch job's overview: docs/overview-flow.svg\n"
+    "Its detailed gate logic: docs/upgrade-flow.svg\n"
+    "(shared engine — this diagram shows what differs)"
+)
+
+FILLS = {
+    "start": ("#DAE8FC", "#6C8EBF"),
+    "proc": ("#FFFFFF", "#5B6B7B"),
+    "dec": ("#E8EEF6", "#3C6CA8"),
+    "end": ("#D5E8D4", "#2E7D32"),
+    "okr": ("#D5E8D4", "#2E7D32"),
+    "abort": ("#F8CECC", "#B85450"),
+    "opt": ("#FFFFFF", "#5B6B7B"),
+    "runopt": ("#FFFFFF", "#5B6B7B"),
 }
+
+
+def esc(s):
+    return html.escape(s, quote=True)
+
 
 # Rows that FOLLOW an opt-in branch get extra pitch: the branch box's rejoin
 # elbow needs air between the "No" label and the next node.
@@ -231,35 +308,6 @@ NEXT = {a: b for a, b in zip(ORDER, ORDER[1:])}
 
 WIDTH = RIGHT_X + TERM_W + 40
 HEIGHT = CY[ORDER[-1]] + 70
-
-LEGEND = (
-    "Legend\n"
-    "numbers = the phases (see the README)\n"
-    "diamonds = decisions; white rounded boxes to\n"
-    "the right = opt-in steps — the flow continues\n"
-    "down and rejoins the spine either way\n"
-    "dashed = opt-in and once per RUN (the whole\n"
-    "batch), not per device\n"
-    "green = successful end state\n"
-    "red = this device stops here\n"
-    "Detailed gate-by-gate flow: docs/upgrade-flow.svg"
-)
-
-FILLS = {
-    "start": ("#DAE8FC", "#6C8EBF"),
-    "proc": ("#FFFFFF", "#5B6B7B"),
-    "dec": ("#E8EEF6", "#3C6CA8"),
-    "end": ("#D5E8D4", "#2E7D32"),
-    "okr": ("#D5E8D4", "#2E7D32"),
-    "abort": ("#F8CECC", "#B85450"),
-    "opt": ("#FFFFFF", "#5B6B7B"),
-    "runopt": ("#FFFFFF", "#5B6B7B"),
-}
-
-
-def esc(s):
-    return html.escape(s, quote=True)
-
 
 def svg_text(cx, cy, text, size=12, bold=False, color="#1a1a1a", anchor="middle"):
     ls = text.split("\n")
@@ -351,10 +399,10 @@ def build_svg():
     s.append(f'<rect x="0" y="0" width="{WIDTH}" height="{HEIGHT}" fill="#ffffff"/>')
     s.append(
         '<text x="20" y="30" font-size="18" font-weight="bold" fill="#111">'
-        "Cisco IOS-XE Upgrade (RESTCONF) — what it does</text>"
+        "Cisco 9800 WLC Upgrade (IOS-XE) — what it does</text>"
     )
-    s.append(rect(WIDTH - 195, 112, 380, 146, "#fbfbfb", "#bbb", rx=6))
-    s.append(svg_text(WIDTH - 195, 112, LEGEND, size=10, color="#333"))
+    s.append(rect(WIDTH - 195, 118, 380, 158, "#fbfbfb", "#bbb", rx=6))
+    s.append(svg_text(WIDTH - 195, 118, LEGEND, size=10, color="#333"))
 
     # down edges between consecutive spine nodes
     for a, b in zip(ORDER, ORDER[1:]):
@@ -525,7 +573,7 @@ def build_drawio():
         edges.append(edge(f"e_{a}_{b}", a, b, label, extra=dashed))
     body = "\n".join(cells + edges)
     return f"""<mxfile host="app.diagrams.net" type="device">
-  <diagram name="IOS-XE upgrade overview" id="iosxe-upgrade-overview">
+  <diagram name="9800 WLC upgrade overview" id="c9800-upgrade-overview">
     <mxGraphModel dx="1000" dy="1400" grid="1" gridSize="10" guides="1" tooltips="1"
         connect="1" arrows="1" fold="1" page="1" pageScale="1" math="0" shadow="0">
       <root>
@@ -542,11 +590,11 @@ def build_drawio():
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
     docs = os.path.normpath(os.path.join(here, "..", "docs"))
-    with open(os.path.join(docs, "overview-flow.svg"), "w") as f:
+    with open(os.path.join(docs, "9800-overview-flow.svg"), "w") as f:
         f.write(build_svg())
-    with open(os.path.join(docs, "overview-flow.drawio"), "w") as f:
+    with open(os.path.join(docs, "9800-overview-flow.drawio"), "w") as f:
         f.write(build_drawio())
-    print(f"wrote overview-flow.svg and overview-flow.drawio ({len(ORDER)} nodes, {HEIGHT}px tall)")
+    print(f"wrote 9800-overview-flow.svg and 9800-overview-flow.drawio ({len(ORDER)} nodes, {HEIGHT}px tall)")
 
 
 if __name__ == "__main__":
